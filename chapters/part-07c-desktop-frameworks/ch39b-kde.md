@@ -49,8 +49,19 @@
   - [7.1 The KIO::Job Hierarchy](#71-the-kiojob-hierarchy)
   - [7.2 KIO Workers](#72-kio-workers)
   - [7.3 KFileWidget, KDirModel, KDirOperator](#73-kfilewidget-kdirmodel-kdiroperator)
-- [8. Performance and Debugging](#8-performance-and-debugging)
-- [9. Integrations](#9-integrations)
+  - [7.4 KFileMetaData and KNewStuff](#74-kfilemetadata-and-knewstuff)
+- [8. KConfig and KConfigXT In Depth](#8-kconfig-and-kconfigxt-in-depth)
+  - [8.1 Cascade and Immutability](#81-cascade-and-immutability)
+  - [8.2 KConfigXT: Type-Safe Settings from XML](#82-kconfigxt-type-safe-settings-from-xml)
+- [9. KAuth — Privilege Escalation](#9-kauth--privilege-escalation)
+- [10. KNotifications — Desktop Notifications](#10-knotifications--desktop-notifications)
+- [11. KActivities — Virtual Activity System](#11-kactivities--virtual-activity-system)
+- [12. KRunner — Pluggable Search and Launch](#12-krunner--pluggable-search-and-launch)
+- [13. KService and KPluginFactory](#13-kservice-and-kpluginfactory)
+- [14. KGlobalAccel — Global Shortcuts](#14-kglobalaccel--global-shortcuts)
+- [15. Additional Kirigami Components](#15-additional-kirigami-components)
+- [16. Performance and Debugging](#16-performance-and-debugging)
+- [17. Integrations](#17-integrations)
 - [References](#references)
 
 ---
@@ -725,9 +736,336 @@ KIO also supplies the widgets and models behind KDE's file dialogs, all of which
 - **`KDirOperator`** is the reusable directory-browsing widget (icon/detail views, navigation, sorting) that forms the body of the file dialog.
 - **`KFileWidget`** wraps `KDirOperator` with a location bar, filter combo, and places panel to form the complete file chooser; `KFileWidget::getOpenUrl()` and the `KIO::OpenFileManagerWindowJob` helpers give the familiar open/save experience. Because these are KIO-backed, entering `sftp://host/path` in the location bar just works. [Source](https://api.kde.org/frameworks/kio/html/classKDirModel.html)
 
+### 7.4 KFileMetaData and KNewStuff
+
+**KFileMetaData** extracts semantic metadata (author, title, dimensions, duration, geo-coordinates, document properties) from files using a plugin architecture where each plugin handles a set of MIME types. Applications call `KFileMetaData::Extractor::extract(url)` and receive a `ExtractionResult` with property-value pairs typed through the `KFileMetaData::Property::Property` enum. Baloo (KDE's file indexer) drives the extractors to populate its search database; the same extractor instances work standalone in an application. [Source](https://api.kde.org/frameworks/kfilemetadata/html/index.html)
+
+**KNewStuff** implements the "Get Hot New Stuff" (GHNS) download mechanism: a standardised dialog that downloads and installs third-party content (themes, wallpapers, plasmoid packages, game levels) from an OpenDesktop-compatible OCS server. Applications call `KNSCore::Engine::init(configFile)` pointing at a `.knsrc` file that names the OCS endpoint and the local install directory; the rest — listing, downloading, installing, and rating — is handled by the framework. In Plasma, wallpapers, colour schemes, global themes, and plasmoid packages are all distributed this way. [Source](https://api.kde.org/frameworks/knewstuff/html/index.html)
+
 ---
 
-## 8. Performance and Debugging
+## 8. KConfig and KConfigXT In Depth
+
+### 8.1 Cascade and Immutability
+
+**KConfig** resolves settings through an ordered cascade of INI files following the XDG Base Directory spec. Reading `KSharedConfig::openConfig("kwinrc")` causes the library to merge, in order: the compiled-in defaults, the system-wide defaults in `/etc/xdg/kwinrc`, and the per-user file at `~/.config/kwinrc`, with later entries overriding earlier ones. Entries in earlier (higher-authority) files may be marked **immutable** (flag `[$i]` in the INI syntax) which prevents the user file from overriding them — the mechanism Plasma uses for enterprise or kiosk lockdown.
+
+```cpp
+// Read a KConfig group directly — group name and key are strings
+#include <KConfig>
+#include <KConfigGroup>
+
+KSharedConfig::Ptr cfg = KSharedConfig::openConfig(); // app's config file
+KConfigGroup general = cfg->group(QStringLiteral("General"));
+QString name = general.readEntry("displayName", QStringLiteral("unknown"));
+general.writeEntry("displayName", name + "_v2");
+cfg->sync();   // flush to disk
+```
+
+`KSharedConfig` caches the file object per process; multiple callers get the same instance, avoiding redundant disk reads. `KConfigGroup` is a value type; creating one does not copy the data — it holds a reference into the shared config. [Source](https://api.kde.org/frameworks/kconfig/html/classKSharedConfig.html)
+
+### 8.2 KConfigXT: Type-Safe Settings from XML
+
+Accessing configuration through raw string keys is error-prone. **KConfigXT** solves this by generating a strongly-typed C++ singleton from a pair of files: a `.kcfg` XML schema that declares each key's name, type, default, and group, and a `.kcfgc` compiler control file that names the output class. `kconfig_compiler` (invoked from CMake via `kconfig_add_kcfg_files(target foo.kcfgc)`) generates `foo.h`/`foo.cpp` with typed accessor/mutator methods and change-notification signals. [Source](https://api.kde.org/frameworks/kconfig/html/annotated.html)
+
+```xml
+<!-- kfoo.kcfg — declares typed settings for the "Foo" app -->
+<?xml version="1.0" encoding="UTF-8"?>
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0">
+  <kcfgfile name="kfoorc"/>
+  <group name="General">
+    <entry name="DisplayName" type="String">
+      <default>unnamed</default>
+    </entry>
+    <entry name="MaxItems" type="Int">
+      <default>100</default>
+      <min>1</min><max>1000</max>
+    </entry>
+    <entry name="AutoSave" type="Bool">
+      <default>true</default>
+    </entry>
+  </group>
+</kcfg>
+```
+
+```ini
+# kfoo.kcfgc — code-generation control
+File=kfoo.kcfg
+ClassName=FooSettings
+Singleton=true
+Mutators=true
+```
+
+After generation, application code replaces every `group.readEntry("DisplayName", ...)` with `FooSettings::self()->displayName()` — a typed, null-safe getter. The KDE System Settings UI ("KCM modules") uses the same generated class on both the display and apply sides, guaranteeing that the UI and the application read identical defaults. [Source](https://api.kde.org/frameworks/kconfig/html/annotated.html)
+
+---
+
+## 9. KAuth — Privilege Escalation
+
+**KAuth** (Tier 2) provides a framework for performing privileged operations from an unprivileged application, using the platform's policy mechanism — **polkit** on Linux/Wayland. The architecture separates the unprivileged *caller* from the privileged *helper* process: the application declares an `Action` by name (e.g. `"org.example.myapp.install"`), the system's policy file (an XML `.policy` file installed under `/usr/share/polkit-1/actions/`) specifies the authentication requirements, and a privileged helper executable (registered as a D-Bus service) implements the actual operation. The only code that ever runs as root is the tightly-scoped helper. [Source](https://api.kde.org/frameworks/kauth/html/index.html)
+
+```cpp
+// Caller side — unprivileged application code
+#include <KAuth/Action>
+#include <KAuth/ExecuteJob>
+
+KAuth::Action action("org.example.myapp.install");
+action.setHelperId("org.example.myapp.helper");   // D-Bus service name of the helper
+action.addArgument("path", "/opt/myapp/data.db"); // passed to the helper
+
+KAuth::ExecuteJob *job = action.execute();
+QObject::connect(job, &KJob::result, [](KJob *j) {
+    if (j->error())
+        qWarning() << "Privilege escalation failed:" << j->errorText();
+    else
+        qInfo() << "Installed successfully";
+});
+job->start();  // triggers polkit authentication dialog
+```
+
+```cpp
+// Helper side — runs as root, registered with KAuth
+#include <KAuth/ActionReply>
+#include <KAuth/HelperSupport>
+
+class MyHelper : public QObject
+{
+    Q_OBJECT
+public Q_SLOTS:
+    KAuth::ActionReply install(const QVariantMap &args)
+    {
+        QString path = args.value("path").toString();
+        // ... perform privileged installation ...
+        return KAuth::ActionReply::SuccessReply();
+    }
+};
+
+KAUTH_HELPER_MAIN("org.example.myapp.helper", MyHelper)
+```
+
+The `ActionReply` carries a success/failure status plus an optional data map for returning results to the caller. Polkit evaluates the `.policy` file's `allow_active` / `allow_admin_authentication` rules and presents the authentication dialog; the application code is unchanged regardless of whether the platform uses polkit, sudo, or (historically) su. [Source](https://api.kde.org/frameworks/kauth/html/index.html)
+
+---
+
+## 10. KNotifications — Desktop Notifications
+
+**KNotifications** (Tier 2) sends desktop notifications to the running notification daemon — plasmashell's notification plasmoid on Plasma, or any FreeDesktop `org.freedesktop.Notifications` D-Bus service on other desktops. The primary API is the static factory `KNotification::event()`, which creates, shows, and auto-manages the lifetime of a notification:
+
+```cpp
+#include <KNotification>
+
+// Simple informational notification with an action button
+KNotification *note = KNotification::event(
+    KNotification::Notification,     // event type (maps to a category in knotifyrc)
+    i18n("Download complete"),       // title
+    i18n("big.iso is ready."),       // body text
+    QPixmap(":/icons/download.png"), // icon (optional)
+    KNotification::CloseOnTimeout);  // flags
+
+// Add an action button (shown in the notification popup)
+note->setDefaultAction(i18n("Open folder"));
+QObject::connect(note, &KNotification::defaultActivated, [=] {
+    KIO::highlightInFileManager({downloadUrl});
+});
+note->sendEvent();
+```
+
+Notification categories are declared in the application's `*.knotifyrc` data file (installed under `knotifications6/`). Each category has a human-readable name, a default sound, and presentation flags. System Settings' "Notifications" KCM reads these files and lets the user override them per-application. The `KNotification::Persistent` flag keeps the notification visible until explicitly closed; `KNotification::LowestPriority` through `KNotification::HighestPriority` map to the `org.freedesktop.Notifications` urgency levels. [Source](https://api.kde.org/frameworks/knotifications/html/classKNotification.html)
+
+---
+
+## 11. KActivities — Virtual Activity System
+
+**KActivities** is KDE's desktop-activity system — a layer above virtual desktops that lets users organise their workspace into named, saveable contexts ("Work", "Personal", "Gaming"), each with independent sets of open windows, a different wallpaper, and separate recent-documents history. The activity state is managed by **kactivitymanagerd**, a D-Bus service; the framework wraps it. [Source](https://api.kde.org/frameworks/kactivities/html/index.html)
+
+```cpp
+#include <KActivities/Consumer>
+#include <KActivities/Manager>
+#include <KActivities/Stats/ResultModel>
+
+// Query the current activity
+KActivities::Consumer consumer;
+QString currentId = consumer.currentActivity();     // UUID of the active activity
+QStringList allIds = consumer.activities();          // all known activities
+// consumer.activityState(id) returns Running / Stopped / Starting / Stopping
+
+// Open a new activity
+KActivities::Manager manager;
+connect(&manager, &KActivities::Manager::activityAdded, [](const QString &id) {
+    qInfo() << "New activity:" << id;
+});
+manager.createActivity("Focus Session");
+
+// Query recent documents used in the current activity (KActivities::Stats)
+namespace KAS = KActivities::Stats;
+auto query = KAS::Terms::Type({"text/plain", "application/pdf"})
+           | KAS::Terms::Limit(20)
+           | KAS::Terms::Activity::current();
+KAS::ResultModel model(query);
+// model is a QAbstractItemModel of recent resources
+```
+
+Applications that want per-activity document history register opened documents with `KActivities::ResourceInstance`, which notifies kactivitymanagerd that a resource (URL) was accessed in the current activity and on behalf of the current window. **Baloo** (the file indexer) uses this to build per-activity "recent" lists. [Source](https://api.kde.org/frameworks/kactivities/html/index.html)
+
+---
+
+## 12. KRunner — Pluggable Search and Launch
+
+**KRunner** (Tier 3) is the plugin framework behind Plasma's universal search bar (`Alt+Space` or `Alt+F2` by default). The bar's results come from **runner plugins**, each of which handles a class of query — application launching, calculator, unit conversion, recent documents, web search, KWin window switching, and so on. Runner plugins can be loaded in-process or out-of-process (the latter sandboxes them). [Source](https://api.kde.org/frameworks/krunner/html/index.html)
+
+```cpp
+#include <KRunner/AbstractRunner>
+#include <KRunner/QueryMatch>
+
+class GreeterRunner : public KRunner::AbstractRunner
+{
+    Q_OBJECT
+public:
+    GreeterRunner(QObject *parent, const KPluginMetaData &data)
+        : AbstractRunner(parent, data) {}
+
+    void match(KRunner::RunnerContext &context) override
+    {
+        const QString query = context.query();
+        if (!query.startsWith(QLatin1String("hello "), Qt::CaseInsensitive))
+            return;
+
+        KRunner::QueryMatch m(this);
+        m.setText(i18n("Greet: %1", query.mid(6)));
+        m.setSubtext(i18n("KRunner example"));
+        m.setRelevance(0.9);
+        m.setData(query.mid(6)); // passed to run()
+        context.addMatch(m);
+    }
+
+    void run(const KRunner::RunnerContext &, const KRunner::QueryMatch &match) override
+    {
+        KNotification::event(KNotification::Notification,
+                             i18n("Hello, %1!", match.data().toString()));
+    }
+};
+
+K_PLUGIN_CLASS_WITH_JSON(GreeterRunner, "greeterrunner.json")
+#include "greeterrunner.moc"
+```
+
+The runner is registered as a KDE plugin with a `metadata.json` declaring `"MimeType": "application/x-plasma-runner"`. KRunner discovers installed runners via `KPluginMetaData::findPlugins("krunner/runners")`. The D-Bus interface `org.kde.krunner1` allows external processes (and the `krunner` command line) to trigger queries and receive results without embedding the runner framework directly. [Source](https://api.kde.org/frameworks/krunner/html/classKRunner_1_1AbstractRunner.html)
+
+---
+
+## 13. KService and KPluginFactory
+
+**KService** (Tier 3) is the KDE service-discovery layer: it reads `.desktop` files and JSON plugin manifests installed under `$XDG_DATA_DIRS` and presents them as `KService` objects with typed properties (executable path, MIME types handled, `ServiceTypes`, arbitrary `X-*` keys). Applications use it to enumerate all installed plugins of a type, open files with the right application, or find a specific service by its desktop-file ID. [Source](https://api.kde.org/frameworks/kservice/html/classKService.html)
+
+```cpp
+#include <KService>
+#include <KPluginMetaData>
+#include <KPluginFactory>
+
+// Find all installed KRunner runner plugins
+const QList<KPluginMetaData> runners =
+    KPluginMetaData::findPlugins(QStringLiteral("krunner/runners"));
+for (const KPluginMetaData &meta : runners)
+    qInfo() << meta.pluginId() << meta.name();
+
+// Load and instantiate a named plugin via KPluginFactory
+auto factoryResult = KPluginFactory::loadFactory(
+    KPluginMetaData::findPluginById("krunner/runners", "calculator"));
+if (factoryResult) {
+    KPluginFactory *factory = factoryResult.plugin;
+    auto *runner = factory->create<KRunner::AbstractRunner>(parent);
+}
+```
+
+**`KPluginFactory`** is the per-plugin factory class, macro-generated with `K_PLUGIN_CLASS_WITH_JSON(ClassName, "metadata.json")`. When KDE frameworks load a plugin (effect, KIO worker, runner, KCM, part, …) they go through `KPluginFactory::loadFactory()` and `create<T>()` — never through raw `dlopen`. This gives a uniform plugin entry-point, JSON-based metadata introspection without loading the binary, and optional out-of-process plugin hosting. The `.desktop` file era is fading in KF6: JSON metadata embedded in (or alongside) the plugin `.so` is the modern approach. [Source](https://api.kde.org/frameworks/kcoreaddons/html/classKPluginFactory.html)
+
+---
+
+## 14. KGlobalAccel — Global Shortcuts
+
+**KGlobalAccel** (Tier 2) registers system-wide keyboard shortcuts that trigger regardless of which window has focus, bridging application code to the compositor's keybinding layer. On Wayland the D-Bus service `org.kde.KGlobalAccel` (provided by kded6) receives the shortcut registration and negotiates with KWin to capture the key sequence at the compositor level — the only way to implement global shortcuts on Wayland while respecting the security model. On X11 it uses the traditional `XGrabKey`. [Source](https://api.kde.org/frameworks/kglobalaccel/html/index.html)
+
+```cpp
+#include <KGlobalAccel>
+#include <KActionCollection>
+#include <QAction>
+
+// Register a global shortcut for a named action in an application
+KActionCollection *coll = new KActionCollection(this,
+    QStringLiteral("org.example.myapp"));
+
+QAction *showAction = coll->addAction(QStringLiteral("show-window"));
+showAction->setText(i18n("Show My App"));
+KGlobalAccel::setGlobalShortcut(showAction,
+    QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_M));
+
+QObject::connect(showAction, &QAction::triggered, this, &MyApp::raiseWindow);
+```
+
+The `KActionCollection` groups shortcuts under a component name (the string passed to its constructor), which becomes the "component" in the Global Shortcuts KCM in System Settings, letting users reassign the key. The KGlobalAccel D-Bus API (`org.kde.KGlobalAccel.Component`) enumerates registered components and shortcuts. Shortcuts survive application restart because they are stored in `~/.config/kglobalshortcutsrc` by kded6. [Source](https://api.kde.org/frameworks/kglobalaccel/html/classKGlobalAccel.html)
+
+---
+
+## 15. Additional Kirigami Components
+
+Beyond the components covered in §4, Kirigami provides a richer component vocabulary for common application patterns. These are available in Kirigami 6.x (shipped with KF6). [Source](https://api.kde.org/frameworks/kirigami/html/index.html)
+
+**`Kirigami.NavigationTabBar`** renders a bottom-of-screen tab bar (mobile-style) or a side-rail (desktop), adapting based on `Kirigami.Settings.isMobile`. Each tab maps to a `Kirigami.NavigationTabButton` with an icon and optional text; a tab switches the `pageStack` to its associated page. This is the recommended navigation pattern for apps with 3–5 top-level sections, replacing the older pattern of putting everything in the `globalDrawer`.
+
+```qml
+Kirigami.ApplicationWindow {
+    pageStack.initialPage: homePage
+
+    footer: Kirigami.NavigationTabBar {
+        actions: [
+            Kirigami.Action {
+                icon.name: "go-home"
+                text: i18n("Home")
+                checked: pageStack.currentItem === homePage
+                onTriggered: pageStack.replace(homePage)
+            },
+            Kirigami.Action {
+                icon.name: "mail-message"
+                text: i18n("Messages")
+                checked: pageStack.currentItem === messagesPage
+                onTriggered: pageStack.replace(messagesPage)
+            }
+        ]
+    }
+}
+```
+
+**`Kirigami.Avatar`** renders a user or contact avatar — a circular image with a text fallback (initials on a coloured background, derived from `name`) when no image is available. `Kirigami.AvatarGroup` stacks multiple avatars with overlap for showing group membership.
+
+**`Kirigami.PlaceholderMessage`** is the standard empty-state component: a centred icon, headline, and optional explanatory body text plus action button, used when a list or search result is empty. It replaces ad-hoc `Column { Image; Label }` constructs.
+
+```qml
+Kirigami.ScrollablePage {
+    Kirigami.PlaceholderMessage {
+        visible: listModel.count === 0
+        anchors.centerIn: parent
+        width: parent.width - Kirigami.Units.gridUnit * 4
+        icon.name: "mail-message"
+        text: i18n("No messages")
+        explanation: i18n("Messages you receive will appear here.")
+        helpfulAction: Kirigami.Action {
+            icon.name: "list-add"
+            text: i18n("Compose")
+            onTriggered: composePage()
+        }
+    }
+}
+```
+
+**`Kirigami.Dialog`** (added in Kirigami 5.89 / KF 5.89, available in Kirigami 6) renders as an in-window overlay dialog (not a separate OS-level window), aligning with the HIG preference for in-context presentation. It has `title`, `subtitle`, `header`/`footer` areas, and a `mainItem` for the body content. `Kirigami.PromptDialog` is a convenience subclass for short confirmation or input dialogs with standard OK/Cancel buttons. Both are the Kirigami-idiomatic replacements for `QMessageBox`/`QDialog` in Kirigami apps.
+
+**`Kirigami.OverlayDrawer`** creates a slide-in panel from any edge (bottom-sheet pattern on mobile, side drawer on desktop). Unlike `GlobalDrawer` (which is always left/right), `OverlayDrawer` can be `edge: Qt.BottomEdge` for action sheets.
+
+**`Kirigami.Chip`** is a compact tag/label with optional icon and remove button — used in filter bars and contact/tag lists. `Kirigami.ChipGroup` lays out chips in a wrapping flow. These were stabilised in Kirigami 6.4.
+
+---
+
+## 16. Performance and Debugging
 
 KWin, plasmashell, and Kirigami apps expose several observability hooks.
 
@@ -764,7 +1102,7 @@ The general debugging philosophy across the Plasma stack is uniform because it i
 
 ---
 
-## 9. Integrations
+## 17. Integrations
 
 This chapter sits within a broader narrative about how a desktop is assembled from the graphics stack up. Key related chapters:
 
@@ -809,6 +1147,16 @@ This chapter sits within a broader narrative about how a desktop is assembled fr
 - KIO::TransferJob reference: [https://api.kde.org/frameworks/kio/html/classKIO_1_1TransferJob.html](https://api.kde.org/frameworks/kio/html/classKIO_1_1TransferJob.html)
 - KDE Flatpak packaging: [https://develop.kde.org/docs/packaging/flatpak/](https://develop.kde.org/docs/packaging/flatpak/)
 - Qt Creator QML Profiler: [https://doc.qt.io/qtcreator/creator-qml-performance-monitor.html](https://doc.qt.io/qtcreator/creator-qml-performance-monitor.html)
+- KSharedConfig / KConfigGroup API: [https://api.kde.org/frameworks/kconfig/html/classKSharedConfig.html](https://api.kde.org/frameworks/kconfig/html/classKSharedConfig.html)
+- KAuth framework: [https://api.kde.org/frameworks/kauth/html/index.html](https://api.kde.org/frameworks/kauth/html/index.html)
+- KNotification API: [https://api.kde.org/frameworks/knotifications/html/classKNotification.html](https://api.kde.org/frameworks/knotifications/html/classKNotification.html)
+- KActivities framework: [https://api.kde.org/frameworks/kactivities/html/index.html](https://api.kde.org/frameworks/kactivities/html/index.html)
+- KRunner AbstractRunner: [https://api.kde.org/frameworks/krunner/html/classKRunner_1_1AbstractRunner.html](https://api.kde.org/frameworks/krunner/html/classKRunner_1_1AbstractRunner.html)
+- KService API: [https://api.kde.org/frameworks/kservice/html/classKService.html](https://api.kde.org/frameworks/kservice/html/classKService.html)
+- KPluginFactory API: [https://api.kde.org/frameworks/kcoreaddons/html/classKPluginFactory.html](https://api.kde.org/frameworks/kcoreaddons/html/classKPluginFactory.html)
+- KGlobalAccel: [https://api.kde.org/frameworks/kglobalaccel/html/classKGlobalAccel.html](https://api.kde.org/frameworks/kglobalaccel/html/classKGlobalAccel.html)
+- KFileMetaData: [https://api.kde.org/frameworks/kfilemetadata/html/index.html](https://api.kde.org/frameworks/kfilemetadata/html/index.html)
+- KNewStuff: [https://api.kde.org/frameworks/knewstuff/html/index.html](https://api.kde.org/frameworks/knewstuff/html/index.html)
 
 ---
 
