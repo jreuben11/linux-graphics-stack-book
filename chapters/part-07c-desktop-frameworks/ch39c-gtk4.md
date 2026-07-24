@@ -555,7 +555,147 @@ The resulting `GdkTexture` is imported into the active renderer as a `VkImage` (
 
 ---
 
-## 7. libadwaita: GNOME HIG Adaptive Widgets
+## 7. The GTK4 Widget System
+
+GTK4's widget layer provides the complete set of interactive controls that an application assembles into a UI. This section covers the widget lifecycle, the list model architecture (the biggest architectural change since GTK3), the UI description language via `GtkBuilder`, input handling through the gesture framework, and drag-and-drop.
+
+### 7.1 Widget Lifecycle and Layout
+
+Every widget is a `GtkWidget` subclass. The lifecycle phases are:
+
+- **realize** — a `GdkSurface` (or a position on one) is assigned; GPU resources can be allocated.
+- **map / unmap** — the widget becomes visible / invisible on screen.
+- **size request** — GTK queries `measure(orientation, for_size, min, nat, min_baseline, nat_baseline)` for each axis to determine natural and minimum sizes.
+- **size allocation** — `size_allocate(width, height, baseline)` assigns the final bounds; layout managers drive this recursively down the widget tree.
+- **snapshot** — the widget's `snapshot()` vfunc runs each dirty frame to produce render nodes (§2.3).
+- **unrealize / destroy** — GPU resources are freed; the object is eventually finalized.
+
+CSS nodes mirror the widget tree: each widget registers one or more CSS nodes with element name and style classes via `gtk_widget_class_set_css_name()` at class-init. Applications add per-instance classes with `gtk_widget_add_css_class(widget, "my-class")` and query the current state with `gtk_widget_has_css_class()`. [Source](https://docs.gtk.org/gtk4/class.Widget.html)
+
+### 7.2 List Model Architecture
+
+GTK4 replaces the GTK3 `GtkTreeModel`/`GtkTreeView` hierarchy with a composable pipeline based on `GListModel`:
+
+```mermaid
+graph LR
+    Source["GListStore (raw data)"] --> Filter["GtkFilterListModel"]
+    Filter --> Sort["GtkSortListModel"]
+    Sort --> Slice["GtkSliceListModel (optional)"]
+    Slice --> View["GtkListView / GtkGridView / GtkColumnView"]
+    View --> Factory["GtkSignalListItemFactory"]
+    Factory --> Item["GtkListItem → bind to GtkWidget"]
+```
+
+The factory pattern separates data from presentation. `GtkSignalListItemFactory` emits `setup` (create widgets) and `bind` (populate widgets from item data) signals per visible row, recycling widget rows as the user scrolls:
+
+```c
+GtkListItemFactory *factory = gtk_signal_list_item_factory_new ();
+g_signal_connect (factory, "setup", G_CALLBACK (on_setup), NULL);
+g_signal_connect (factory, "bind",  G_CALLBACK (on_bind),  NULL);
+
+static void on_setup (GtkListItemFactory *f, GtkListItem *item) {
+    gtk_list_item_set_child (item, gtk_label_new (NULL));
+}
+static void on_bind (GtkListItemFactory *f, GtkListItem *item) {
+    GtkLabel *label = GTK_LABEL (gtk_list_item_get_child (item));
+    MyObject *obj   = MY_OBJECT (gtk_list_item_get_item (item));
+    gtk_label_set_text (label, my_object_get_name (obj));
+}
+
+GtkWidget *view = gtk_list_view_new (
+    GTK_SELECTION_MODEL (gtk_single_selection_new (list_model)), factory);
+```
+
+`GtkColumnView` provides a multi-column view with sortable headers; each column gets its own `GtkListItemFactory`. `GtkFilterListModel` wraps any `GListModel` and applies a `GtkFilter` (subclasses: `GtkStringFilter`, `GtkCustomFilter`). `GtkSortListModel` applies a `GtkSorter` (`GtkColumnViewSorter` for column-click sorting, `GtkCustomSorter` for arbitrary comparators). [Source](https://docs.gtk.org/gtk4/class.ListView.html)
+
+### 7.3 GtkBuilder and Composite Templates
+
+`GtkBuilder` loads a UI description from XML (`.ui` files, GNOME's `.blp` Blueprint language compiles to the same format), creating and linking the described widgets:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <template class="MyWindow" parent="GtkApplicationWindow">
+    <child>
+      <object class="GtkBox" id="main_box">
+        <property name="orientation">vertical</property>
+        <child>
+          <object class="GtkLabel" id="title_label">
+            <property name="label" translatable="yes">Hello</property>
+          </object>
+        </child>
+      </object>
+    </child>
+  </template>
+</interface>
+```
+
+Composite widget templates are declared in class-init and linked to instance members automatically:
+
+```c
+static void my_window_class_init (MyWindowClass *klass) {
+    gtk_widget_class_set_template_from_resource (
+        GTK_WIDGET_CLASS (klass), "/com/example/my-window.ui");
+    gtk_widget_class_bind_template_child (
+        GTK_WIDGET_CLASS (klass), MyWindow, title_label);
+}
+```
+
+After `gtk_widget_init_template(self)` in instance-init, `self->title_label` is set to the live widget. [Source](https://docs.gtk.org/gtk4/class.Builder.html)
+
+### 7.4 Gestures and Input Controllers
+
+GTK4 replaces the monolithic `GtkEventBox` pattern with composable **event controllers** attached to any widget:
+
+```c
+/* Click gesture: primary/secondary button, double-click */
+GtkGesture *click = gtk_gesture_click_new ();
+gtk_gesture_single_set_button (GTK_GESTURE_SINGLE (click), GDK_BUTTON_PRIMARY);
+g_signal_connect (click, "pressed", G_CALLBACK (on_pressed), widget);
+gtk_widget_add_controller (widget, GTK_EVENT_CONTROLLER (click));
+
+/* Drag gesture: threshold distance before drag starts */
+GtkGesture *drag = gtk_gesture_drag_new ();
+g_signal_connect (drag, "drag-update", G_CALLBACK (on_drag), widget);
+gtk_widget_add_controller (widget, GTK_EVENT_CONTROLLER (drag));
+
+/* Key events */
+GtkEventController *key = gtk_event_controller_key_new ();
+g_signal_connect (key, "key-pressed", G_CALLBACK (on_key), widget);
+gtk_widget_add_controller (widget, key);
+```
+
+Swipe, zoom (pinch), and rotation gestures are `GtkGestureSwipe`, `GtkGestureZoom`, and `GtkGestureRotate`. Scroll events are `GtkEventControllerScroll`. Focus tracking uses `GtkEventControllerFocus`. [Source](https://docs.gtk.org/gtk4/class.EventController.html)
+
+### 7.5 Drag and Drop
+
+GTK4's drag-and-drop uses `GtkDragSource` and `GtkDropTarget` controllers:
+
+```c
+/* Drag source: attach a GdkContentProvider with the data to drag */
+GtkDragSource *src = gtk_drag_source_new ();
+gtk_drag_source_set_content (src, gdk_content_provider_new_typed (
+    G_TYPE_STRING, "dragged text"));
+gtk_drag_source_set_icon (src, gdk_paintable, hot_x, hot_y);
+gtk_widget_add_controller (widget, GTK_EVENT_CONTROLLER (src));
+
+/* Drop target: specify accepted types */
+GtkDropTarget *dst = gtk_drop_target_new (G_TYPE_STRING, GDK_ACTION_COPY);
+g_signal_connect (dst, "drop", G_CALLBACK (on_drop), NULL);
+gtk_widget_add_controller (target_widget, GTK_EVENT_CONTROLLER (dst));
+
+static gboolean on_drop (GtkDropTarget *tgt, const GValue *value,
+                         double x, double y, gpointer data) {
+    g_print ("Dropped: %s\n", g_value_get_string (value));
+    return TRUE;
+}
+```
+
+The `GdkContentProvider` / `GdkContentFormats` type system ensures type-safe, asynchronous data transfer, including cross-application X11 and Wayland drag-and-drop. [Source](https://docs.gtk.org/gtk4/class.DragSource.html)
+
+---
+
+## 8. libadwaita: GNOME HIG Adaptive Widgets
 
 **libadwaita** (`libadwaita-1`) is the official implementation of the GNOME Human Interface Guidelines on top of GTK4. Where GTK4 supplies the rendering engine, libadwaita adds HIG-conformant widgets, a colour-scheme system, a physics-based animation framework, and adaptive layout. Every libadwaita widget is a `GtkWidget` subclass and renders through the ordinary `GtkSnapshot → GskRenderNode → GskRenderer` pipeline — there is no libadwaita-specific GPU code. [Source](https://gnome.pages.gitlab.gnome.org/libadwaita/)
 
@@ -614,7 +754,7 @@ graph TD
 
 ---
 
-## 8. The GObject Type System
+## 9. The GObject Type System
 
 Every GTK4 type — `GtkWidget`, `GskRenderer`, `GdkTexture`, `AdwApplication` — is a **GObject**. GObject is GLib's runtime type system: single inheritance, interfaces, properties, and signals for C, with no preprocessor step. Understanding it is required to read GTK internals, write custom widgets, or use the language bindings. [Source](https://docs.gtk.org/gobject/)
 
@@ -734,7 +874,236 @@ fn main() {
 
 ---
 
-## 9. WebKitGTK: Embedding Web Content
+## 10. GLib: The Foundation Library
+
+**GLib** is the C utility library underlying GTK and GObject. It provides the event loop, async task model, data structures, and type-safe value boxing used throughout the GTK stack. [Source](https://docs.gtk.org/glib/)
+
+### 10.1 Event Loop: GMainLoop and GMainContext
+
+```c
+/* A standalone GLib event loop (GTK creates one automatically) */
+GMainContext *ctx  = g_main_context_new ();
+GMainLoop    *loop = g_main_loop_new (ctx, FALSE);
+
+/* Attach a one-shot idle source */
+GSource *idle = g_idle_source_new ();
+g_source_set_callback (idle, run_once_cb, loop, NULL);
+g_source_attach (idle, ctx);
+g_source_unref (idle);
+
+g_main_loop_run (loop);   /* blocks until g_main_loop_quit() */
+```
+
+`GMainContext` holds a set of `GSource` objects (idle, timeout, file-descriptor, child-watch). GTK's `GdkFrameClock` is built on top. Per-thread contexts allow library code to have its own loop without interfering with the application's: `g_main_context_push_thread_default(ctx)` makes `ctx` the default for the calling thread. [Source](https://docs.gtk.org/glib/class.MainLoop.html)
+
+### 10.2 Async Work: GTask
+
+`GTask` models a single asynchronous operation with a clear caller / worker / completer pattern. The worker runs in a thread pool (or a custom thread); the result is delivered on the caller's `GMainContext`:
+
+```c
+/* Caller: start the async work */
+GTask *task = g_task_new (source_object, cancellable, on_done, user_data);
+g_task_set_task_data (task, g_strdup (path), g_free);
+g_task_run_in_thread (task, load_file_thread);
+g_object_unref (task);
+
+/* Worker: runs in a GLib thread-pool thread */
+static void load_file_thread (GTask *t, gpointer src, gpointer data,
+                               GCancellable *cancel) {
+    char *path = data;
+    GError *err = NULL;
+    char *contents = NULL;
+    gsize len;
+    if (!g_file_get_contents (path, &contents, &len, &err))
+        g_task_return_error (t, err);
+    else
+        g_task_return_pointer (t, contents, g_free);
+}
+
+/* Completion: called on the GMainContext of the GTask's creator */
+static void on_done (GObject *src, GAsyncResult *res, gpointer data) {
+    GError *err = NULL;
+    char *text = g_task_propagate_pointer (G_TASK (res), &err);
+    if (err) { g_warning ("%s", err->message); g_error_free (err); return; }
+    use_text (text);
+    g_free (text);
+}
+```
+
+`GCancellable` propagates cancellation across the entire async call chain; check `g_task_return_error_if_cancelled()` in the worker. [Source](https://docs.gtk.org/gio/class.Task.html)
+
+### 10.3 Type-Safe Values: GVariant
+
+`GVariant` is GLib's dynamically-typed, immutable value type, used as the wire format for D-Bus messages and GSettings values. Format strings encode the type:
+
+```c
+/* Build a GVariant dict of string→variant */
+GVariantBuilder b;
+g_variant_builder_init (&b, G_VARIANT_TYPE ("a{sv}"));
+g_variant_builder_add  (&b, "{sv}", "name",    g_variant_new_string ("example"));
+g_variant_builder_add  (&b, "{sv}", "count",   g_variant_new_uint32 (42));
+g_variant_builder_add  (&b, "{sv}", "enabled", g_variant_new_boolean (TRUE));
+GVariant *dict = g_variant_builder_end (&b);
+
+/* Access */
+const char *name;
+guint32 count;
+g_variant_lookup (dict, "name",  "&s", &name);   /* borrows the string */
+g_variant_lookup (dict, "count", "u",  &count);
+g_variant_unref (dict);
+```
+
+Common format strings: `s` (string), `u` (uint32), `i` (int32), `b` (boolean), `t` (uint64), `d` (double), `v` (variant), `a{sv}` (dict of string→variant), `(ii)` (tuple). [Source](https://docs.gtk.org/glib/struct.Variant.html)
+
+### 10.4 Process Spawning and Utilities
+
+`GSubprocess` wraps `fork`/`exec` with a clean GLib-async API:
+
+```c
+GError *err = NULL;
+GSubprocess *proc = g_subprocess_new (
+    G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE,
+    &err, "ls", "-la", "/tmp", NULL);
+g_subprocess_communicate_utf8_async (proc, NULL, NULL, on_ls_done, NULL);
+```
+
+Data containers: `GHashTable` (open addressing, configurable hash/equal/free functions), `GList`/`GSList` (doubly/singly linked), `GQueue` (double-ended queue), `GArray`/`GPtrArray`/`GByteArray` (typed growable arrays), `GBytes` (immutable reference-counted byte array), `GString` (mutable string builder). Regex: `GRegex` (PCRE2). Date/time: `GDateTime` (timezone-aware, gregorian), `GDate` (calendar-only). [Source](https://docs.gtk.org/glib/)
+
+---
+
+## 11. GIO: Files, Settings, and D-Bus
+
+**GIO** is GLib's I/O and system-services library — file access, settings storage, D-Bus, and network. Everything is async-first with `GCancellable`/`GAsyncResult`. [Source](https://docs.gtk.org/gio/)
+
+### 11.1 GFile: Async File I/O
+
+`GFile` is the central file/URI abstraction. It is a `GInterface`, not a class; the same API backs local files, SFTP, MTP, GVfs virtual filesystems, and GNOME's trash:
+
+```c
+GFile *f = g_file_new_for_path ("/home/user/notes.txt");
+
+/* Async load */
+g_file_load_contents_async (f, NULL, on_loaded, NULL);
+
+static void on_loaded (GObject *src, GAsyncResult *res, gpointer data) {
+    char *text; gsize len;
+    g_file_load_contents_finish (G_FILE (src), res, &text, &len, NULL, NULL);
+    use (text, len); g_free (text);
+}
+
+/* Watch for changes */
+GFileMonitor *mon = g_file_monitor_file (f, G_FILE_MONITOR_NONE, NULL, NULL);
+g_signal_connect (mon, "changed", G_CALLBACK (on_changed), NULL);
+```
+
+`g_file_replace_contents_async()` writes atomically (temp file + rename). [Source](https://docs.gtk.org/gio/iface.File.html)
+
+### 11.2 GSettings: Schema-Based Configuration
+
+`GSettings` provides type-safe, schema-validated application settings backed by `dconf` (the GNOME configuration database):
+
+```c
+/* Requires a compiled .gschema.xml installed under $XDG_DATA_DIRS/glib-2.0/schemas/ */
+GSettings *s = g_settings_new ("com.example.myapp");
+
+/* Typed read */
+gint max_items = g_settings_get_int (s, "max-items");
+
+/* Bind to a GObject property: two-way, auto-sync */
+g_settings_bind (s, "show-toolbar",
+                 toolbar, "visible",
+                 G_SETTINGS_BIND_DEFAULT);
+
+/* Watch for external changes */
+g_signal_connect (s, "changed::max-items",
+                  G_CALLBACK (on_max_items_changed), NULL);
+```
+
+Schema files use `glib-compile-schemas` (run as part of package install) and live under `share/glib-2.0/schemas/`. Relocatable schemas allow per-instance settings (e.g. per-account configs). `gsettings get/set/reset/list-keys` inspects settings from the CLI. [Source](https://docs.gtk.org/gio/class.Settings.html)
+
+### 11.3 GDBusConnection: D-Bus Integration
+
+```c
+/* Call a D-Bus method asynchronously */
+GDBusConnection *bus = g_bus_get_sync (G_BUS_TYPE_SESSION, NULL, NULL);
+
+g_dbus_connection_call (bus,
+    "org.freedesktop.portal.Desktop",         /* bus name */
+    "/org/freedesktop/portal/desktop",        /* object path */
+    "org.freedesktop.portal.OpenURI",         /* interface */
+    "OpenURI",                                /* method */
+    g_variant_new ("(ssa{sv})", "", "https://gnome.org/", NULL),
+    G_VARIANT_TYPE ("(u)"), G_DBUS_CALL_FLAGS_NONE, -1,
+    NULL, on_portal_done, NULL);
+
+/* Export an object */
+GDBusNodeInfo *introspection =
+    g_dbus_node_info_new_for_xml (my_introspection_xml, NULL);
+g_dbus_connection_register_object (bus, "/com/example/obj",
+    introspection->interfaces[0], &vtable, self, NULL, NULL);
+```
+
+`GDBusProxy` simplifies method calls and signal subscriptions on a known interface, auto-generating wrapper methods from the D-Bus introspection XML. `g_bus_own_name()` / `g_bus_watch_name()` handle service name ownership and watching. [Source](https://docs.gtk.org/gio/class.DBusConnection.html)
+
+### 11.4 GNetworkMonitor and GVfs
+
+`GNetworkMonitor` emits `network-changed` when connectivity changes and provides `g_network_monitor_get_connectivity()` (values: `NONE`, `LOCAL`, `LIMITED`, `FULL`). `GResolver` handles async DNS (`g_resolver_lookup_by_name_async()`).
+
+`GVfs` exposes virtual filesystems through the same `GFile` API: `GMount`/`GVolume`/`GDrive` for removable storage (automount via udisks); `trash:///` for the FreeDesktop trash; `sftp://`, `ftp://`, `smb://` via gvfs daemon backends. `GMountOperation` provides the authentication dialog callbacks. [Source](https://docs.gtk.org/gio/class.Vfs.html)
+
+---
+
+## 12. Language Bindings
+
+The GObject type system (§9) and GObject Introspection generate typelibs consumed by language bindings. The three primary bindings for GTK4 are already demonstrated in §9 (Python/PyGObject, JavaScript/GJS, Rust/gtk4-rs). This section adds notes on async patterns and Rust subclassing.
+
+**PyGObject async with GLib.** GLib's main loop integrates with Python's `asyncio` via `gbulb` or `GLib.idle_add()`:
+
+```python
+from gi.repository import GLib, Gio
+
+def load_file_async(path, callback):
+    f = Gio.File.new_for_path(path)
+    f.load_contents_async(None, lambda src, res: callback(
+        src.load_contents_finish(res)[1].decode()))
+
+load_file_async("/etc/hostname", lambda text: print("hostname:", text.strip()))
+GLib.MainLoop().run()
+```
+
+**gtk4-rs subclassing.** The `glib::subclass` module enables defining new GObject types in Rust with full trait dispatch:
+
+```rust
+use gtk4::glib;
+use gtk4::subclass::prelude::*;
+
+#[derive(Default)]
+pub struct MeterWidget { fraction: std::cell::Cell<f64> }
+
+#[glib::object_subclass]
+impl ObjectSubclass for MeterWidget {
+    const NAME: &'static str = "MeterWidget";
+    type Type = super::MeterWidget;
+    type ParentType = gtk4::Widget;
+}
+impl ObjectImpl for MeterWidget {}
+impl WidgetImpl for MeterWidget {
+    fn snapshot(&self, snapshot: &gtk4::Snapshot) {
+        let w = self.obj().width() as f32;
+        let h = self.obj().height() as f32;
+        let frac = self.fraction.get() as f32;
+        snapshot.append_color(
+            &gdk4::RGBA::new(0.2, 0.55, 0.95, 1.0),
+            &graphene::Rect::new(0.0, 0.0, w * frac, h));
+    }
+}
+```
+
+The `#[glib::object_subclass]` macro generates the `get_type()` function; `ObjectImpl`/`WidgetImpl` traits map to the GObject class-init vtable. [Source](https://gtk-rs.org/gtk4-rs/stable/latest/docs/gtk4/index.html)
+
+---
+
+## 13. WebKitGTK: Embedding Web Content
 
 **WebKitGTK** is the GTK port of the WebKit engine — the primary way to embed live HTML/CSS/JavaScript in a native GTK application. Its consumers include GNOME Web (Epiphany), Geary, Evolution, and Tauri's Linux backend (Ch193). From GTK4's perspective the `WebKitWebView` is an ordinary `GtkWidget`; behind it sits a full multi-process browser with its own GPU compositor.
 
@@ -769,7 +1138,7 @@ webkit_web_view_load_uri (view, "https://gnome.org/");
 
 ---
 
-## 10. Font and Text Rendering
+## 14. Font and Text Rendering
 
 GTK4 routes all text through **Pango**, which layers over the shared FreeType/HarfBuzz/Fontconfig stack covered in depth in Ch105. The pipeline for a paragraph:
 
@@ -797,7 +1166,7 @@ graph LR
 
 ---
 
-## 11. Performance and Debugging
+## 15. Performance and Debugging
 
 GTK4's render pipeline is unusually observable, because the node tree is a first-class serialisable object and every stage is gated behind a debug flag.
 
@@ -822,7 +1191,7 @@ GDK_DEBUG=dmabuf,vulkan myapp         # trace dmabuf import and Vulkan surface s
 
 ---
 
-## 12. Integrations
+## 16. Integrations
 
 - **Ch2 (KMS Atomic API and Overlay Planes)** — `GskSubsurfaceNode` (§4.6) drives `wl_subsurface` promotion to KMS overlay planes via `TEST_ONLY` atomic commits, the same zero-copy scanout mechanism used for video and terminal graphics.
 - **Ch4 (GPU Memory Management)** — the GEM/DMA-BUF/GBM and DRM-format-modifier primitives; `GdkDmabufTextureBuilder` (§6.4) imports GBM-allocated dmabufs and negotiates modifiers, and the WebKit content process (§9) exports frames the same way.
@@ -865,3 +1234,18 @@ GDK_DEBUG=dmabuf,vulkan myapp         # trace dmabuf import and Vulkan surface s
 - GJS — https://gjs.guide/
 - gtk4-rs — https://gtk-rs.org/
 - GTK source — https://gitlab.gnome.org/GNOME/gtk
+- GLib API reference — https://docs.gtk.org/glib/
+- GMainLoop — https://docs.gtk.org/glib/class.MainLoop.html
+- GVariant — https://docs.gtk.org/glib/struct.Variant.html
+- GIO API reference — https://docs.gtk.org/gio/
+- GTask — https://docs.gtk.org/gio/class.Task.html
+- GFile — https://docs.gtk.org/gio/iface.File.html
+- GSettings — https://docs.gtk.org/gio/class.Settings.html
+- GDBusConnection — https://docs.gtk.org/gio/class.DBusConnection.html
+- GVfs — https://docs.gtk.org/gio/class.Vfs.html
+- GtkWidget — https://docs.gtk.org/gtk4/class.Widget.html
+- GtkListView — https://docs.gtk.org/gtk4/class.ListView.html
+- GtkBuilder — https://docs.gtk.org/gtk4/class.Builder.html
+- GtkDragSource — https://docs.gtk.org/gtk4/class.DragSource.html
+- GtkEventController — https://docs.gtk.org/gtk4/class.EventController.html
+- gtk4-rs (Rust bindings) — https://gtk-rs.org/gtk4-rs/stable/latest/docs/gtk4/index.html
