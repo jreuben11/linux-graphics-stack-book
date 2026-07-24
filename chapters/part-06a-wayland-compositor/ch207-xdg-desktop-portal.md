@@ -28,6 +28,7 @@ As of mid-2026, xdg-desktop-portal **1.22.1** is the current stable release (202
 - [14. PipeWire Integration: OpenPipeWireRemote](#14-pipewire-integration-openpipewireremote)
 - [15. Backend Implementations](#15-backend-implementations)
 - [16. Security Model and CVEs](#16-security-model-and-cves)
+- [17. Roadmap](#17-roadmap)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -1176,6 +1177,83 @@ gdbus call --session \
     --method org.freedesktop.impl.portal.PermissionStore.List \
     camera
 ```
+
+---
+
+## 17. Roadmap
+
+This section tracks active development work and open proposals as of mid-2026. Status labels: **open PR** (merged to `main` not yet released), **draft PR** (work in progress, not ready for review), **discussion** (no code yet), **merged** (shipped in a release).
+
+### 17.1 Versioning Scheme — major.minor
+
+The current odd/even minor-version convention (odd = unstable, even = stable) will be dropped. PR [#2042](https://github.com/flatpak/xdg-desktop-portal/pull/2042) proposes renaming to a `YY.N` calendar-version scheme; the release after 1.22 would be `23.0`. The rationale is that GNOME OS nightly already ships from `main`, distros ship "unstable" releases anyway, and the convention adds friction without delivering isolation. **Status: open PR** (2026-06-23).
+
+### 17.2 Interface Versioning RFC
+
+Currently, breaking changes to a portal interface require a new `version` property increment and careful backwards-compat shims. PR [#1964](https://github.com/flatpak/xdg-desktop-portal/pull/1964) proposes major-version suffixes on D-Bus interface names (e.g. `org.freedesktop.portal.Camera2`) paired with an `active-revision` property carrying minor-version semantics. This would allow old and new interface versions to coexist during transition periods without a flag day. **Status: open RFC PR** (2026-04-10); maintainer consensus not yet reached.
+
+### 17.3 ScreenCast — Audio Stream Support
+
+PR [#1993](https://github.com/flatpak/xdg-desktop-portal/pull/1993) extends `org.freedesktop.portal.ScreenCast` (bumping to interface version 6) with simultaneous audio capture. `SelectSources()` gains a boolean `audio` option; `Start()` may return multiple PipeWire streams tagged with a `media_type` property (`"video"` or `"audio"`). Backends older than v6 have the option stripped transparently. The audio stream appears as a PipeWire node alongside the existing video node; the caller connects to it via the same `OpenPipeWireRemote` fd. **Status: open PR** (2026-05-04); blocked on backend implementation in xdg-desktop-portal-gnome and xdg-desktop-portal-kde.
+
+### 17.4 WirePlumber Native Integration
+
+The xdp daemon currently embeds its own PipeWire modules to manage stream permissions and camera node monitoring. The ongoing work moves this policy entirely into WirePlumber: a WirePlumber plugin handles camera monitoring, metadata, and cross-owner stream link permissions (`PW_PERM_L`), while xdp becomes a pure D-Bus frontend. The ScreenCast side of this migration merged during the 1.22 development cycle. Active PRs cover the metadata system and camera monitoring migration: [#2070](https://github.com/flatpak/xdg-desktop-portal/pull/2070) (draft, 2026-07-21) and [#2072](https://github.com/flatpak/xdg-desktop-portal/pull/2072) (open, 2026-07-22). Long-term this eliminates xdp's direct PipeWire manipulation entirely.
+
+### 17.5 Async Portal Implementation with libdex
+
+PR [#2036](https://github.com/flatpak/xdg-desktop-portal/pull/2036) adds infrastructure to implement portal handlers using libdex (the GNOME async I/O / Future library), enabling non-blocking I/O throughout the xdp daemon. PR [#1855](https://github.com/flatpak/xdg-desktop-portal/pull/1855) (draft) then ports individual portal implementations to use libdex. The motivation is eliminating GLib main-loop stalls on slow D-Bus round-trips to backends. **Status: #2036 open PR**; #1855 draft, blocked on #2036.
+
+### 17.6 New Portal: Speech (Text-to-Speech)
+
+PR [#1690](https://github.com/flatpak/xdg-desktop-portal/pull/1690) proposes `org.freedesktop.portal.Speech` with two methods: `GetProviders()` (list available TTS engines via libspiel) and `Synthesize()` (stream audio via a file descriptor). The portal relies on libspiel for provider discovery, avoiding reimplementation of the provider enumeration protocol. An API design question — whether to expose a flat voice list or the full provider/voice hierarchy — is still open. **Status: open PR** (2025-04-03, last updated 2026-02-07).
+
+### 17.7 New Portal: Session Save/Restore
+
+Draft PR [#1818](https://github.com/flatpak/xdg-desktop-portal/pull/1818) proposes a portal for applications to save and restore window state across compositor crashes and OS updates, reducing disruption from security reboots. The companion backend MR exists in gnome-session (MR#162) and a GTK client implementation is in progress (GTK MR#8980). **Status: draft PR** (2025-09-25); portal API design not yet finalised.
+
+### 17.8 New Portal: Proxy Configuration
+
+PR [#1828](https://github.com/flatpak/xdg-desktop-portal/pull/1828) adds a `Proxy` backend interface so GNOME and KDE backends can expose system proxy configuration to sandboxed apps. libproxy would consume this portal as its discovery mechanism, replacing the current `gsettings` / KConfig direct reads that fail inside strict sandboxes. **Status: open PR** (2025-10-05, last updated 2026-06-22).
+
+### 17.9 New Portal: FileAccess (Runtime Path Request)
+
+Draft PR [#1737](https://github.com/flatpak/xdg-desktop-portal/pull/1737) adds a third file-access mechanism beyond `--filesystem` manifest flags and `FileChooser`. A sandboxed app can request access to a specific known path at runtime via a yes/no user prompt; approval grants access through the document store. Target use cases: `~/.steam/steam/config/libraryfolders.vdf`, `/usr/share/applications/`. Missing: permission persistence, XDG directory handling. **Status: draft PR** (2025-06-10).
+
+### 17.10 New Portal: Credentials (Experimental)
+
+PR [#1889](https://github.com/flatpak/xdg-desktop-portal/pull/1889) introduces an experimental `org.freedesktop.portal.Credentials` portal for credential storage and retrieval, gated behind `XDG_DESKTOP_PORTAL_ENABLE_EXPERIMENTAL`. The interface design is not finalised: a `DiscoverCredential(services as)` method, mock backend, and unit tests are all missing. This work is related to the broader experimental-portal infrastructure being discussed in issue [#2066](https://github.com/flatpak/xdg-desktop-portal/issues/2066). **Status: open WIP PR** (2026-01-23).
+
+### 17.11 New Portal: App-to-App ScreenCast
+
+Draft PR [#1554](https://github.com/flatpak/xdg-desktop-portal/pull/1554) proposes a `ScreenCastProvider` mechanism allowing applications to share their own DMA-BUF surfaces to other applications without video encoding. The sharing path uses P2P D-Bus between provider and portal, with WirePlumber granting `PW_PERM_L` for cross-owner node linking. This would enable e.g. a game streaming server to share its rendered framebuffer directly to a client app without a CPU copy. **Status: draft PR** (2025-01-05); WirePlumber Lua policy script and DMA-BUF integration issues noted.
+
+### 17.12 Settings Portal Extensions
+
+Two additions to `org.freedesktop.portal.Settings` are in progress:
+
+- **Cursor theme** ([PR #1539](https://github.com/flatpak/xdg-desktop-portal/pull/1539)): `cursor-theme` and `cursor-theme-size` keys, enabling sandboxed apps to load the correct cursor theme from the host without filesystem access to `~/.icons`. **Status: open PR** (2024-12-xx).
+- **Button placement** ([PR #1821](https://github.com/flatpak/xdg-desktop-portal/pull/1821)): `button-placement` key exposing the GNOME/KDE window button order preference. **Status: draft PR** (2025-09-xx).
+
+Both require backend implementations in xdg-desktop-portal-gnome and xdg-desktop-portal-kde. For reference, `accent-color` shipped in 1.17.1 and `reduced-motion` shipped in 1.21.0.
+
+### 17.13 Transient Permission Expiry
+
+Screen-cast and remote-desktop sessions create "transient" permissions that currently persist indefinitely in the permission store. Draft PR [#990](https://github.com/flatpak/xdg-desktop-portal/pull/990) proposes automatically discarding them after 24 hours, preventing silent re-use of a screen-share grant across reboots. Related issues: [#325](https://github.com/flatpak/xdg-desktop-portal/issues/325), [#981](https://github.com/flatpak/xdg-desktop-portal/issues/981). **Status: draft PR** (open since 2023-03-23); policy decision on timeout value not yet reached.
+
+### 17.14 InputCapture — KDE and wlroots Backends
+
+The `org.freedesktop.portal.InputCapture` interface (version 2, with `CreateSession2`) is implemented in the GNOME backend (via Mutter MR#2628 and the RemoteDesktop `ConnectToEIS` path). KDE Plasma support is tracked in [xdg-desktop-portal-kde issue #12](https://invent.kde.org/plasma/xdg-desktop-portal-kde/-/issues/12) — not yet implemented as of mid-2026, pending KWin-side EIS support. xdg-desktop-portal-wlr is in maintenance mode and unlikely to gain InputCapture; wlroots-based compositors are expected to implement it in their own backends (Hyprland, niri, etc.) as EIS support lands in the compositor.
+
+### 17.15 Portals Considered but Not Started
+
+Several commonly requested capabilities have open issues but no active implementation:
+
+- **hidraw portal** ([#611](https://github.com/flatpak/xdg-desktop-portal/issues/611)): requires `HIDIOCREVOKE` kernel ioctl, scheduled for Linux 6.12 (Sep 2024); no portal PR yet.
+- **USB serial port portal** ([#229](https://github.com/flatpak/xdg-desktop-portal/issues/229)): open since 2018, body reads "TBD".
+- **MIDI portal**: no dedicated issue; software MIDI via PipeWire is not addressed by any portal; USB MIDI hardware access goes through the existing USB portal (merged 1.19.1, January 2025).
+- **Background portal graceful termination** ([#975](https://github.com/flatpak/xdg-desktop-portal/issues/975)): open since 2023, no PR.
+- **Password manager portal** ([discussion #2061](https://github.com/flatpak/xdg-desktop-portal/discussions/2061), July 2026): early design discussion only.
 
 ---
 
