@@ -79,6 +79,7 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 39d: GNOME Shell, Mutter, and the GNOME Extension Model](#chapter-39d-gnome-shell-mutter-and-the-gnome-extension-model)
   - [Chapter 39e: iced — A Pure-Rust UI Framework](#chapter-39e-iced--a-pure-rust-ui-framework)
   - [Chapter 39f: libcosmic and the COSMIC Desktop](#chapter-39f-libcosmic-and-the-cosmic-desktop)
+  - [Chapter 39g: Flutter on Linux — Impeller, the Dart Runtime, and Native Embedding](#chapter-39g-flutter-on-linux--impeller-the-dart-runtime-and-native-embedding)
 - **Part VIII — Gaming Layer**
   - [Chapter 28: Windows Compatibility](#chapter-28-windows-compatibility)
   - [Chapter 29: Upscaling, Effects & Overlays](#chapter-29-upscaling-effects--overlays)
@@ -934,6 +935,11 @@ This chapter covers the wave of staging protocols that reached compositor implem
 - **Scope**: COSMIC desktop stack — smithay-based compositor (cosmic-comp), libcosmic widget library (iced superset with CosmicWidget, CosmicTheme, cosmic-config RON files, LayerShell surfaces), CosmicTheme (semantic color tokens, palette generation), COSMIC settings daemon, cosmic-panel, cosmic-dock; pure-Rust architecture (no GTK, no Qt dependency); XWayland integration; COSMIC app ecosystem; comparison table COSMIC vs GNOME vs KDE vs elementary OS vs Budgie; deployment on Pop!_OS and other distributions; `iced_sctk` fork (pop-os/libcosmic, not upstream iced); cosmic-text (text rendering in COSMIC)
 - **Key types**: `CosmicWidget`, `CosmicTheme`, `CosmicButton`, `cosmic_config::Config`, `LayerShellSettings`, `CosmicApplication`
 - **Integrations**: Ch39e (iced — libcosmic is built on iced), Ch21 (wlroots vs. smithay for compositor implementation), Ch40 (wgpu — COSMIC rendering backend), Ch39a (Qt6 comparison for application portability)
+
+### Chapter 39g: Flutter on Linux — Impeller, the Dart Runtime, and Native Embedding *(Part VII-C)*
+- **Scope**: Flutter's three-layer architecture (Dart framework, C++ engine, C embedder); the Dart VM — JIT kernel snapshot vs. AOT gen_snapshot; Dart isolates and the two-queue event loop; the official GTK Linux embedder (`flutter_linux_gtk`, GDK Wayland backend) and the community `flutter-elinux` Wayland-direct/GBM embedder (Sony); **Impeller** renderer — EntityPass, Pipeline cache, pre-compiled SPIR-V build pipeline (GLSL → spirv-cross → embedded byte arrays); Impeller's Vulkan backend (VkSwapchainKHR, VkCommandBuffer, VK_KHR_dynamic_rendering, VK_KHR_wayland_surface); the widget-to-GPU rendering pipeline (Widget → Element → RenderObject → LayerTree → EntityPass); platform channels (MethodChannel, EventChannel, dart:ffi); LibTxt text engine (HarfBuzz shaping, FreeType rasterization, glyph atlas); Material 3 theming (ColorScheme.fromSeed, HCT colour space); Linux build system (CMake, `flutter build linux --release`); packaging (Snap, AppImage, Flatpak); profiling (Flutter DevTools timeline, RenderDoc, Dart CPU profiler)
+- **Key types**: `FlutterEngine`, `EntityPass`, `Pipeline`, `PipelineLibrary`, `MethodChannel`, `EventChannel`, `Paragraph`, `ThemeData`, `ColorScheme`
+- **Integrations**: Ch18 (Mesa Vulkan — Impeller's VkDevice targets RADV/ANV/NVK); Ch20 (Wayland — `vkCreateWaylandSurfaceKHR`, explicit sync); Ch4 (DMA-BUF — flutter-elinux GBM backend); Ch39c (GTK4 — the official embedder uses GDK Wayland); Ch47 (font rendering — LibTxt uses HarfBuzz + FreeType); Ch39e/Ch39f (iced/COSMIC — comparison of Vulkan-renderer-based cross-platform toolkits)
 
 ---
 

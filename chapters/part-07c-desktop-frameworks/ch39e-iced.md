@@ -8,12 +8,16 @@
 
 - [Overview](#overview)
 - [1. iced Architecture: The Elm Model](#1-iced-architecture-the-elm-model)
+  - [1.6 What is iced?](#16-what-is-iced)
+  - [1.7 What is the Elm Architecture?](#17-what-is-the-elm-architecture)
+  - [1.8 What is wgpu?](#18-what-is-wgpu)
 - [2. Widget System](#2-widget-system)
 - [3. wgpu Rendering Backend](#3-wgpu-rendering-backend)
 - [4. Wayland Integration: winit, iced_layershell, and iced_sctk](#4-wayland-integration-winit-iced_layershell-and-iced_sctk)
 - [5. Custom GPU Shaders in iced](#5-custom-gpu-shaders-in-iced)
 - [6. Theming and Styling](#6-theming-and-styling)
 - [7. Async Programming and the Runtime](#7-async-programming-and-the-runtime)
+  - [7.4 Animation with Time Subscriptions](#74-animation-with-time-subscriptions)
 - [8. Accessibility](#8-accessibility)
 - [9. Performance and Debugging](#9-performance-and-debugging)
 - [Integrations](#integrations)
@@ -174,6 +178,30 @@ The `iced` crate a user depends on is a thin **facade** re-exporting a workspace
 - **`iced_graphics`** — backend-agnostic geometry, the layer/mesh abstractions, and text infrastructure shared by both backends.
 - **`iced_widget`** — the built-in widget library (`button`, `text`, `text_input`, `scrollable`, `canvas`, `shader`, …).
 - **`iced_winit`** — the native shell: a **winit 0.30** event loop, surface creation, and clipboard integration.[^winit-deps]
+
+### 1.6 What is iced?
+
+iced is a cross-platform GUI library for Rust that follows the Elm Architecture pattern to build native desktop applications. It renders through wgpu, a Rust implementation of the WebGPU API that provides a safe, portable abstraction over Vulkan, Direct3D 12, Metal, and OpenGL ES. On Linux, wgpu dispatches to Mesa's Vulkan drivers — RADV for AMD hardware, ANV for Intel, and NVK for NVIDIA — before presenting through DRM/KMS kernel interfaces.
+
+Unlike classical retained-mode toolkits such as GTK or Qt, iced does not maintain a persistent mutable widget tree. Instead, the `view` function rebuilds a description of the interface from application state on every state change, and the runtime reconciles this description against internal widget state to produce minimal GPU commands. This hybrid approach gives the programmer the simplicity of immediate-mode thinking while preserving per-widget state that enables smooth animations and incremental rendering.
+
+iced's crate structure reflects a deliberate separation of concerns: `iced_core` holds foundational types with no runtime dependencies, `iced_runtime` implements the Elm loop, and `iced_wgpu` and `iced_tiny_skia` provide GPU and CPU backends respectively. The `iced` crate itself is a thin facade re-exporting from this workspace. iced serves as the foundation of the System76 COSMIC desktop environment through the libcosmic library, making it the most widely deployed pure-Rust GUI toolkit in the Linux ecosystem at the time of writing.
+
+### 1.7 What is the Elm Architecture?
+
+The Elm Architecture is a unidirectional data flow pattern originating in the Elm programming language, a statically typed functional language that compiles to JavaScript for browser applications. The pattern structures an application around three components: a model that holds all application state as a plain value, an `update` function that transforms the model in response to messages, and a `view` function that derives a description of the UI purely from the current model. No mutation happens except through `update`; the view is a pure function with no side channels.
+
+This design has several consequences for correctness and reasoning. Because state is a single value, reasoning about the application at any point reduces to reasoning about that value. Because `view` is pure, the rendered interface is fully determined by state — there is no hidden widget state that can desynchronise from the model. Because all events flow through a single `Message` type, the set of things that can happen to the application is explicit and enumerable at compile time.
+
+In iced, the pattern is realised through the `update(&mut State, Message) -> Task<Message>` and `view(&State) -> Element<'_, Message>` function pair. The `Task` return type extends the pattern to cover asynchronous side effects — network requests, file I/O, timer subscriptions — without breaking the purity of `update` at the call site. The runtime drives the loop: it calls `view` when state changes, distributes events to widgets, collects the resulting messages, and calls `update` with each one in turn.
+
+### 1.8 What is wgpu?
+
+wgpu is a Rust library that implements the WebGPU API specification on native platforms, providing a safe abstraction over Vulkan, Direct3D 12, Metal, and OpenGL ES through a unified command-queue model. It is maintained under the gfx-rs organisation and serves as the GPU backend for Firefox's WebGPU implementation, the Bevy game engine (Chapter 40), and — as described in this chapter — the iced GUI toolkit.
+
+The WebGPU API models GPU work as a series of command buffers submitted to a queue. Resources — buffers, textures, bind groups, render pipelines — are created against a `Device`; commands are encoded into a `CommandEncoder`; and the resulting `CommandBuffer` is submitted to the `Queue`. On Linux with Vulkan drivers, wgpu translates these operations to Vulkan command buffers, descriptor sets, and pipeline objects, with the Mesa driver handling the final translation to hardware instructions.
+
+Within iced, wgpu provides the rendering surface for the `iced_wgpu` backend. The backend maintains a shared `Engine` that holds pipeline objects for four drawing primitives — quads (colored rectangles), text glyphs from the cosmic-text atlas, images and SVGs, and triangle meshes — and composes them into a frame. Custom shader widgets gain direct access to wgpu's `Device` and `Queue` through the `shader::Pipeline` trait, allowing application code to write arbitrary WGSL shaders while remaining within the iced render loop. iced 0.14 targets wgpu 27, which is the version used throughout this chapter.
 
 ---
 
@@ -742,6 +770,56 @@ The first emitted `Event::Ready` carries an `mpsc::Sender` the UI stores in its 
 ### 7.3 Tasks vs Subscriptions
 
 The distinction is lifetime. A **`Task`** is fire-and-forget: `update` returns it, it runs to completion, its results become messages, and it is gone. A **`Subscription`** is declarative and persistent: it exists for exactly as long as `subscription(&state)` keeps returning it, and the runtime starts/stops it by diffing. Use a `Task` for "load this file now"; use a `Subscription` for "watch this file for changes".
+
+### 7.4 Animation with Time Subscriptions
+
+Frame-rate animations are driven by `iced::time::every(duration)`, which yields a `Subscription<Instant>` that fires a message on each tick. The runtime merges these ticks into the event loop without busy-waiting — the subscription is backed by a `tokio::time::interval` on the async executor, not by a spin loop. A clock widget that redraws every second looks like:
+
+```rust
+use iced::widget::{canvas, text};
+use iced::{Element, Subscription, Task, Theme};
+use std::time::{Duration, Instant};
+
+#[derive(Default)]
+struct Clock {
+    now: Option<Instant>,
+}
+
+#[derive(Debug, Clone)]
+enum Message {
+    Tick(Instant),
+}
+
+fn update(state: &mut Clock, msg: Message) -> Task<Message> {
+    match msg {
+        Message::Tick(t) => state.now = Some(t),
+    }
+    Task::none()
+}
+
+fn view(state: &Clock) -> Element<'_, Message> {
+    // Render the time as text; swap for a canvas to draw clock hands.
+    let time = state.now
+        .map(|t| format!("{:?}", t.elapsed()))
+        .unwrap_or_else(|| "…".to_string());
+    text(time).size(24).into()
+}
+
+fn subscription(_state: &Clock) -> Subscription<Message> {
+    // Fire once per second; return Subscription::none() to stop animation.
+    iced::time::every(Duration::from_secs(1)).map(Message::Tick)
+}
+
+fn main() -> iced::Result {
+    iced::application("Clock", update, view)
+        .subscription(subscription)
+        .run()
+}
+```
+
+The subscription is re-evaluated after every `update` call. Returning `Subscription::none()` while animation is paused stops the interval; returning `iced::time::every(...)` again restarts it. The runtime diffs the returned subscriptions by type+parameters, so toggling a boolean in state is sufficient to start and stop frame-rate animations without explicitly managing timers.[^docs-sub]
+
+For smooth 60 fps animations, the same pattern applies with `Duration::from_nanos(16_666_667)`. However, this means iced calls `update` and `view` at the requested rate regardless of whether the output changed — it does not skip frames when the state is quiescent. Applications that need vsync-aligned delivery can instead use `iced::window::frames()`, a subscription that delivers one message per compositor frame event (via the platform's presentation feedback, exposed through winit on Wayland).[^releases] This is the correct choice for smooth animations that must stay in sync with the display refresh rate.
 
 ---
 

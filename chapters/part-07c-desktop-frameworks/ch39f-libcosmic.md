@@ -12,6 +12,9 @@
   - [1.2 Component Map](#12-component-map)
   - [1.3 A Pure-Rust Stack](#13-a-pure-rust-stack)
   - [1.4 Packaging and the COSMIC Store](#14-packaging-and-the-cosmic-store)
+  - [1.5 What is the COSMIC Desktop?](#15-what-is-the-cosmic-desktop)
+  - [1.6 What is libcosmic?](#16-what-is-libcosmic)
+  - [1.7 What is smithay?](#17-what-is-smithay)
 - [2. cosmic-comp: The Smithay-Based Compositor](#2-cosmic-comp-the-smithay-based-compositor)
   - [2.1 smithay: A Pure-Rust Wayland Server Library](#21-smithay-a-pure-rust-wayland-server-library)
   - [2.2 The DRM/KMS Backend](#22-the-drmkms-backend)
@@ -27,6 +30,7 @@
 - [4. The COSMIC Widget Library](#4-the-cosmic-widget-library)
 - [5. COSMIC Theming System](#5-cosmic-theming-system)
 - [6. Building a COSMIC Application](#6-building-a-cosmic-application)
+  - [6.5 Building a Panel Applet](#65-building-a-panel-applet)
 - [7. cosmic-settings: Anatomy of a Real COSMIC App](#7-cosmic-settings-anatomy-of-a-real-cosmic-app)
 - [8. XWayland and Legacy Application Support](#8-xwayland-and-legacy-application-support)
 - [9. Comparison: COSMIC vs GNOME vs KDE vs elementary](#9-comparison-cosmic-vs-gnome-vs-kde-vs-elementary)
@@ -111,6 +115,26 @@ This does not mean *zero* C: Mesa (the Vulkan/GLES driver stack), the kernel DRM
 ### 1.4 Packaging and the COSMIC Store
 
 COSMIC ships its own application store, `cosmic-store`, itself a libcosmic application. It is a front end over multiple packaging backends rather than a new package format: it aggregates Flatpak (Ch111) applications from Flathub, native distribution packages (`apt` on Pop!_OS), and AppStream metadata to present a unified catalogue with screenshots and descriptions. [Source](https://github.com/pop-os/cosmic-store) Because COSMIC applications are ordinary Wayland clients, they run unmodified under Flatpak sandboxing, using `xdg-desktop-portal` (Ch23) for file dialogs, screenshots, and camera access — the same portal path GTK and Qt applications use.
+
+### 1.5 What is the COSMIC Desktop?
+
+The COSMIC desktop environment is a complete graphical shell for Linux, developed by System76 as the default environment for Pop!_OS. Unlike most existing Linux desktops, which are built on C or C++ toolkit stacks (GTK for GNOME, Qt for KDE Plasma), COSMIC is designed from the ground up in Rust, with the compositor, widget library, and shell utilities sharing the same language and type system. COSMIC implements the Wayland display protocol: every application and shell component connects to the `cosmic-comp` Wayland compositor, and no X11 server is required for native sessions — X11 applications run through the XWayland compatibility layer, covered in §8.
+
+The desktop follows a standard compositor architecture. `cosmic-comp` acts as the Wayland server and KMS output manager, driving DRM scanout for connected displays (Ch2). The shell surfaces — panel, dock, applet overlays, and wallpaper — are implemented as Wayland clients connected to the compositor via the `wlr-layer-shell` protocol. Configuration state flows through the `cosmic-config` key-value store and `cosmic-settings-daemon`. Applications are ordinary `xdg-shell` Wayland clients, regardless of whether they use libcosmic, GTK, Qt, or another toolkit.
+
+COSMIC 1.0 (Epoch 1) shipped in December 2025 as the default desktop on Pop!_OS 24.04 LTS and is independently packaged for Fedora, Arch Linux, and NixOS. The component organization of a running COSMIC session is shown in §1.2.
+
+### 1.6 What is libcosmic?
+
+libcosmic is the Rust application framework and widget library that System76 provides for building COSMIC-native desktop applications and shell applets. It sits between the iced GUI toolkit (Ch39 §9) and the application developer: it adds the COSMIC design system (spacing constants, typography scales, icon handling), a configurable theme with light and dark modes, accessibility metadata, the `cosmic::Application` trait that unifies the entry point for both full applications and lightweight applets, and the `cosmic-config` library for persistent per-application key-value settings.
+
+A libcosmic program implements the `cosmic::Application` trait on a state struct, declares a `Settings` value specifying window geometry and application metadata, and calls `cosmic::app::run()`. libcosmic wraps iced's `Application` trait, intercepts the event loop, injects COSMIC window decorations and theming, and delegates layout and rendering to iced's existing machinery — the Elm-architecture model, the `iced_wgpu::Engine` for GPU-accelerated output, and the `tiny_skia` software fallback. The GPU rendering path therefore runs: libcosmic widget tree → iced primitive renderer → `wgpu` → Mesa Vulkan driver (Ch18). libcosmic's API is described fully in §3 and §4; the current API is representative of its shape but not yet declared stable.
+
+### 1.7 What is smithay?
+
+smithay is a Rust library of primitives for building Wayland server (compositor) implementations. It is not a binding to the C wlroots library; it is an independent implementation of the same problem domain — DRM/KMS atomic output management, GBM buffer allocation, EGL/GLES rendering, `libinput` event routing, and protocol dispatch for dozens of Wayland extensions — written natively in Rust. `cosmic-comp` uses smithay as infrastructure the same way Sway or Hyprland use wlroots: a collection of proven, composable building blocks that handles low-level plumbing while the compositor itself provides window-management policy (tiling layout, workspace model, panel placement).
+
+Two design decisions in smithay propagate through `cosmic-comp`. First, smithay is built around the `calloop` event loop, a single-threaded callback reactor: every event source (the Wayland socket, DRM device fds, `libinput` fd, timers) registers a callback that receives exclusive mutable access to the compositor's central state struct, eliminating lock contention on the compositor's hot path. Second, smithay uses a trait-based handler pattern: the compositor implements traits such as `CompositorHandler`, `XdgShellHandler`, and `SeatHandler` on its state type, and `delegate_*!` macros wire Wayland protocol dispatch to those trait implementations. Both decisions shape the `cosmic-comp` source structure described in §2.3.
 
 ---
 
@@ -644,6 +668,111 @@ impl Default for AppConfig {
 ### 6.4 Multi-Window Support
 
 With the `multi-window` feature enabled (COSMIC 1.0 ships multi-window support), an application can open additional top-level windows. Rather than one hidden global window, libcosmic tracks each window by id; `core.main_window_id()` returns the primary window, and title/geometry helpers take a window id (`set_window_title(title, window_id)`). Additional windows are opened by returning window-creation `Task`s from `update`, and each window's content is produced by a view keyed on the window id. [Source](https://github.com/pop-os/libcosmic/tree/master/examples/multi-window)
+
+### 6.5 Building a Panel Applet
+
+Panel applets are small libcosmic programs embedded in **`cosmic-panel`**, the desktop's top and/or bottom bars. They are ordinary libcosmic applications compiled with the `applet` feature flag, which switches several defaults: the windowing target becomes a `wlr-layer-shell` anchor surface (via `iced_sctk` / `iced_layershell`), the window is sized to match the panel height, and the framework provides a special `AppletHelper` for sizing and popup management. [Source](https://pop-os.github.io/libcosmic-book/panel-applets.html)
+
+#### Feature Flag and Cargo Setup
+
+```toml
+[dependencies.libcosmic]
+git = "https://github.com/pop-os/libcosmic.git"
+default-features = false
+features = [
+    "applet",     # switches to layer-shell target, exposes cosmic::applet module
+    "tokio",
+    "wayland",
+]
+```
+
+The `applet` feature is mutually exclusive with `winit` at the binary level — an applet is not a windowed application. A workspace can have both a main application crate (with `winit`) and an applet crate (with `applet`), sharing logic in a library crate.
+
+#### The Applet Application Trait
+
+An applet implements the same `cosmic::Application` trait as a regular app, but with three applet-specific additions:
+
+```rust
+use cosmic::app::{Core, Task};
+use cosmic::iced::widget::row;
+use cosmic::prelude::*;
+use cosmic::widget;
+
+struct BatteryApplet {
+    core: Core,
+    level: u8,   // battery percentage, 0–100
+}
+
+#[derive(Clone, Debug)]
+enum Message {
+    UpdateLevel(u8),
+    TogglePopup,
+}
+
+impl cosmic::Application for BatteryApplet {
+    type Executor = cosmic::executor::Default;
+    type Flags = ();
+    type Message = Message;
+
+    const APP_ID: &'static str = "org.cosmic.BatteryApplet";
+
+    fn core(&self) -> &Core { &self.core }
+    fn core_mut(&mut self) -> &mut Core { &mut self.core }
+
+    fn init(core: Core, _flags: ()) -> (Self, Task<Message>) {
+        (Self { core, level: 100 }, Task::none())
+    }
+
+    fn view(&self) -> cosmic::Element<'_, Message> {
+        // The applet button: an icon + label in the panel bar.
+        // Clicking it should toggle a popup.
+        self.core
+            .applet
+            .icon_button("battery-full-symbolic")
+            .on_press(Message::TogglePopup)
+            .into()
+    }
+
+    fn update(&mut self, msg: Message) -> Task<Message> {
+        match msg {
+            Message::UpdateLevel(l) => { self.level = l; Task::none() }
+            // Toggle or create the popup.
+            Message::TogglePopup => {
+                if let Some(id) = self.core.main_window_id() {
+                    self.core.applet.get_popup(id)
+                } else {
+                    Task::none()
+                }
+            }
+        }
+    }
+
+    // The popup is a separate surface shown when icon_button is clicked.
+    fn view_window(&self, _id: cosmic::iced::window::Id)
+        -> cosmic::Element<'_, Message>
+    {
+        self.core
+            .applet
+            .popup_container(
+                widget::column()
+                    .push(widget::text::title4(format!("Battery: {}%", self.level)))
+                    .push(widget::progress_bar::linear(0.0..=100.0, self.level as f32))
+                    .into(),
+            )
+            .into()
+    }
+}
+
+fn main() -> cosmic::iced::Result {
+    cosmic::applet::run::<BatteryApplet>(true, ())
+}
+```
+
+[Source: COSMIC Toolkit Book — Panel Applets](https://pop-os.github.io/libcosmic-book/panel-applets.html)
+
+#### How cosmic-panel Embeds Applets
+
+`cosmic-panel` is configured via `cosmic-config` with a list of applet IDs for each panel position (start/center/end, left/right). When the panel starts (or when configuration changes), it launches each applet process, connects their layer-shell surfaces to the panel's logical strip, and sizes each applet to the panel's configured height. Applets can expand to fill available width (flex-fill) or size-to-content; the `AppletHelper::size` function provides the current panel size so the applet view can use it for layout. Because applets are separate processes, a crashing applet does not affect the panel or other applets. [Source](https://pop-os.github.io/libcosmic-book/panel-applets.html)
 
 ---
 

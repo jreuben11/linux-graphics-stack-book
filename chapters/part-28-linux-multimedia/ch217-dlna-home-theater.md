@@ -15,6 +15,9 @@ This chapter walks through the full Linux home-theater networking stack: the UPn
 ## Table of Contents
 
 1. [UPnP/DLNA Protocol Stack](#1-upnpdlna-protocol-stack)
+   - [1.6 What is UPnP?](#16-what-is-upnp)
+   - [1.7 What is DLNA?](#17-what-is-dlna)
+   - [1.8 What is DIDL-Lite?](#18-what-is-didl-lite)
 2. [GUPnP: GLib-Based UPnP Framework](#2-gupnp-glib-based-upnp-framework)
 3. [Rygel Media Server](#3-rygel-media-server)
 4. [Jellyfin: Open-Source Self-Hosted Media Server](#4-jellyfin-open-source-self-hosted-media-server)
@@ -80,6 +83,24 @@ image/jpeg:DLNA.ORG_PN=JPEG_LRG
 `DLNA.ORG_OP=01` signals that range-based seeking is supported via HTTP `Range` headers. `DLNA.ORG_FLAGS` encodes additional transfer capabilities as a 32-bit hex field.
 
 DLNA defines four device classes: **DMS** (Digital Media Server, exposes content), **DMR** (Digital Media Renderer, receives and renders content), **DMP** (Digital Media Player, browses and renders), and **DMC** (Digital Media Controller, pushes content from a DMS to a DMR). [Source](https://en.wikipedia.org/wiki/DLNA)
+
+### 1.6 What is UPnP?
+
+UPnP (Universal Plug and Play) is a set of networking protocols that allows devices on a local IP network to automatically discover each other, advertise their capabilities, and exchange control messages without requiring manual configuration or centralized management. The protocol stack is built entirely on standard IP networking and uses four cooperating sub-protocols: SSDP for device discovery over UDP multicast, HTTP for device description retrieval and media content delivery, SOAP for action invocation on remote services, and GENA for event subscription and asynchronous change notification.
+
+On Linux, UPnP operates entirely at the application layer with no kernel-specific subsystem involvement. A conforming implementation opens a UDP multicast socket on `239.255.255.250:1900` for SSDP, an HTTP server for description XML and control endpoints, and an HTTP callback endpoint for GENA event delivery. The GLib-based GUPnP framework (discussed in §2) abstracts all four layers behind GObject types so that Linux media applications can implement UPnP device roles without managing raw sockets or XML parsing directly. UPnP defines three functional roles central to home media: the media server that exposes a content library, the renderer that plays a selected item, and the control point that browses the library and orchestrates playback by directing a renderer. The protocol exchanges described throughout §1.1–1.5 cover each of these roles and the wire-level messages they generate.
+
+### 1.7 What is DLNA?
+
+DLNA (Digital Living Network Alliance) is an industry certification and interoperability profile specification layered on top of UPnP AV. Where UPnP AV defines the abstract mechanism for browsing a media library and initiating playback, DLNA constrains it to a specific set of mandatory media format profiles, container types, codec parameters, and HTTP delivery semantics that certified devices are required to support. The objective is practical interoperability: a DLNA-certified television should be able to browse and render content from a DLNA-certified media server without vendor-specific negotiation.
+
+Each DLNA-compliant resource carries a `protocolInfo` string that encodes the DLNA profile name (such as `AVC_MP4_HP_HD_AAC` for H.264 video in an MP4 container), operation flags indicating byte-range seek support, and additional transfer-mode capability bits. DLNA also formalises four device classes — Digital Media Server (DMS), Digital Media Renderer (DMR), Digital Media Player (DMP), and Digital Media Controller (DMC) — each with defined mandatory service support. On Linux, DLNA interoperability requirements are the practical reason that media server software such as Rygel and Jellyfin must transcode source files to DLNA-compliant profiles before serving them to consumer devices that cannot handle arbitrary codecs. The profile matching work performed by `gupnp-dlna` (§2.4) is a direct consequence of this specification requirement, and the `protocolInfo` attribute described in §1.5 is DLNA's primary mechanism for communicating profile identity to a renderer.
+
+### 1.8 What is DIDL-Lite?
+
+DIDL-Lite (Digital Item Declaration Language — Lite) is the XML vocabulary that UPnP ContentDirectory services use to describe media objects returned in Browse and Search responses. It is a lightweight profile of the MPEG-21 DIDL standard, stripped down to the fields necessary for enumerating a media library. Each response wraps a `<DIDL-Lite>` root element containing `<item>` or `<container>` elements drawn from the Dublin Core and UPnP AV XML namespaces.
+
+An item represents a single playable resource and carries metadata elements such as `<dc:title>`, `<dc:date>`, `<upnp:class>` (for example `object.item.videoItem.movie`), and one or more `<res>` child elements. Each `<res>` element holds a URI at which the resource can be fetched and a `protocolInfo` string that tells a renderer the MIME type, DLNA profile, and transfer capabilities of that resource. A container groups items or other containers, forming the hierarchical tree that media clients display when browsing a library. On Linux, the `gupnp-av` library provides typed C accessors for all DIDL-Lite fields through the `GUPnPDIDLLiteObject`, `GUPnPDIDLLiteItem`, and `GUPnPDIDLLiteContainer` types (§2.3), avoiding hand-rolled XML manipulation. Understanding DIDL-Lite is a prerequisite for reading the ContentDirectory protocol exchanges described throughout §1.2, §2.3, and §3.
 
 ---
 

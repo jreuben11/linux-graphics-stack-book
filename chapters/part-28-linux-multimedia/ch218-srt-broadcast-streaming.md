@@ -11,6 +11,8 @@
 ## Table of Contents
 
 1. [RTSP/RTP Fundamentals](#rtsprtp-fundamentals)
+   - [1.1 What is RTSP?](#11-what-is-rtsp)
+   - [1.2 What is RTP?](#12-what-is-rtp)
    - [RTSP Control Plane](#rtsp-control-plane)
    - [RTP and RTCP](#rtp-and-rtcp)
    - [Interleaved TCP Mode](#interleaved-tcp-mode)

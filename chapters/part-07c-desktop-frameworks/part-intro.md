@@ -33,6 +33,7 @@ throughout.
 | [39d](ch39d-gnome.md) | GNOME Shell + Mutter | JavaScript (GJS) / C | Clutter / Mutter Vulkan path | Mutter is the compositor |
 | [39e](ch39e-iced.md) | iced 0.14 | Rust | iced_wgpu (wgpu/Vulkan) | winit + iced_layershell |
 | [39f](ch39f-libcosmic.md) | libcosmic / COSMIC | Rust | iced_wgpu | cosmic-comp (smithay) |
+| [39g](ch39g-flutter.md) | Flutter | Dart / C++ | Impeller (Vulkan) | GTK embedder / flutter-elinux |
 
 ---
 
@@ -55,6 +56,11 @@ graph TB
         ICE[iced widget tree] --> WGPU[iced_wgpu / wgpu]
     end
 
+    subgraph "Flutter (ch39g)"
+        DART[Flutter widget tree] --> IMPELLER[Impeller EntityPass]
+        IMPELLER --> FLVK[Vulkan backend]
+    end
+
     subgraph "KDE / KWin (ch39b)"
         KWIN[KWin scene graph] --> KWINVK[Vulkan renderer]
     end
@@ -63,6 +69,7 @@ graph TB
     GSKVK --> MESA
     WGPU --> MESA
     KWINVK --> MESA
+    FLVK --> MESA
 
     MESA --> DRM[DRM / KMS — ch1–3]
 ```

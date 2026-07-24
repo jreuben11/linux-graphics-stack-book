@@ -9,6 +9,9 @@ This chapter covers the complete on-device speech stack available on Linux as of
 ## Table of Contents
 
 1. [speech-dispatcher: Unified TTS Abstraction](#speech-dispatcher-unified-tts-abstraction)
+   - [1.1 What is Text-to-Speech (TTS) Synthesis?](#11-what-is-text-to-speech-tts-synthesis)
+   - [1.2 What is Automatic Speech Recognition (ASR)?](#12-what-is-automatic-speech-recognition-asr)
+   - [1.3 What is speech-dispatcher?](#13-what-is-speech-dispatcher)
 2. [espeak-ng: Formant Synthesis Engine](#espeak-ng-formant-synthesis-engine)
 3. [Piper TTS: Neural Synthesis with VITS and ONNX](#piper-tts-neural-synthesis-with-vits-and-onnx)
 4. [Festival and Flite: Legacy TTS](#festival-and-flite-legacy-tts)
