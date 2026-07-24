@@ -39,9 +39,50 @@ The consequence for a browser engine or game engine is that cross-platform video
 
 **Vulkan Video**'s answer is to make the video codec hardware a first-class citizen of the Vulkan device. Decoded frames are **VkImage** objects in `VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR` or `VK_IMAGE_LAYOUT_VIDEO_DECODE_DST_KHR`. The same **VkDevice** owns both the **3D** pipeline and the video decode engine. Synchronisation uses **VkSemaphore** timeline values, **VkEvent**, and pipeline stage flags that are understood by all Vulkan command buffers on all queues.
 
-The extension family is organised in three layers. The shared infrastructure layer, **VK_KHR_video_queue**, provides queue family discovery via **VkQueueFamilyVideoPropertiesKHR**, capability and format queries (**vkGetPhysicalDeviceVideoCapabilitiesKHR**, **vkGetPhysicalDeviceVideoFormatPropertiesKHR**), the **VkVideoSessionKHR** object lifecycle (including opaque memory binding via **vkGetVideoSessionMemoryRequirementsKHR** and **vkBindVideoSessionMemoryKHR**), and the **VkVideoSessionParametersKHR** store for codec headers such as **SPS**, **PPS**, **VPS**, and **AV1** sequence header **OBU**s. On top of this sits the operation layer: **VK_KHR_video_decode_queue** (covering the decode lifecycle via **vkCmdBeginVideoCodingKHR**, **vkCmdDecodeVideoKHR**, and **vkCmdEndVideoCodingKHR**; **DPB** image array management including the distinct versus coincide output modes; reference picture list management; and the **VK_PIPELINE_STAGE_2_VIDEO_DECODE_BIT_KHR** synchronisation model) and **VK_KHR_video_encode_queue** (covering **vkCmdEncodeVideoKHR**, encoder quality levels, and rate control modes including **CBR** and **VBR**). The codec layer then adds per-format structures: **VK_KHR_video_decode_h264** (**H.264**/**AVC** decode with **SPS**/**PPS** session parameters and interlaced content support), **VK_KHR_video_decode_h265** (**H.265**/**HEVC** decode with **VPS**/**SPS**/**PPS** and slice segment handling), **VK_KHR_video_decode_av1** (**AV1** decode with single-sequence-header parameters objects, reference frame mapping, and film grain synthesis), **VK_KHR_video_encode_h264** (including **QP** range control and per-layer rate control via **VkVideoEncodeH264RateControlLayerInfoKHR**), and **VK_KHR_video_encode_h265**.
+The extension family is organised in three layers:
 
-On the driver side, Section 6 covers the **Mesa** implementation: **RADV** (the **Radeon Vulkan** driver) implements Vulkan Video decode and encode for AMD **GCN** and **RDNA** hardware through the **VCN** (Video Core Next) engine (`src/amd/vulkan/radv_video.c`), with unified AMD video decode shared between **RadeonSI** and **RADV** via `src/amd/common/ac_vcn_*.c`; **ANV** (the Intel Vulkan driver) implements Vulkan Video through the **MFX** decode engine and **VDENC** encode engine (`src/intel/vulkan/anv_video.c`). Section 7 covers **FFmpeg**'s Vulkan **hwaccel** integration, including the **AVVulkanDeviceContext** / **AVVulkanFramesContext** / **AVVkFrame** hardware context hierarchy, internal functions such as **ff_vk_decode_init()**, **ff_vk_decode_frame()**, and **ff_vk_decode_add_slice()**, zero-copy decoded **VkImage** → **Wayland** display paths via **zwp_linux_dmabuf_v1** and **KMS** direct scanout, and command-line usage with `-hwaccel vulkan` and filters such as **scale_vulkan**. Section 8 then compares Vulkan Video with **VA-API** across dimensions of API complexity, rendering pipeline integration (avoiding the **vaExportSurfaceHandle** → **vkImportMemoryFdKHR** round-trip), a June 2026 hardware support matrix covering **RADV**, **ANV**, **NVK**, and the NVIDIA proprietary driver, a zero-copy display path comparison, and a practical migration strategy including use of **FFmpeg** as an integration layer and **Zink**'s experimental **VA-API**-on-Vulkan-Video bridge.
+**Infrastructure layer — `VK_KHR_video_queue`:**
+- Queue family discovery via **VkQueueFamilyVideoPropertiesKHR**
+- Capability and format queries: **vkGetPhysicalDeviceVideoCapabilitiesKHR**, **vkGetPhysicalDeviceVideoFormatPropertiesKHR**
+- **VkVideoSessionKHR** object lifecycle, including opaque memory binding via **vkGetVideoSessionMemoryRequirementsKHR** and **vkBindVideoSessionMemoryKHR**
+- **VkVideoSessionParametersKHR** store for codec headers: **SPS**, **PPS**, **VPS**, **AV1** sequence header **OBU**s
+
+**Operation layer:**
+- **VK_KHR_video_decode_queue:**
+  - Decode lifecycle: **vkCmdBeginVideoCodingKHR**, **vkCmdDecodeVideoKHR**, **vkCmdEndVideoCodingKHR**
+  - **DPB** image array management: distinct vs coincide output modes
+  - Reference picture list management
+  - **VK_PIPELINE_STAGE_2_VIDEO_DECODE_BIT_KHR** synchronisation model
+- **VK_KHR_video_encode_queue:**
+  - **vkCmdEncodeVideoKHR**
+  - Encoder quality levels
+  - Rate control modes: **CBR** and **VBR**
+
+**Codec layer — per-format structures:**
+- **VK_KHR_video_decode_h264** — H.264/AVC decode; SPS/PPS session parameters; interlaced content support
+- **VK_KHR_video_decode_h265** — H.265/HEVC decode; VPS/SPS/PPS; slice segment handling
+- **VK_KHR_video_decode_av1** — AV1 decode; single-sequence-header parameters objects; reference frame mapping; film grain synthesis
+- **VK_KHR_video_encode_h264** — QP range control; per-layer rate control via **VkVideoEncodeH264RateControlLayerInfoKHR**
+- **VK_KHR_video_encode_h265**
+
+On the driver and integration side, subsequent sections cover:
+
+**Section 6 — Mesa implementation:**
+- **RADV** (Radeon Vulkan): decode and encode for AMD GCN/RDNA via the **VCN** (Video Core Next) engine (`src/amd/vulkan/radv_video.c`); unified AMD video decode shared with RadeonSI via `src/amd/common/ac_vcn_*.c`
+- **ANV** (Intel Vulkan): decode via the **MFX** engine; encode via the **VDENC** engine (`src/intel/vulkan/anv_video.c`)
+
+**Section 7 — FFmpeg Vulkan hwaccel integration:**
+- Hardware context hierarchy: **AVVulkanDeviceContext** / **AVVulkanFramesContext** / **AVVkFrame**
+- Internal functions: **ff_vk_decode_init()**, **ff_vk_decode_frame()**, **ff_vk_decode_add_slice()**
+- Zero-copy decoded **VkImage** → Wayland display via **zwp_linux_dmabuf_v1** and KMS direct scanout
+- Command-line usage: `-hwaccel vulkan`; filters such as **scale_vulkan**
+
+**Section 8 — Vulkan Video vs VA-API comparison:**
+- API complexity
+- Rendering pipeline integration — avoids the **vaExportSurfaceHandle** → **vkImportMemoryFdKHR** round-trip
+- June 2026 hardware support matrix: **RADV**, **ANV**, **NVK**, NVIDIA proprietary driver
+- Zero-copy display path comparison
+- Migration strategy: FFmpeg as integration layer; **Zink**'s experimental VA-API-on-Vulkan-Video bridge
 
 ### Specification Timeline
 
