@@ -4092,7 +4092,7 @@ This part covers the Linux multimedia stack beyond graphics and video: real-time
 - Scope: graphics application developers implementing GPU-accelerated 2D UIs, SVG renderers, or font systems; browser engineers mapping CSS/SVG rendering onto Vulkan compute.
 - GPU 2D rendering problem: analytical anti-aliasing, correct painter's model, fill rule (even-odd, non-zero winding), stroke expansion
 - Loop–Blinn GPU cubic Bézier rendering: implicit function sign test, triangle hull covering, GPU fragment shader classification (serpentine/cusp/loop/quadratic)
-- Polar Stroking (Nehab–Hoppe): stroke outline as polar parametrisation, GPU tessellation-free stroke expansion, round/miter/bevel join GPU geometry
+- Polar Stroking (Kilgard, SIGGRAPH 2020): stroke outline as polar parametrisation, GPU tessellation-free stroke expansion, round/miter/bevel join GPU geometry
 - Jump Flooding Algorithm for 2D SDF generation: seeding, k-pass JFA, exact distance field vs approximate; GPU JFA for font SDF baking
 - GPU path rendering pipelines: Pathfinder (Metal/Vulkan, tile-based bin-and-render); Vello/piet-gpu (Vulkan compute, prefix-sum based encoding); NV_path_rendering (OpenGL extension, reference); WR (WebRender) GPU rasterisation model
 - GPU SVG rasterisation: path command decoding on GPU, Bézier flattening to line segments, scanline fill via atomic counters, clip path GPU evaluation

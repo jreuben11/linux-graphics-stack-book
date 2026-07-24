@@ -154,24 +154,22 @@ The discriminant is Δ = d₁²(3d₂² − 4d₁d₃). Cubic type:
 
 | Condition | Type |
 |---|---|
-| d₁ ≠ 0, Δ > 0 | Serpentine (two inflection points) |
+| d₁ ≠ 0, Δ > 0 | Serpentine (two real inflection points) |
 | d₁ ≠ 0, Δ = 0 | Cusp |
 | d₁ ≠ 0, Δ < 0 | Loop (self-intersecting) |
-| d₁ = 0, d₂ ≠ 0 | Quadratic degenerate |
-| d₁ = d₂ = 0 | Linear or point degenerate |
+| d₁ = 0, d₂ ≠ 0 | Cusp with inflection at infinity |
+| d₁ = d₂ = 0, d₃ ≠ 0 | Quadratic (cubic degenerates to a conic) |
+| d₁ = d₂ = d₃ = 0 | Linear or point degenerate |
 
-**k,l,m assignment.** For each type, Loop & Blinn derive specific formulas for (k,l,m) at the four
-control points. For the serpentine case (the most common):
+**k,l,m assignment.** For each cubic type, Loop & Blinn derive specific per-vertex formulas for the
+texture coordinates (k, l, m) at the four control points. These are obtained by factoring the
+implicit cubic F(x,y) = k³ − l·m into the product of two linear forms (for serpentine/cusp) or
+a linear times a quadratic (for the loop case). The closed-form expressions are given per-type in
+Tables 1–2 of the paper; implementing them requires approximately 50 lines of scalar arithmetic
+before uploading (k,l,m) as vertex attributes. Refer to the source for the complete per-type tables.
 
-```
-l₀ = d₁·d₃ − d₂²  (= Δ/4d₁)
-m₀ = d₁·d₂ − ... (computed from canonical form)
-```
-
-The exact per-vertex (k,l,m) values are derived from factoring the implicit cubic. The fragment
-shader then evaluates f = k³ − l·m and uses `fwidth(f)` for analytical anti-aliasing (see Ch208 §5.1
-for the shader code). The CPU-side classification and (k,l,m) computation can be done with ~50 lines
-of arithmetic before uploading as vertex attributes.
+The fragment shader then evaluates f = k³ − l·m and uses `fwidth(f)` for analytical anti-aliasing
+(see Ch208 §5.1 for the shader code).
 
 [Source: Loop & Blinn "Resolution Independent Curve Rendering using Programmable Graphics Hardware,"
 SIGGRAPH 2005, ACM TOG 24(3), https://dl.acm.org/doi/10.1145/1073204.1073303]
@@ -524,7 +522,7 @@ The fine shader is the rasterisation kernel. One workgroup processes one 16×16 
 - **Segment processing**: for each line segment assigned to this tile, the shader computes
   which pixels its scanline crossing updates and increments/decrements the appropriate winding
   accumulator using packed SWAR (SIMD Within A Register) 8-bit arithmetic.
-- **Fill rule**: non-zero uses `atomicAdd` on signed 8-bit packed values; even-odd uses `XOR`.
+- **Fill rule**: both non-zero winding and even-odd are resolved via SWAR bit-parallel operations on the accumulated winding integers, not via atomics (atomics are used in the coarse stage for bin counting, not in fine rasterisation).
 - **Prefix sums**: two-stage prefix sum propagates winding numbers in x then y across the tile.
 - **Coverage**: each pixel counts non-zero-winding samples using bit-parallel operations on
   32-bit integers packing 4 pixels worth of winding bits.
@@ -726,9 +724,11 @@ vec4 color = texture(colorRamp, clamp(t, 0.0, 1.0));
 the quadratic `a·t² + b·t + c = 0` where a, b, c are functions of the fragment position and
 the two circle centers/radii. Take the largest real root with r(t) ≥ 0:
 ```glsl
+// dc = c1 - c0, dr = r1 - r0; colour at t where circle center = c0+t*dc, radius = r0+t*dr
+// Expand |dp - t*dc|^2 = (r0 + t*dr)^2, collect by power of t:
 vec2 dp = fragPos - c0;
 float a = dot(dc, dc) - dr*dr;
-float b = 2.0 * (dot(dp, dc) - r0*dr);
+float b = -2.0 * (dot(dp, dc) + r0*dr);   // sign: -2*(dp.dc + r0*dr)
 float c_coef = dot(dp, dp) - r0*r0;
 float disc = b*b - 4.0*a*c_coef;
 float t = (-b + sqrt(max(disc, 0.0))) / (2.0 * a);
@@ -948,15 +948,15 @@ void main() {
 
 `atan(y, x)` maps to `[-π, π]`; the `fract(…/(2π))` normalises to `[0, 1)`.
 
-### 11.4 Mesh Gradient — Coons Patch
+### 11.4 Mesh Gradient — Bilinear Quad Patch
 
-CSS is exploring mesh gradients (formerly "SVG mesh gradient" draft). A Coons patch is defined by
-four boundary curves and a bilinear colour interpolation. For the simplest quad-mesh variant (flat
-patches with corner colours c₀₀, c₁₀, c₀₁, c₁₁), the GPU evaluates bilinear interpolation per
-fragment:
+CSS mesh gradients (formerly "SVG mesh gradient" draft) define a grid of patches where each patch
+has four corner control points and interpolated colours. A true Coons patch uses four boundary
+curves to define shape; the flat-patch subset used in CSS mesh gradients reduces to bilinear colour
+interpolation over a quad. For each patch, the GPU evaluates:
 
 ```glsl
-// mesh_gradient.frag — single Coons patch (bilinear)
+// mesh_gradient.frag — single flat quad patch with four corner colours
 uniform vec4 c00, c10, c01, c11;  // premultiplied corner colours
 
 void main() {
@@ -967,9 +967,11 @@ void main() {
 }
 ```
 
-For bicubic Coons patches (with curved boundary Béziers), (u,v) are computed via Newton iteration on
-the patch's parametrisation — feasible in a fragment shader for small patch counts.
-[Source: Kovacs & Mitchell "GPU-Based Rendering of Sparse Coons Patches", GPC 2007]
+A full bicubic Coons patch additionally uses four boundary Bézier curves: (u,v) are computed via
+Newton iteration on the patch's parametrisation, which is feasible in a fragment shader for small
+patch counts.
+[Source: CSS Images Level 4 mesh-gradient draft,
+https://drafts.csswg.org/css-images-4/#mesh-gradients]
 
 ### 11.5 Tiled Pattern Rendering
 
