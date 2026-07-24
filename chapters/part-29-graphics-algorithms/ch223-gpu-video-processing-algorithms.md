@@ -173,7 +173,12 @@ quarter-pel refinement reconstruct fractional-position reference samples by filt
 a **6-tap Wiener filter** `[-1, 5, 20, 20, 5, -1] / 32` for half-pel horizontal and vertical
 positions, then bilinear averaging for quarter-pel positions. AV1 uses an 8-tap and a 6-tap
 filter depending on the interpolation filter mode (`EIGHTTAP`, `EIGHTTAP_SMOOTH`, `BILINEAR`).
-[Source: AV1 specification §7.11.3, https://aomediacodec.github.io/av1-spec/]
+[Source: AV1 specification, inter prediction / interpolation filter clause,
+https://aomediacodec.github.io/av1-spec/]
+
+AV1's interpolation filter modes are described in the prediction/interpolation sections of the
+specification. [Source: AV1 Specification, interpolation filter semantics,
+https://aomediacodec.github.io/av1-spec/]
 
 Sub-pixel interpolation can be run in a compute shader by pre-generating an expanded reference
 frame at half-pel and quarter-pel positions (a "fractional reference pyramid"), then reading from
@@ -226,7 +231,7 @@ for (int y = 0; y < 16; y++)
         pred[y][x] = clip(((a + b*(x-7) + c*(y-7) + 16) >> 5), 0, 255);
 ```
 
-[Source: ITU-T H.264 specification §8.3.3, https://www.itu.int/rec/T-REC-H.264]
+[Source: ITU-T H.264 specification, intra prediction clause, https://www.itu.int/rec/T-REC-H.264]
 
 ### HEVC/H.265 Intra Prediction
 
@@ -235,8 +240,8 @@ HEVC supports up to **35 intra modes** (DC, planar, and 33 angular modes) across
 `intraAngle` steps; the implementation generates prediction samples by projecting along that
 angle and interpolating between two reference samples. The angular reference array is first
 filtered (using a bilinear or three-tap filter depending on the mode angle and block size) to
-reduce high-frequency noise at block boundaries. [Source: ITU-T H.265 specification §8.4.4,
-https://www.itu.int/rec/T-REC-H.265]
+reduce high-frequency noise at block boundaries. [Source: ITU-T H.265 specification, intra
+prediction clause, https://www.itu.int/rec/T-REC-H.265]
 
 ### AV1 Intra Prediction
 
@@ -347,7 +352,8 @@ Transform coefficients `C[i]` are quantised to indices `Q[i] = sign(C[i]) * max(
 where `step` is the quantisation step size (derived from QP — Quantisation Parameter) and `dz`
 is the dead-zone width, which is typically `step/2` for DC and `step/3` for AC coefficients.
 This asymmetric dead zone produces a slight bias toward zero for small coefficients, improving
-rate-distortion performance. [Source: H.264 specification §8.5.8; x264 `encoder/quant.c`]
+rate-distortion performance. [Source: ITU-T H.264, quantisation clause; x264 `encoder/quant.c`,
+https://github.com/mirror/x264]
 
 ### Rate-Distortion Optimised Quantisation (RDOQ)
 
@@ -731,9 +737,11 @@ handles RPU parsing on CPU but GPU-accelerated RPU application is vendor-specifi
 ### VA-API Tone Mapping
 
 FFmpeg's `tonemap_vaapi` filter offloads HDR-to-SDR tone mapping to the VA-API fixed-function
-path on Intel and AMD GPUs. It accepts a `tonemap` parameter selecting the algorithm (none,
-linear, gamma, reinhard, hable, mobius) and uses `VA_PROC_PIPELINE_SUBPICTURES` under the hood
-to set up the hardware post-processor. [Source: FFmpeg `libavfilter/vf_tonemap_vaapi.c`,
+path on Intel and AMD GPUs. It configures a `VAProcFilterHighDynamicRangeToneMapping` filter
+buffer and invokes `vaQueryVideoProcFilterCaps` to verify driver support. HDR10 mastering display
+metadata and content-light-level information are extracted from the `AVFrame` side data, converted
+to `VAHdrMetaDataHDR10` structures, and passed through `VAProcPipelineParameterBuffer`; the
+actual render call is `ff_vaapi_vpp_render_picture()`. [Source: FFmpeg `libavfilter/vf_tonemap_vaapi.c`,
 https://github.com/FFmpeg/FFmpeg/blob/master/libavfilter/vf_tonemap_vaapi.c]
 
 ---
@@ -1004,8 +1012,9 @@ FFmpeg's VA-API filter set:
 `overlay_vaapi`, `tonemap_vaapi`, `hstack_vaapi`, `vstack_vaapi`, `xstack_vaapi`, `pad_vaapi`,
 `drawbox_vaapi`. [Source: FFmpeg `libavfilter`, https://ffmpeg.org/ffmpeg-filters.html]
 
-These filters run on the GPU's fixed-function video post-processor (VDPAU, Intel EU shader, or
-AMD VPE), and are accessed via `vaCreateContext` with `VA_PROC_PIPELINE_SUBPICTURES` attributes.
+These filters run on the GPU's fixed-function video post-processor (Intel EU shader, AMD VPE, or
+equivalent). Under the hood each filter creates a `VAEntrypointVideoProc` context, populates a
+`VAProcPipelineParameterBuffer`, and calls `vaRenderPicture()` to execute the filter on the GPU.
 
 ---
 

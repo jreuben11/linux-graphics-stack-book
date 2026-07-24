@@ -432,7 +432,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 
 ### Part XXIX — Graphics Algorithms
 
-*Nine reference catalogs covering the algorithms that run on top of the Linux graphics stack: 108 named shader techniques (Ch 204–207) and 107 GPU geometry algorithms (Ch 208–212), each entry structured as a decision tool — what it computes, when to use it, named variants, costs, and a primary reference.*
+*Fifteen chapters covering the algorithms that run on top of the Linux graphics stack: shader techniques, GPU geometry, image processing, video processing, performance optimization, computational geometry, shape analysis, and computational topology.*
 
 **Shader Algorithm Catalog (Ch 204–207)**
 - [Ch 204: Shader Algorithm Catalog — Rendering Pipeline, Lighting, and Shadows](chapters/part-29-graphics-algorithms/ch204-shader-algorithm-catalog.md)
@@ -446,6 +446,14 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 210: GPU Geometry Algorithms — Physics Simulation and Volumetric Methods](chapters/part-29-graphics-algorithms/ch210-gpu-physics-and-volumetric.md)
 - [Ch 211: GPU Geometry Algorithms — Terrain, Ray Tracing Geometry, and Point Clouds](chapters/part-29-graphics-algorithms/ch211-gpu-terrain-raytracing-pointcloud.md)
 - [Ch 212: GPU Geometry Algorithms — Neural Geometry, Specialized Techniques, and GPU Primitives](chapters/part-29-graphics-algorithms/ch212-gpu-neural-specialized-primitives.md)
+
+**Specialist Algorithm Chapters (Ch 220–225)**
+- [Ch 220: GPU Image Processing Algorithms](chapters/part-29-graphics-algorithms/ch220-gpu-image-processing-algorithms.md)
+- [Ch 221: GPU Algorithm Performance and Optimization](chapters/part-29-graphics-algorithms/ch221-gpu-algorithm-performance.md)
+- [Ch 222: Computational Geometry Algorithms on GPU](chapters/part-29-graphics-algorithms/ch222-computational-geometry-algorithms.md)
+- [Ch 223: GPU Video Processing Algorithms](chapters/part-29-graphics-algorithms/ch223-gpu-video-processing-algorithms.md)
+- [Ch 224: 3D Shape Analysis Algorithms](chapters/part-29-graphics-algorithms/ch224-3d-shape-analysis-algorithms.md)
+- [Ch 225: Computational Topology Algorithms on GPU](chapters/part-29-graphics-algorithms/ch225-computational-topology-algorithms.md)
 
 ---
 
@@ -473,7 +481,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Appendix T: Terminal Graphics Protocol Reference](chapters/appendices/appendix-t-terminal-graphics-protocol-reference.md)
 - [Appendix U: WebGPU API Quick Reference](chapters/appendices/appendix-u-webgpu-api-reference.md)
 
-**Total: 207 chapters + 21 appendices**
+**Total: 213 chapters + 21 appendices**
 
 ## Repository Structure
 
@@ -741,6 +749,12 @@ chapters/
     ch210-gpu-physics-and-volumetric.md
     ch211-gpu-terrain-raytracing-pointcloud.md
     ch212-gpu-neural-specialized-primitives.md
+    ch220-gpu-image-processing-algorithms.md
+    ch221-gpu-algorithm-performance.md
+    ch222-computational-geometry-algorithms.md
+    ch223-gpu-video-processing-algorithms.md
+    ch224-3d-shape-analysis-algorithms.md
+    ch225-computational-topology-algorithms.md
   appendices/
     appendix-a-glossary.md
     appendix-b-environment-variables.md

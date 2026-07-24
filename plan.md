@@ -3801,3 +3801,104 @@ This part covers the Linux multimedia stack beyond graphics and video: real-time
 - Categories: XI. Neural and Learned Geometry (3D Gaussian Splatting/Neural Geometry, Geometric Deep Learning, Differentiable Rendering/Inverse Geometry, 3D Gaussian Splatting redux, NeRF/Neural Implicit Surfaces), XII. Specialized and Cross-Domain Applications (Scientific Visualization, Decal/Surface Projection, Procedural Texture Synthesis, Acoustic Ray Tracing, VR/XR Reprojection/Foveation, Silhouette Detection, Micro-Polygon Displacement, SDF Font Rendering, Molecular Surface), XIII. GPU Algorithm Primitives (Poisson Disk/Blue Noise Sampling, GPU Convex Hull, GPU Radix Sort as Geometry Primitive)
 - Includes §108 Library Landscape (production geometry library survey and GPU integration patterns), §109 Performance Reference (throughput and memory budgets), §110 Integrations (cross-chapter reference map for Ch208–212)
 - Integrations: Ch211 (point cloud representations extended by neural geometry), Ch27 (VR/XR reprojection geometry in Cat XII), Ch25 (compute API landscape for neural geometry inference)
+
+### Chapter 220: GPU Image Processing Algorithms *(Part XXIX)*
+
+- Scope: systems developers working with libcamera, V4L2, and GStreamer image pipelines; browser engineers using Canvas 2D, WebCodecs, and WebGPU for image ops; graphics application developers using OpenCV GPU backends or Vulkan compute for image processing.
+- GPU image processing architecture: VkImage vs buffer, tile-based compute with shared memory, dispatch sizing
+- Spatial filtering: separable Gaussian blur, box filter via prefix sum, bilateral filter, guided filter, non-local means (NLM)
+- Morphological operations: erosion, dilation, opening, closing on GPU; structuring element parallelism
+- Edge and feature detection: Sobel/Scharr gradient, Canny edge detection (gradient → NMS → hysteresis), Harris corner score, FAST corners
+- Frequency-domain processing: FFT on GPU (Cooley-Tukey radix-2, shared memory butterfly), VkFFT, FFT convolution, Wiener deconvolution
+- Optical flow: TV-L1 primal-dual GPU solver, RAFT architecture, FlowNet 2.0 GPU pipeline
+- Stereo matching and depth: Semi-Global Matching (SGM) cost volume, 8-direction aggregation, depth completion, bilateral upsampling
+- Super-resolution: Lanczos/bicubic classical upscaling, neural SR (ESRGAN, Real-ESRGAN), AMD FSR 2.x Vulkan compute implementation
+- Color processing: color space conversion in compute, GPU histogram, CLAHE, 3D LUT tetrahedral interpolation
+- ISP pipeline on Linux: libcamera IPA architecture (AWB, AGC, denoise, sharpening), debayer pipeline, V4L2 subdevice format negotiation
+- OpenCV and Halide GPU backends: UMat OpenCL, cv::cuda::GpuMat, Halide Vulkan target
+- Integrations: Ch26 (libcamera/V4L2 API layer), Ch220 feeds Ch223 (video ISP output), Ch221 (GPU optimization for image processing kernels)
+
+### Chapter 221: GPU Algorithm Performance and Optimization *(Part XXIX)*
+
+- Scope: systems and driver developers optimising GPU workload throughput; graphics application developers diagnosing GPU bottlenecks.
+- GPU performance model: roofline model, arithmetic intensity, peak compute vs memory bandwidth, worked examples (matrix multiply vs element-wise)
+- Occupancy analysis: active warps/waves per SM/CU, register/shared-memory/block-size limiters, reading occupancy from RGP and Nsight
+- Memory access optimisation: coalesced access, SoA vs AoS, alignment requirements, texture cache vs buffer
+- Shared memory and LDS: bank conflicts, padding strategies, double-buffering for async prefetch, tiling for matrix ops
+- Warp and wave divergence: ballot/vote intrinsics (subgroupBallot, subgroupAny/All), predication vs branching, RDNA wave32/wave64
+- Barriers and pipeline stalls: vkCmdPipelineBarrier2 cost, split barriers with VkEvent, avoiding unnecessary barriers, vkQueueSubmit overhead
+- Persistent kernels: GPU-side work queue with atomic counter, VkBuffer-backed work stealing
+- Subgroup and cooperative primitives: GLSL subgroup ops, VK_EXT_subgroup_size_control, VK_KHR_cooperative_matrix for GEMM
+- Multi-queue and async compute: queue family topology, timeline semaphore chaining, AMD ACE queues
+- Profiling tools on Linux: AMD RGP (SQTT), NVIDIA Nsight Graphics, intel_gpu_top, perfetto, VK_EXT_performance_query, umr
+- Driver overhead reduction: pre-recorded command buffers, secondary command buffers, push constants vs UBO, VK_EXT_descriptor_buffer
+- Vendor-specific tuning: AMD RDNA wave32/wave64, Intel Xe EU pairs, NVIDIA Ampere/Ada tensor core layout
+- Integrations: Ch201 (Vulkan debugging and profiling tools), Ch133 (async compute queues), Ch141 (cooperative matrices)
+
+### Chapter 222: Computational Geometry Algorithms on GPU *(Part XXIX)*
+
+- Scope: graphics application developers implementing UI hit-testing, vector graphics, CAD kernels, or game collision; computational geometry engineers porting algorithms to GPU.
+- GPU CG overview: SIMT vs sequential CG, parallel primitives table (reduce, prefix scan, radix sort, gather/scatter)
+- Convex hull: 2D GPU quickhull (parallel partition step, prefix scan compaction), 3D quickhull hybrid, CGAL API
+- 2D polygon Boolean operations: Sutherland-Hodgman GPU edge clipping, Clipper2 API, Greiner-Hormann for general polygons
+- 2D and 3D triangulation: GPU parallel ear-clipping, CGAL CDT, Ruppert refinement, libtess2 for glyph triangulation
+- Point location and geometric queries: ray-casting and winding number GPU shaders, BVH batch point location, 3D picking pipeline
+- Geometric intersection testing suite: ray-AABB, ray-OBB, ray-sphere, Möller-Trumbore, triangle-triangle, OBB-OBB SAT, N×M GPU batch broadphase
+- Voronoi diagrams and Delaunay: full jump flooding algorithm (JFA) with GLSL shader, centroidal Voronoi/Lloyd's, Bowyer-Watson GPU strategies
+- Approximate nearest neighbour search: FAISS GPU (GpuIndexFlatL2, IVF, PQ), cuVS, brute-force k-NN GLSL
+- Minkowski sums and GJK/EPA: rotating calipers, GJK support function, EPA for penetration depth
+- Geometric arrangements and sweep line: all-pairs segment intersection, half-plane intersection, BSP applications
+- Visibility and line-of-sight: 2D visibility polygon hybrid, GPU visibility graph, portal-based 3D, terrain LOS
+- Robust geometric predicates: Shewchuk adaptive predicates, GPU fixed-point orient2d, Simulation of Simplicity
+- Integrations: Ch208 (3D geometry that 2D CG feeds), Ch211 (BVH structures used in batch intersection), Ch222 feeds Ch225 (topology of CG constructs)
+
+### Chapter 223: GPU Video Processing Algorithms *(Part XXIX)*
+
+- Scope: systems developers building GPU-accelerated video transcode or analysis pipelines; browser engineers working with WebCodecs and GPU-backed canvas video; application developers using GStreamer or FFmpeg beyond simple decode/encode.
+- Video as a GPU algorithm domain: codec stack overview, GPU-parallelisable vs sequential stages (CABAC), GPU vs fixed-function ASIC trade-offs
+- Motion estimation and compensation: full search, three-step, diamond, UMH; GPU SAD kernel in GLSL with shared memory; sub-pixel interpolation; B-frame bidirectional prediction
+- Intra prediction: H.264 Plane mode, HEVC 35-mode angular prediction, AV1 13 intra modes including Paeth and recursive filter; GPU wavefront anti-diagonal parallelism; SATD mode decision
+- Transform coding on GPU: DCT butterfly networks, warp-shuffle GLSL pattern, AV1's 16 transform types; parallel IDCT for decode
+- Quantisation and rate control: dead-zone scalar quantisation, RDOQ trellis, CBR/VBR/CQP, GPU look-ahead complexity estimation
+- Deblocking and loop filters: H.264 deblocking, HEVC SAO BO/EO modes, AV1 loop filter, CDEF, Wiener and self-guided restoration
+- Temporal processing: bob/weave/motion-adaptive deinterlacing, YADIF, bwdif Vulkan pipeline, FILM frame interpolation
+- Video super-resolution: BasicVSR++ second-order grid propagation, ONNX Runtime CUDA/ROCm/TensorRT execution providers, FFmpeg scale_cuda, GStreamer vvas:superres
+- HDR and WCG video: SEI/OBU metadata extraction, PQ (ST 2084) and HLG EOTF in GLSL, tone mapping operators, dynamic histogram-based parameterisation, BT.2020→BT.709 matrix
+- Video analysis: GPU histogram scene-cut detection, DCT-based shot detection, Laplacian variance sharpness for thumbnail selection, pHash deduplication
+- 360° video: ERP distortion, EAC projection, viewport-dependent tile selection, stereoscopic layout handling
+- GStreamer and FFmpeg GPU pipeline integration: VA-API zero-copy, DMA-BUF export, FFmpeg Vulkan filter graph with AVVkFrame
+- Integrations: Ch26 (VA-API/V4L2 API layer), Ch165 (Vulkan Video API), Ch220 (image processing algorithms for per-frame ISP), Ch57 (FFmpeg architecture)
+
+### Chapter 224: 3D Shape Analysis Algorithms *(Part XXIX)*
+
+- Scope: graphics application developers implementing shape matching, retrieval, or classification; CAD/CAM engineers building shape libraries; robotics and AR developers performing object recognition from point clouds or meshes.
+- Shape analysis as a GPU problem: descriptor extraction, feature matching, classification/retrieval pipeline; scale, pose, and partial shape invariance challenges
+- Local shape descriptors: FPFH (normal estimation, simplified PFH, k-NN lookup from BVH), SHOT (local reference frame, spherical grid histogram), ROPS; one thread block per query point on GPU
+- Global shape descriptors: 3D Zernike moments, D2 shape distribution, spherical harmonic descriptor, extended Gaussian image; GPU parallel Monte Carlo sampling and SH projection
+- Spectral shape analysis: Laplace-Beltrami operator (cotangent discretisation), heat kernel signature (HKS), wave kernel signature (WKS), GPS embedding; LOBPCG GPU eigensolver with rocBLAS/cuBLAS
+- Shape matching and correspondence: ICP variants, functional maps (LBO eigenspace), GPU functional map matrix multiply, ARAP non-rigid matching (GPU SpMV via cuSPARSE/rocSPARSE)
+- Symmetry detection: EGI voting for reflective symmetry, rotational symmetry axis voting, RANSAC-based partial symmetry; all-pairs distance matrix on GPU
+- Skeleton extraction: MCF contraction (iterative Laplacian solve), L1-medial skeleton for point clouds, Reeb graph via height function level sets
+- Shape segmentation: random walks (sparse linear system), normalised cuts (graph Laplacian eigenvectors), PointNet++ GPU inference, VHACD convex decomposition, co-segmentation
+- Shape completion and inpainting: PDE harmonic extension, thin-plate spline energy, PCN/FoldingNet GPU inference, occupancy/SDF network inference
+- Shape retrieval and classification: FAISS GPU index, Hamming embedding, ThunderSVM, PointNet/DGCNN GPU feature extraction, ShapeNet mAP evaluation
+- Geometric deep learning on meshes: GCN spectral/spatial convolution, MeshCNN, DiffusionNet, PyTorch Geometric CUDA kernels
+- Production libraries: Open3D GPU tensor backend, PCL GPU modules (gpu_features, gpu_kdtree), CGAL Shape Detection, PyTorch3D, libigl
+- Integrations: Ch208 (mesh construction feeding shape analysis), Ch211 (point cloud representations), Ch225 (topological shape invariants), Ch212 (neural geometry overlap with learned shape descriptors)
+
+### Chapter 225: Computational Topology Algorithms on GPU *(Part XXIX)*
+
+- Scope: graphics application developers implementing topological mesh analysis, handle/tunnel detection, or shape simplification; scientific visualisation engineers using TDA; researchers applying persistent homology to graphics data.
+- Topology for graphics programmers: Euler characteristic, genus, Betti numbers (β₀/β₁/β₂), orientability, manifold classification, graphics applications
+- Euler characteristic and genus computation: GPU parallel V/E/F count via subgroup reduce, batched genus computation, non-manifold edge/vertex detection
+- Simplicial complexes on GPU: flat array layout, GPU all-pairs distance for Vietoris–Rips, prefix scan compaction, Alpha and Čech complex construction
+- Persistent homology: filtration, boundary matrix reduction, Ripser innovations (cohomology, clearing, apparent pairs), Ripser++ GPU hybrid, CubicalRipser for voxel data, GUDHI Python API
+- Discrete Morse theory: Forman gradient vector field, GPU independent-set pairing with atomicCompSwap, Morse–Smale complex, TTK MorseSmaleComplex
+- Reeb graphs and contour trees: GPU path-compressed union-find for join tree, TTK-MPI for large datasets, TTK C++ API
+- Persistent homology for point clouds: GPU union-find for H₀, Ripser++ for H₁/H₂, persistence images/landscapes, Wasserstein/bottleneck distance
+- Handle and tunnel detection: shortest non-contractible cycles via co-tree, GPU Bellman-Ford, harmonic 1-forms via cuSPARSE, UV seam loop detection
+- Topological persistence for scalar fields: lower-star filtration, GPU radix sort + union-find, TTK TopologicalSimplification
+- Mapper algorithm and TDA visualisation: cover construction, parallel clustering, nerve, Kepler Mapper, GPU acceleration with cuML DBSCAN
+- Topological mesh repair: non-manifold detection, GPU BFS orientation repair, boundary loop detection, Liepa hole filling, MeshFix/libigl/CGAL tools
+- Topology-aware rendering: marching cubes filtered by Betti number, topology-preserving LOD, persistence diagram Vulkan scatter-plot, TTK ParaView pipeline
+- Integrations: Ch208 (mesh repair using topology), Ch224 (shape analysis using topological descriptors), Ch210 (SDF/volumetric level sets and contour topology), GUDHI/TTK libraries

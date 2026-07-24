@@ -147,13 +147,13 @@ layout(std430, binding = 3) writeonly buffer SPFH    { float spfh[];  }; // [N *
 
 layout(push_constant) uniform PC { uint N; uint K; };
 
-shared float hist[33]; // 3 features × 11 bins
+shared uint hist[33]; // 3 features × 11 bins, accumulated as unsigned ints
 
 void main() {
     uint pidx = gl_WorkGroupID.x;          // query point index
     uint tid  = gl_LocalInvocationID.x;   // neighbour index within workgroup
 
-    if (tid < 33) hist[tid] = 0.0;
+    if (tid < 33u) hist[tid] = 0u;
     barrier();
 
     if (tid < K && pidx < N) {
@@ -172,22 +172,20 @@ void main() {
         float phi   = dot(u, diff);                        // ∈ [−1,1]
         float theta = atan(dot(w, nq), dot(u, nq));       // ∈ [−π,π]
 
-        // Bin each feature into 11 bins
+        // Bin each feature into 11 bins (0..10)
         uint a_bin = uint(clamp((alpha + 1.0) * 5.5, 0.0, 10.0));
         uint p_bin = uint(clamp((phi   + 1.0) * 5.5, 0.0, 10.0));
         uint t_bin = uint(clamp((theta / 3.14159 + 1.0) * 5.5, 0.0, 10.0));
 
-        atomicAdd(uint(hist[a_bin]),       1);   // illustrative: use floatBitsToUint trick
-        atomicAdd(uint(hist[11 + p_bin]),  1);
-        atomicAdd(uint(hist[22 + t_bin]),  1);
+        atomicAdd(hist[a_bin],        1u);
+        atomicAdd(hist[11u + p_bin],  1u);
+        atomicAdd(hist[22u + t_bin],  1u);
     }
     barrier();
 
-    // Write SPFH to global buffer
-    if (tid < 33) spfh[pidx * 33 + tid] = hist[tid];
+    // Convert uint counts to float and write SPFH to global buffer
+    if (tid < 33u) spfh[pidx * 33u + tid] = float(hist[tid]);
 }
-// Note: production kernels use floatBitsToUint / atomicAdd with uint reinterpretation,
-// then convert to float after accumulation. Illustrative only.
 ```
 
 ### 2.2 SHOT: Signature of Histograms of Orientations
@@ -281,28 +279,30 @@ The spherical harmonic (SH) descriptor projects a scalar function on the unit sp
 **GPU SH projection.** A surface normal buffer of N entries is projected onto (L_max+1)² SH basis values in parallel: each thread evaluates one normal's contribution to all SH coefficients, then a parallel reduction accumulates across threads. For L_max=16, this is 289 SH evaluations per normal — again structurally a (N × 289) matrix multiply.
 
 ```python
-# PyTorch — batched SH projection (illustrative, using precomputed SH basis matrix)
+# PyTorch — batched SH energy descriptor (illustrative)
+# Assumes eval_sh() evaluates real spherical harmonics Y_l^m at each normal direction,
+# returning an (N, n_coeffs) tensor where n_coeffs = (L_max+1)^2.
+# Libraries such as e3nn (https://e3nn.org/) provide GPU-resident eval_sh().
 import torch
 
-def compute_sh_descriptor(normals: torch.Tensor,  # (N, 3) float32 on GPU
-                           sh_basis: torch.Tensor, # (289, 3) precomputed for each normal dir
-                           L_max: int = 16) -> torch.Tensor:
+def compute_sh_descriptor(normals: torch.Tensor,  # (N, 3) unit vectors on GPU
+                           L_max: int = 16,
+                           eval_sh_fn=None) -> torch.Tensor:
     """
     Project N surface normals onto spherical harmonic basis, return
     rotation-invariant energy per band. Output shape: (L_max + 1,)
     """
-    # Evaluate SH basis at each normal direction: (N, n_coeffs)
-    # (In practice, sh_basis is evaluated per normal; shown here as precomputed)
-    coeffs = normals @ sh_basis  # (N, n_coeffs) via matmul
-    coeffs = coeffs.mean(dim=0)  # (n_coeffs,) mean over surface
     n_coeffs = (L_max + 1) ** 2
+    # eval_sh_fn: (N, 3) -> (N, n_coeffs)  GPU-resident SH evaluator
+    coeffs = eval_sh_fn(normals)          # (N, n_coeffs)
+    coeffs = coeffs.mean(dim=0)           # (n_coeffs,) mean over surface
     energy = torch.zeros(L_max + 1, device=normals.device)
     idx = 0
     for l in range(L_max + 1):
-        band_coeffs = coeffs[idx : idx + 2*l + 1]
-        energy[l] = (band_coeffs ** 2).sum().sqrt()
+        band = coeffs[idx : idx + 2*l + 1]
+        energy[l] = (band ** 2).sum().sqrt()
         idx += 2*l + 1
-    return energy  # (L_max + 1,) rotation-invariant descriptor
+    return energy  # (L_max + 1,) rotation-invariant SH descriptor
 ```
 
 ---
@@ -426,6 +426,20 @@ eigenvalues, eigenvectors = torch.lobpcg(
 [Source: PyTorch torch.lobpcg documentation, https://pytorch.org/docs/stable/generated/torch.lobpcg.html]
 
 For the mass-weighted problem L φ = λ M φ, the preconditioned form M^{-1} L φ = λ φ is used, since M is diagonal and its inverse is trivial to apply.
+
+### 4.5 GPS Embedding (Global Point Signature)
+
+The Global Point Signature (GPS) embeds each vertex as a vector of scaled eigenfunctions:
+
+```
+GPS(x) = (φ_1(x)/sqrt(λ_1),  φ_2(x)/sqrt(λ_2),  …,  φ_k(x)/sqrt(λ_k))
+```
+
+The GPS embedding is a canonical, isometry-invariant coordinate system for the surface: geodesically close points map to nearby positions in GPS space, and isometric shapes have congruent GPS embeddings (up to sign ambiguity of eigenfunctions). [Source: Rustamov, "Laplace-Beltrami Eigenfunctions for Deformation Invariant Shape Representation," SGP 2007, https://doi.org/10.2312/SGP/SGP07/225-233]
+
+GPS coordinates are computed in O(N · k) time once the k eigenfunctions are available: each thread multiplies eigenvector entry φ_i(v) by 1/sqrt(λ_i) — a single GPU element-wise multiply of the (N × k) eigenfunction matrix against a (k,) scale vector.
+
+For shapes with intrinsic symmetry, GPS embeddings are sign-ambiguous (the sign of each eigenvector is arbitrary). Robust GPS-based matching normalises each eigenvector by the sign of its most positive entry, or uses the squared GPS embedding |GPS(x)|² as a sign-invariant descriptor.
 
 ---
 
@@ -704,6 +718,14 @@ GPU parallelism applies to: (1) the voxelisation step (one thread per triangle, 
 
 Open3D exposes convex hull but not VHACD directly; the standalone [V-HACD library](https://github.com/kmammou/v-hacd) provides a CPU implementation widely integrated into physics engines. GPU-accelerated variants Note: needs verification for open-source availability.
 
+### 8.5 Co-Segmentation of Shape Collections
+
+Co-segmentation assigns consistent part labels across an entire collection of related shapes simultaneously — unlike single-shape segmentation, co-segmentation enforces that corresponding parts receive the same label across all shapes. This is important for building training datasets for part-based shape retrieval.
+
+The classic formulation optimises a joint objective over all N_shapes shapes and K part labels: minimise within-shape segmentation cost (e.g., normalised cuts) plus an across-shape consistency cost that penalises different shapes labelling geometrically similar patches differently. [Source: Sidi et al., "Unsupervised Co-Segmentation of a Set of Shapes via Descriptor-Space Spectral Clustering," SIGGRAPH Asia 2011, https://doi.org/10.1145/2024156.2024160]
+
+**GPU parallelism.** The across-shape consistency term requires computing pairwise descriptor distances between patches from different shapes — an O(N_shapes² × N_patches²) operation. A GPU kernel distributes this computation: each thread block handles one (shape_i, shape_j) pair, computing the (N_patches × N_patches) distance matrix via a tiled matrix multiply in shared memory. For a collection of 100 shapes with 1000 patches each, this is 10⁴ pair evaluations of 10⁶-element distance matrices — an ideal workload for multi-stream GPU dispatch with one stream per shape pair.
+
 ---
 
 ## 9. Shape Completion and Inpainting
@@ -740,7 +762,7 @@ The discrete version assembles a biharmonic system L^T M^{-1} L (where L is the 
 
 ### 9.3 Learning-Based Completion: PCN and FoldingNet
 
-The Point Completion Network (PCN) encodes a partial point cloud into a global feature vector, then decodes it in two stages: coarse completion (a small set of seed points) followed by fine completion (folding a 2D grid onto each seed point). [Source: Yuan et al., "PCN: Point Completion Network," 3DV 2018, https://doi.org/10.1109/3DV.2018.00088]
+The Point Completion Network (PCN) encodes a partial point cloud into a global feature vector, then decodes it in two stages: coarse completion (a small set of seed points) followed by fine completion (folding a 2D grid onto each seed point). [Source: Yuan et al., "PCN: Point Completion Network," arXiv 1808.00671, https://arxiv.org/abs/1808.00671]
 
 At inference time the entire pipeline runs as GPU compute. FoldingNet's decoder generates N×M output points by applying an MLP to the concatenation of the global code and a 2D grid coordinate, with the grid broadcast across all M columns using tensor broadcasting — a natural GPU operation:
 
@@ -847,7 +869,7 @@ distances, indices = index_flat.search(query, k)
 
 ### 10.3 Deep Shape Retrieval: PointNet and DGCNN
 
-PointNet extracts a global shape feature by applying per-point MLPs followed by a max-pool aggregation, producing a single 1024-dimensional embedding. DGCNN (Dynamic Graph CNN) improves on PointNet by dynamically constructing a k-NN graph in feature space and applying edge convolutions. [Source: Wang et al., "Dynamic Graph CNN for Learning on Point Clouds," ACM Trans. Graphics 2019, https://doi.org/10.1145/3326362]
+PointNet extracts a global shape feature by applying per-point MLPs followed by a max-pool aggregation, producing a single 1024-dimensional embedding. DGCNN (Dynamic Graph CNN) improves on PointNet by dynamically constructing a k-NN graph in feature space and applying edge convolutions. [Source: Wang et al., "Dynamic Graph CNN for Learning on Point Clouds," arXiv 1801.07829, https://arxiv.org/abs/1801.07829]
 
 Using PyTorch Geometric:
 
@@ -882,6 +904,26 @@ At retrieval time, the network embedding (output of the penultimate layer, befor
 ### 10.4 Compact Binary Descriptors and Hamming Embedding
 
 For very large databases (> 10M shapes), float descriptors are compressed to binary hash codes of length B bits (B = 64–256). Similarity search in Hamming space is GPU-accelerated via popcount operations: comparing one B-bit query to N database codes costs N · B/64 popcount instructions, achievable in a single GPU kernel with 100× throughput advantage over float L2 for the same descriptor dimensionality.
+
+### 10.5 GPU-Accelerated SVM Classification on Shape Descriptors
+
+Support Vector Machine (SVM) classification on shape descriptors scales to large collections when training is performed on the GPU. ThunderSVM is an open-source SVM library with CUDA support that mirrors the LIBSVM API: [Source: Wen et al., "ThunderSVM: A Fast SVM Library on GPUs and CPUs," JMLR 2018, https://jmlr.org/papers/v19/17-740.html]
+
+```bash
+# ThunderSVM — train a multi-class SVM on GPU-computed shape descriptors
+# descriptors.csv: N×33 float matrix (FPFH descriptors), labels.txt: N×1 int labels
+thundersvm-train -s 0 -t 2 -g 0.5 -c 10 -o model.out descriptors.csv
+# -s 0: C-SVC (classification), -t 2: RBF kernel
+# Training runs on GPU; inference can be batched across the test set
+```
+
+For linear SVMs on high-dimensional descriptors (PointNet embeddings, d=1024), GPU-accelerated SGD via PyTorch's built-in autograd is often faster than a kernel SVM: the hinge loss gradient over a mini-batch of B shapes is a (B × d) matrix operation, handled by a single cuBLAS GEMM.
+
+### 10.6 ShapeNet Benchmark: mAP Evaluation
+
+The ShapeNet Core55 benchmark evaluates shape retrieval by mean Average Precision (mAP): for each of the 55 shape categories, compute the AP at rank-K (fraction of the top-K retrieved shapes that share the category label), then average across all query shapes and all categories. [Source: Chang et al., "ShapeNet: An Information-Rich 3D Model Repository," arXiv 1512.03012, https://arxiv.org/abs/1512.03012]
+
+GPU acceleration applies to the retrieval step: compute the (N_query × N_db) cosine-similarity matrix in a single batched GEMM, then argsort each row with a GPU radix sort (`thrust::sort_by_key`). The evaluation loop over sorted rank lists is sequential and CPU-bound but negligible compared to the retrieval cost. State-of-the-art retrieval models achieve 68–80% mAP on ShapeNet Core55 using deep embedding networks (DGCNN, PointNet++) as the descriptor extractor.
 
 ---
 
