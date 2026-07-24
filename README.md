@@ -168,8 +168,6 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 165: Vulkan Video: Hardware Decode and Encode via the Vulkan API](chapters/part-07a-gpu-apis/ch165-vulkan-video.md)
 - [Ch 173: VK_EXT_shader_object — Pipeline-Free Shader Binding in Vulkan](chapters/part-07a-gpu-apis/ch173-vk-ext-shader-object.md)
 - [Ch 192: GPU-Generated Commands — VK_EXT_device_generated_commands and Work Graphs](chapters/part-07a-gpu-apis/ch192-vk-ext-device-generated-commands.md)
-- [Ch 204: Shader Algorithm Catalog — Recipes, References, and Use Cases](chapters/part-07a-gpu-apis/ch204-shader-algorithm-catalog.md)
-- [Ch 208: GPU Geometry Algorithms — Subdivision, Implicit Surfaces, Skinning, and IK](chapters/part-07a-gpu-apis/ch208-gpu-geometry-algorithms.md)
 
 ---
 
@@ -429,6 +427,15 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 217: DLNA and Home Theater — GUPnP, Rygel, Kodi, and Network Media Streaming](chapters/part-28-linux-multimedia/ch217-dlna-home-theater.md)
 - [Ch 218: Broadcast Streaming on Linux — SRT, NDI, RTSP, and Live Production](chapters/part-28-linux-multimedia/ch218-srt-broadcast-streaming.md)
 - [Ch 219: MIDI, Synthesis, and Music Production on Linux — FluidSynth, LV2, SuperCollider, and DAW Integration](chapters/part-28-linux-multimedia/ch219-midi-synthesis-music-production.md)
+
+---
+
+### Part XXIX — Graphics Algorithms
+
+*A paired reference catalog for the algorithms that run on top of the Linux graphics stack: 108 named shader techniques spanning rendering architecture, PBR lighting, shadows, texturing, post-processing, global illumination, ray tracing, GPU simulation, and neural rendering (Ch 204); and 107 GPU geometry algorithms spanning surface representation, mesh processing, spatial data structures, differential geometry, animation, physics, SDF and volumetric rendering, terrain, ray tracing acceleration structures, point cloud processing, and neural geometry (Ch 208).*
+
+- [Ch 204: Shader Algorithm Catalog — Recipes, References, and Use Cases](chapters/part-29-graphics-algorithms/ch204-shader-algorithm-catalog.md)
+- [Ch 208: GPU Geometry Algorithms — Subdivision, Implicit Surfaces, Skinning, and IK](chapters/part-29-graphics-algorithms/ch208-gpu-geometry-algorithms.md)
 
 ---
 
@@ -713,6 +720,10 @@ chapters/
     ch217-dlna-home-theater.md
     ch218-srt-broadcast-streaming.md
     ch219-midi-synthesis-music-production.md
+  part-29-graphics-algorithms/
+    part-intro.md
+    ch204-shader-algorithm-catalog.md
+    ch208-gpu-geometry-algorithms.md
   appendices/
     appendix-a-glossary.md
     appendix-b-environment-variables.md
