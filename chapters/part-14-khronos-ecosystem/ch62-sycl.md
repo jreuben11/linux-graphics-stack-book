@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Overview](#1-overview)
+   - [1.1 What is SYCL?](#11-what-is-sycl)
+   - [1.2 What is Heterogeneous Compute?](#12-what-is-heterogeneous-compute)
+   - [1.3 What is OpenCL?](#13-what-is-opencl)
 2. [SYCL 2020 Programming Model: Queues, Buffers, Accessors, Events](#2-sycl-2020-programming-model-queues-buffers-accessors-events)
    - 2.1 [The `sycl::queue` Class](#21-the-syclqueue-class)
    - 2.2 [The `sycl::handler` Command Group Handler](#22-the-syclhandler-command-group-handler)
@@ -84,6 +87,28 @@ What you will learn:
 - The naming history of **AdaptiveCpp** (formerly **hipSYCL** → **Open SYCL**) and its **single-source, single compiler pass** (**SSCP**) architecture, where the **Clang** plugin embeds backend-agnostic **LLVM IR** in the host binary and the **`llvm-to-backend`** **JIT** lowers it at first launch to **PTX**, **AMDGCN**, **SPIR-V**, or native CPU code; the **`__acpp_backend_builtin`** intrinsic for calling native **HIP**/**CUDA** intrinsics from **SYCL** device code; online kernel fusion eliminating intermediate global-memory round-trips; and **AdaptiveCpp** performance relative to **DPC++** on **AMD** and **NVIDIA** hardware
 - The **`sycl_ext_oneapi_bindless_images`** extension for importing **Vulkan** **DMA-BUF** memory handles via **`import_external_memory`**, **`map_external_image_memory`**, and **`map_external_linear_memory`**; external semaphore synchronisation with **`ext_oneapi_wait_external_semaphore`** for **Vulkan** binary and timeline semaphores; and guidance on when to prefer native **Vulkan** compute shaders over **SYCL** interop
 - How Intel's **`dpct`** / **SYCLomatic** tool automates 90–95% of **CUDA**-to-**SYCL** migration using **`intercept-build`** and `compile_commands.json`, the **`DPCT1xxx`** diagnostic comment markers for items requiring manual review, the **CUDA**-to-**SYCL** programming model mapping (thread → work-item, warp → **sub-group**, block → work-group, grid → **ND-range**), and the productivity/portability trade-offs including the absent **`cooperative_groups`** analogue and the **oneMKL** / **rocBLAS** library ecosystem gap
+
+### 1.1 What is SYCL?
+
+SYCL (pronounced "sickle") is a Khronos Group open standard for portable, single-source heterogeneous programming in standard C++. Ratified at Revision 11 as SYCL 2020, it enables a single C++ translation unit to contain both host code running on a CPU and device kernels executing on GPUs, FPGAs, or other accelerators — without vendor-specific language extensions or separate source files. The standard is layered above lower-level execution APIs: on Linux, SYCL implementations dispatch through Level Zero, OpenCL, CUDA, or ROCm HIP depending on the available backend adapter.
+
+SYCL's design centres on C++ abstractions — `sycl::queue`, `sycl::buffer`, `sycl::accessor`, `sycl::event` — that map cleanly onto the execution and memory models of modern GPU driver stacks. Kernels are expressed as C++ lambda expressions or function objects captured by a command group submitted to a queue; the compiler extracts device code at build time while the host sees only typed C++ wrapper types. This differs from OpenCL, where kernels are separate string literals or `.cl` source files compiled at runtime.
+
+On Linux, the two principal SYCL implementations are Intel's DPC++ (`icpx`, part of oneAPI) and the community-maintained AdaptiveCpp. Both target the Intel, AMD, and NVIDIA GPU stacks from the same C++ source, making SYCL the primary open-standard path to portable GPU compute on Linux without platform lock-in.
+
+### 1.2 What is Heterogeneous Compute?
+
+Heterogeneous compute refers to workloads that distribute computation across processors with fundamentally different architectures in the same system — most commonly a general-purpose CPU alongside a many-core GPU or a specialised accelerator. GPUs achieve high throughput by executing thousands of lightweight threads in parallel across many shader cores, each operating on independent data; CPUs favour low-latency sequential execution with sophisticated out-of-order pipelines and large caches. Applications exploit both by assigning data-parallel inner loops to the GPU and control-flow-heavy orchestration to the CPU.
+
+On Linux, heterogeneous workloads interact with the kernel through the DRM subsystem and GPU-specific interfaces: compute-class command streams are submitted via `ioctl` on device nodes such as `/dev/dri/renderD128`, scheduled by the DRM GPU scheduler (`drm_sched`), and executed on hardware managed by drivers such as `i915`, `amdgpu`, or `nouveau`. Memory transfers between CPU and GPU address spaces are coordinated through DMA mappings, IOMMU translation, and — where hardware supports it — cache-coherent interconnects such as PCIe BAR1 or CXL.
+
+SYCL addresses portable heterogeneous compute by abstracting these hardware-specific paths behind a uniform C++ programming model that targets multiple GPU architectures through a common compiler and runtime layer. The chapters on ROCm (Chapter 48), Level Zero (Chapter 25), and the DRM GPU scheduler (Chapter 4) cover the corresponding platform layers in detail.
+
+### 1.3 What is OpenCL?
+
+OpenCL (Open Computing Language) is an earlier Khronos open standard for heterogeneous programming that predates SYCL. It uses a split-source model: host code written in C or C++ calls an OpenCL runtime API to compile and launch kernel programs expressed either as source strings in OpenCL C, or as pre-compiled SPIR-V binaries. The runtime manages platform enumeration, device selection, context creation, command queue submission, and memory buffer management through an explicit C API — `clCreateContext`, `clCreateCommandQueue`, `clEnqueueNDRangeKernel`, and related calls.
+
+OpenCL is significant to this chapter for two reasons. First, SYCL was originally defined as a high-level abstraction over OpenCL; many SYCL 2020 concepts — platforms, devices, contexts, command queues, ND-range dispatch, buffers — map directly from OpenCL's execution and memory model. Second, one of the four backend adapters in the Unified Runtime layer beneath DPC++ is an OpenCL adapter (`libur_adapter_opencl.so`), meaning that on systems where Level Zero is not available, a SYCL queue can dispatch through the OpenCL runtime to any ICD-compliant OpenCL driver. Understanding OpenCL's split-source model clarifies why SYCL's single-source approach represents a substantive usability advance while preserving the same underlying execution semantics.
 
 ---
 

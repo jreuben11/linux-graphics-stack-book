@@ -10,6 +10,8 @@
 ## Table of Contents
 
 1. [Why ML Inference Belongs in a Graphics Stack Book](#1-why-ml-inference-belongs-in-a-graphics-stack-book)
+   - [1.1 What is LiteRT?](#11-what-is-litert)
+   - [1.2 What is MediaPipe?](#12-what-is-mediapipe)
 2. [LiteRT Architecture](#2-litert-architecture)
 3. [Delegate Architecture: Routing Inference to Hardware](#3-delegate-architecture-routing-inference-to-hardware)
    - [3.1 NNAPI: Historical Context (API 27–34)](#31-nnapi-historical-context-api-2734) — HAL evolution, LiteRT delegate, why deprecated
@@ -58,6 +60,20 @@ When an Android application runs pose-landmark detection at 30 frames per second
 This architecture, pioneered in LiteRT's GPU delegate and systematised by the MediaPipe framework, makes on-device ML inference a *first-class user of GPU resources* on Android. Understanding the buffer lifecycle, delegate dispatch, and synchronisation primitives is therefore essential knowledge for any engineer working at the intersection of Android graphics and ML — and increasingly, that intersection is most of the stack.
 
 A secondary motivation is the rise of LiteRT-LM (announced May 2026), which brings multi-turn large-language-model inference to the same GPU compute pipeline, targeting 52 tokens/second on Android GPU and 56 tokens/second on Apple Metal. [Source: Google Developers Blog, LiteRT-LM](https://developers.googleblog.com/blazing-fast-on-device-genai-with-litert-lm/) On-device LLM inference is not a different technology layer — it is the GPU compute pipeline operating on larger models.
+
+### 1.1 What is LiteRT?
+
+LiteRT is Google's on-device machine learning inference runtime, rebranded in 2024 from its predecessor TensorFlow Lite (TFLite). It executes trained neural network models directly on device hardware — GPU, NPU, DSP, or CPU — without requiring a network connection or server-side compute. The runtime reads models stored in the `.tflite` FlatBuffer format, which enables zero-copy memory mapping of model weights from disk, a critical property on memory-constrained mobile hardware where a full deserialisation would double peak RSS.
+
+From the perspective of the Android graphics stack, LiteRT is significant because its GPU delegate runs inference as OpenGL ES 3.1 compute shaders or Vulkan compute pipelines — the same command-submission infrastructure that the rendering pipeline uses. Tensors can be allocated as `AHardwareBuffer` objects, allowing GPU memory to be shared directly with the camera HAL, SurfaceFlinger, and ARCore without CPU round-trips. This design positions LiteRT as a first-class consumer of the Android GPU rather than an isolated accelerator stack bolted alongside it.
+
+The runtime ships as part of the `com.google.android.tflite` APEX module on Android 12 and later, and is available as an AAR dependency (`com.google.ai.edge.litert:litert-api`) for integration into Android applications via Gradle. A delegate system allows the interpreter to offload operator subgraphs to hardware accelerators — the GPU delegate, vendor NPU delegates, and XNNPack for SIMD-optimised CPU paths — all covered in detail in §3. [Source: ai.google.dev/edge/litert](https://ai.google.dev/edge/litert)
+
+### 1.2 What is MediaPipe?
+
+MediaPipe is Google's open-source framework for building and deploying machine learning pipelines on mobile and edge devices. Where LiteRT provides raw model inference, MediaPipe organises perception tasks — face detection, pose estimation, hand tracking, object detection, audio classification — as directed acyclic graphs of data-processing units called Calculators. Each Calculator receives typed packets from upstream nodes, applies a transformation, and emits packets downstream. This graph-based design enables complex multi-model pipelines, such as a face-mesh pipeline that coordinates face detection, landmark estimation, and iris tracking as three sequential inference passes, without bespoke application glue code.
+
+From the Android graphics stack perspective, MediaPipe is notable because it manages the buffer lifecycle across the camera-to-display pipeline. The `GlCalculatorHelper` class maintains a shared EGL context, allowing GLES-resident frame buffers from the camera to pass through LiteRT inference and on to the display surface while remaining GPU-resident throughout. MediaPipe integrates with LiteRT through its `TfLiteInferenceCalculator`, which invokes the LiteRT interpreter inside the graph scheduler. The Tasks API, introduced in MediaPipe 0.10, provides higher-level wrappers for common perception use cases, abstracting the underlying graph structure. §7 and §8 cover the framework architecture and Tasks API in full. [Source: ai.google.dev/edge/mediapipe](https://ai.google.dev/edge/mediapipe)
 
 ---
 

@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Introduction](#introduction)
+   - [1.1 What is Embedded DisplayPort (eDP)?](#11-what-is-embedded-displayport-edp)
+   - [1.2 What is Panel Self-Refresh (PSR)?](#12-what-is-panel-self-refresh-psr)
+   - [1.3 What is the DPCD and AUX Channel?](#13-what-is-the-dpcd-and-aux-channel)
 2. [eDP vs. External DisplayPort: Why a Separate Spec](#edp-vs-external-displayport-why-a-separate-spec)
 3. [DPCD Register Space and AUX Channel Protocol](#dpcd-register-space-and-aux-channel-protocol)
 4. [PSR: Panel Self-Refresh](#psr-panel-self-refresh)
@@ -42,6 +45,24 @@ This chapter is a field guide to every eDP-specific mechanism that appears in th
 - **`drm_panel` subsystem** — panel abstraction layer used on embedded platforms and Chromebooks
 - **Bridge chips** — DSI-to-eDP conversion chips used in Chromebook and embedded designs
 - **sysfs and debugfs interfaces** — the full complement of diagnostic tools for display power issues on shipping laptops
+
+### 1.1 What is Embedded DisplayPort (eDP)?
+
+Embedded DisplayPort (eDP) is a display interface specification from VESA designed specifically for the internal connection between a laptop or embedded system's GPU and its built-in LCD panel. Unlike standard DisplayPort, which targets external monitor connections with hot-plug detection and higher voltage swings, eDP is optimized for the fixed, short-distance link inside a laptop chassis: it uses lower differential voltage swings (down to 400 mV peak differential), a permanently attached flex-cable connector, and an extended DPCD register set covering laptop-specific features such as panel power sequencing, DPCD-based backlight control, and multiple levels of panel self-refresh.
+
+From the Linux kernel's perspective, eDP panels are managed by the same `drm_dp_*` infrastructure as external DisplayPort, with eDP-specific extensions controlled through dedicated DPCD register ranges starting at `0x700` (`DP_EDP_DPCD_REV`). A GPU driver identifies an eDP sink by reading this register at initialization; a non-zero value activates the eDP-specific code paths in `intel_dp.c` or `amdgpu_dm.c`. The eDP specification is versioned independently from DisplayPort, with each revision adding features that are relevant only for always-connected internal panels: PSR, Panel Replay, DRRS, bridge chip protocols, and the T1–T12 panel power sequencing model covered throughout this chapter.
+
+### 1.2 What is Panel Self-Refresh (PSR)?
+
+Panel Self-Refresh (PSR) is a power-saving mechanism introduced in eDP 1.2 that offloads the display refresh cycle from the GPU to dedicated SRAM inside the panel's timing controller (TCON). When screen content is static, the GPU transmits one final frame to the panel and enters a low-power state. The panel TCON holds that frame in its local buffer and continues scanning out pixels to the LCD at the normal refresh rate without any further data from the GPU. This eliminates the DRAM reads, display engine clock activity, and eDP link power that would otherwise occur on every refresh cycle — typically saving 0.5–2 W on a laptop panel running at 60 Hz.
+
+In the Linux DRM stack, PSR is implemented in `drivers/gpu/drm/i915/display/intel_psr.c` for Intel hardware and `drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_psr.c` for AMD APUs. The driver tracks framebuffer writes through the DRM frontbuffer tracking mechanism and schedules PSR re-entry after a configurable idle timeout. The eDP 1.4 extension called PSR2 (Selective Update) refines the mechanism further, retransmitting only the changed screen regions rather than the full frame, enabling power savings during video playback and cursor movement.
+
+### 1.3 What is the DPCD and AUX Channel?
+
+The DisplayPort Configuration Data (DPCD) is a 1 MB flat register space (addresses `0x00000`–`0xFFFFF`) embedded in every DisplayPort and eDP sink device. It holds capability registers, link training state, power management controls, and sink-specific extensions. For eDP panels, DPCD registers at offsets `0x700`–`0x72F` expose eDP-specific capabilities including backlight control mode, PSR support level, and Panel Replay capability. These registers are the primary interface through which GPU drivers configure and monitor every eDP feature covered in this chapter.
+
+The AUX channel is the half-duplex differential serial link over which DPCD register reads and writes are transported. It runs at 1 Mbps and carries both native DPCD transactions and I2C-over-AUX tunnelling (used for EDID retrieval). The Linux kernel provides the `drm_dp_aux` abstraction with `drm_dp_dpcd_read()` and `drm_dp_dpcd_write()` helper functions that handle retry logic, transaction chunking at 16-byte boundaries, and DEFER responses. On eDP, the AUX channel also carries PSR interrupt signalling: when the panel asserts an HPD interrupt to trigger PSR exit, the driver reads `DP_DEVICE_SERVICE_IRQ_VECTOR` over AUX to determine the cause. Understanding the DPCD register layout is prerequisite to every eDP feature discussed in subsequent sections.
 
 ---
 

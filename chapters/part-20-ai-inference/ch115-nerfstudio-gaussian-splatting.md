@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Overview: Neural Rendering in the Linux GPU Stack](#1-overview-neural-rendering-in-the-linux-gpu-stack)
+   - [1.1 What is Neural Radiance Fields (NeRF)?](#11-what-is-neural-radiance-fields-nerf)
+   - [1.2 What is 3D Gaussian Splatting (3DGS)?](#12-what-is-3d-gaussian-splatting-3dgs)
+   - [1.3 What is NeRFStudio?](#13-what-is-nerfstudio)
 2. [Volume Rendering Theory: Ray Marching, Density Fields, and Positional Encoding](#2-volume-rendering-theory)
 3. [NeRFStudio Architecture: ns-train, Pipelines, and the tyro Config System](#3-nerfstudio-architecture)
 4. [Instant-NGP and tiny-cuda-nn: Hash Encoding and MLP Acceleration](#4-instant-ngp-and-tiny-cuda-nn)
@@ -78,6 +81,18 @@ Neural Radiance Fields (NeRF), introduced by Mildenhall et al. in 2020 [Source](
 - *Graphics application developers* integrating neural radiance fields or Gaussian splats into rendering pipelines, game engines, or design tools.
 - *AI/ML engineers* training and deploying NeRF/3DGS models on Linux clusters.
 - *Systems developers* who need to understand how the CUDA tile rasterizer and hash-encoding kernels interact with driver and hardware resources.
+
+### 1.1 What is Neural Radiance Fields (NeRF)?
+
+Neural Radiance Fields (NeRF) is a scene representation technique that encodes a three-dimensional scene as a continuous volumetric function learned from a collection of posed photographs. Rather than storing geometry as meshes or voxel grids, a NeRF parameterises the scene with a multi-layer perceptron (MLP) that accepts a 3D world position and a 2D viewing direction as inputs and predicts the emitted RGB colour and volume density at that location. Novel views are synthesised by casting rays through the scene, querying the network at sampled positions along each ray, and accumulating colour and opacity through the classical volume rendering integral. Training minimises the photometric reconstruction loss between rendered and observed pixel values using standard gradient descent over the MLP weights. The core appeal of NeRF is that it produces photorealistic view synthesis from unstructured photograph collections without requiring explicit 3D modelling, making it applicable to real-world scenes — building interiors, outdoor environments, industrial equipment — that are impractical to reconstruct manually. On Linux, NeRF training runs on CUDA-capable NVIDIA GPUs through PyTorch, with all compute exposed through the standard CUDA driver stack beneath the user-space framework. The volume rendering mathematics underpinning NeRF, and its extension to hash-grid encodings and proposal networks, are detailed in Sections 2 through 5 of this chapter.
+
+### 1.2 What is 3D Gaussian Splatting (3DGS)?
+
+3D Gaussian Splatting is an explicit scene representation and real-time rendering technique that models a scene as a collection of semi-transparent, anisotropic Gaussian primitives in 3D space. Each Gaussian carries a position (mean), a full 3D covariance matrix encoding orientation and scale, an opacity value, and a set of spherical harmonic coefficients representing view-dependent colour. Rendering proceeds by projecting the 3D Gaussians onto the image plane as 2D Gaussians, sorting them by depth, and compositing them front-to-back using alpha blending — a process called splatting. Because splatting is a rasterization operation rather than a ray-marching integral, it runs one to two orders of magnitude faster than NeRF inference, reaching real-time frame rates on modern GPUs. Training begins from a sparse point cloud produced by Structure-from-Motion and optimises Gaussian parameters through differentiable rasterization, using gradient signals to adaptively densify or prune the Gaussian set. The 3DGS representation is explicit and compact: a trained scene is stored as a `.ply` file of Gaussian attributes and can be loaded by any compliant renderer. The CUDA tile rasterizer that implements the forward and backward passes is described in Sections 6 and 7, and Vulkan-based real-time renderers for the splatted output are covered in Section 11.
+
+### 1.3 What is NeRFStudio?
+
+NeRFStudio is an open-source Python framework that provides a unified training, evaluation, and visualisation harness for both NeRF and 3DGS methods on Linux. It is built on PyTorch and exposes a modular architecture in which data parsers, model definitions, training loops, and renderer components are independently configurable through a typed dataclass system backed by the `tyro` CLI library. NeRFStudio ships with a curated set of production-grade models — including Nerfacto (its flagship NeRF), Splatfacto (3DGS via the gsplat rasterizer), Instant-NGP, and TensorRF — and provides a plugin registry so external models can be installed as Python packages and discovered automatically. The framework wraps the COLMAP structure-from-motion pipeline for camera pose estimation, handles dataset conversion from standard formats such as RealityCapture, ARKit, and polycam, and includes an interactive web-based viewer (Viser) that streams training progress to a browser over WebSocket. In the Linux graphics stack, NeRFStudio sits entirely in user space: it issues CUDA kernels through PyTorch's CUDA backend, which dispatches through the NVIDIA proprietary driver or the ROCm HIP stack on AMD hardware, ultimately reaching the DRM kernel subsystem. Installation, multi-GPU configuration, and deployment patterns are covered in Sections 3 and 12.
 
 ---
 

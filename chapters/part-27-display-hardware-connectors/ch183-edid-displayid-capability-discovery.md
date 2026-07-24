@@ -10,6 +10,9 @@
    - [1.1 From VESA EDID 1.0 to E-EDID 1.4](#11-from-vesa-edid-10-to-e-edid-14)
    - [1.2 Base Block Layout: Byte-by-Byte](#12-base-block-layout-byte-by-byte)
    - [1.3 Detailed Timing Descriptors](#13-detailed-timing-descriptors)
+   - [1.4 What is EDID?](#14-what-is-edid)
+   - [1.5 What is DisplayID?](#15-what-is-displayid)
+   - [1.6 What is DDC?](#16-what-is-ddc)
 2. [CEA-861 / CTA-861 Extension Block](#2-cea-861--cta-861-extension-block)
    - [2.1 Data Block Collection Format](#21-data-block-collection-format)
    - [2.2 Video Data Block and VIC Codes](#22-video-data-block-and-vic-codes)
@@ -157,6 +160,30 @@ struct detailed_pixel_timing {
 The pixel clock is stored as a 16-bit little-endian value in bytes 0–1 of the DTD in units of 10 kHz (minimum 10 kHz). A value of `0x0000` in bytes 0–1 signals a non-timing descriptor (monitor name, serial string, or range limits).
 
 **Monitor Range Limits Descriptor** (tag `0xFD`): Encodes minimum/maximum horizontal and vertical frequencies (Hz), and maximum pixel clock (MHz/10). EDID 1.4 extended this with CVT timing support: the descriptor can optionally include preferred CVT vertical/horizontal refresh rate and the supported aspect ratios.
+
+### 1.4 What is EDID?
+
+EDID (Extended Display Identification Data) is a binary data structure that a display device stores in a small EEPROM and exposes to the host GPU over a two-wire I²C bus (DDC2B). Defined by VESA and standardised as E-EDID 1.4, the structure occupies exactly 128 bytes in its base form and encodes everything a graphics driver needs to drive a monitor without user intervention: the manufacturer identifier, physical dimensions, supported resolutions and refresh rates via detailed timing descriptors, color gamut chromaticity coordinates, and DPMS power management flags.
+
+The base block is followed by up to 255 extension blocks of 128 bytes each; the count is stored at offset 126. Extension block tag `0x02` (CEA-861/CTA-861) carries HDMI audio and video capabilities; tag `0x70` carries DisplayID blocks for modern displays. The Linux kernel reads EDID at connector probe time via the DDC channel, validates the one-byte checksum at offset 127, and converts timing data into `drm_display_mode` structures that populate the connector's mode list. The primary parsing implementation lives in `drivers/gpu/drm/drm_edid.c`.
+
+EDID is the entry point for almost every display capability decision made by the kernel's DRM subsystem: mode negotiation, HDR metadata, audio signalling, and color space selection all derive from what the EDID reports. When EDID data is absent, corrupt, or non-compliant, the kernel falls back to safe defaults or applies quirk overrides from the built-in quirks database.
+
+### 1.5 What is DisplayID?
+
+DisplayID is a VESA-defined display identification standard that supersedes the fixed-layout EDID base block for modern display hardware. Where EDID 1.4 uses a 128-byte structure designed around CRT-era constraints, DisplayID adopts a flexible tagged-block architecture that accurately represents high-refresh-rate panels, multi-tile display arrays, variable refresh rate ranges, and extended HDR capability sets without the layout restrictions imposed by the legacy format.
+
+DisplayID 2.0, released in 2021, is the current revision. It is most commonly delivered as an extension block with tag `0x70` embedded inside an otherwise EDID-compliant EEPROM, preserving backwards compatibility with existing software stacks. On DisplayPort, it may also appear as a standalone structure over the AUX channel. Each DisplayID structure begins with a mandatory product identification block, followed by optional typed blocks for display parameters, type VII detailed timing descriptors (which replace EDID's DTD format), CTA data, audio capability, and HDCP status.
+
+Linux parses DisplayID content through `drivers/gpu/drm/drm_displayid.c`, which walks the block list and feeds timing and capability information into the same `drm_display_mode` and connector property infrastructure used by the EDID parser. The two parsers coexist: a display that ships both an EDID base block and a DisplayID extension uses EDID for backwards-compatible mode sets and DisplayID for extended capabilities such as high-frame-rate or native HDR timings.
+
+### 1.6 What is DDC?
+
+Display Data Channel (DDC) is the I²C-based sideband channel embedded in VGA, DVI, HDMI, and DisplayPort cables through which the host GPU reads a monitor's EDID. The DDC2B variant, in widespread use since the mid-1990s, operates at 100 kHz and accesses the display's EEPROM at I²C device address `0x50`; a second address (`0x51`) is reserved for write access. Segmented reads — used when the EEPROM holds more than 256 bytes of EDID — access a segment pointer register at address `0x30` to page through multiple 256-byte windows.
+
+DisplayPort replaces the cable-embedded I²C mechanism with an AUX channel, a differential half-duplex sideband link that carries EDID reads alongside DPCD (DisplayPort Configuration Data) register access. Despite the different physical layer, the DP AUX channel presents itself as an I²C adapter to the rest of the software stack, so `drm_get_edid()` operates identically for both cable types.
+
+In the Linux kernel, DDC access is abstracted behind the `struct i2c_adapter` pointer passed to `drm_get_edid()`. Drivers instantiate an I²C adapter over their DDC pins — or a DP AUX adapter via `drm_dp_aux_init()` — and register it with the connector. The EDID read itself, including retry logic, segmented-read sequencing, and checksum validation, is handled by `drm_edid_read()` in `drivers/gpu/drm/drm_edid.c`. The resulting `struct drm_edid` opaque handle is what all higher-level EDID and DisplayID parsing routines operate on.
 
 ---
 

@@ -34,6 +34,10 @@
    - [1.6 Background: HLS — HTTP Live Streaming](#16-background-hls--http-live-streaming)
    - [1.7 Background: Video and Audio Codecs](#17-background-video-and-audio-codecs)
    - [1.8 Why WebCodecs Instead of MSE or WebRTC?](#18-why-webcodecs-instead-of-mse-or-webrtc)
+   - [1.9 What is WebCodecs?](#19-what-is-webcodecs)
+   - [1.10 What is VA-API?](#110-what-is-va-api)
+   - [1.11 What is DMA-BUF?](#111-what-is-dma-buf)
+   - [1.12 What is VideoFrame?](#112-what-is-videoframe)
 2. [VideoDecoder: Chunk Submission, Frame Delivery, and Lifecycle](#2-videodecoder-chunk-submission-frame-delivery-and-lifecycle)
 3. [VideoEncoder: Parameters, Latency Modes, and Key Frame Control](#3-videoencoder-parameters-latency-modes-and-key-frame-control)
 4. [The Hardware Acceleration Path on Linux](#4-the-hardware-acceleration-path-on-linux)
@@ -1007,6 +1011,36 @@ interface VideoEncoder : EventTarget {
 ```
 
 Audio counterparts (`AudioDecoder`, `AudioEncoder`) follow the same structural pattern. `ImageDecoder` handles still image formats (JPEG, PNG, AVIF, WebP) with full ICC profile and HDR metadata preservation. This chapter focuses on the video path and its hardware acceleration story on Linux.
+
+### 1.9 What is WebCodecs?
+
+WebCodecs is the W3C specification that exposes the browser's codec infrastructure as a collection of primitive JavaScript objects rather than as an opaque playback pipeline. Before WebCodecs, every codec operation in the browser — decoding an H.264 NAL unit, encoding a camera frame as VP9 — happened inside the browser's media engine, and JavaScript could neither observe nor intercept the individual encoded or decoded units. WebCodecs closes that gap by providing `VideoDecoder`, `VideoEncoder`, `AudioDecoder`, `AudioEncoder`, `ImageDecoder`, and the container types `EncodedVideoChunk`, `EncodedAudioChunk`, and `VideoFrame` as first-class JavaScript APIs.
+
+The specification is developed by the W3C Media Working Group and published at `https://www.w3.org/TR/webcodecs/`. Chrome shipped the API in version 94 (September 2021); Firefox enabled it by default in version 130 (September 2024). The browser maps each WebCodecs object to an underlying platform codec: on Linux, `VideoDecoder` maps to the VA-API path when hardware acceleration is available, or falls back to software codecs (libvpx, dav1d, openh264) otherwise. The API is stateful and asynchronous: a developer configures a decoder with a codec string and optional extradata (`description`), submits `EncodedVideoChunk` objects via `decode()`, and receives decoded `VideoFrame` objects through an output callback. The full specification surface and the Linux hardware acceleration path beneath it are the subjects of this chapter.
+
+---
+
+### 1.10 What is VA-API?
+
+VA-API (Video Acceleration API) is the Linux userspace interface for fixed-function video codec hardware. It abstracts the vendor-specific command interfaces of GPU video engines — Intel Quick Sync, AMD Video Codec Engine (VCE/VCN), and NVIDIA NVDEC — behind a common C API defined in `va/va.h` from the `libva` library ([github.com/intel/libva](https://github.com/intel/libva)). An application opens a VA display (`VADisplay`), queries available profiles and entrypoints, creates a codec context (`VAContext`), allocates render targets (`VASurface`), submits codec-specific parameter buffers and bitstream data, and triggers execution with `vaEndPicture()`. The driver backend — a shared library such as `iHD_drv_video.so` for Intel or `radeonsi_drv_video.so` for AMD — translates these calls into GPU commands and submits them to the DRM kernel driver via `ioctl`.
+
+In the Chrome architecture, the `VaapiVideoDecoder` class (in `media/gpu/vaapi/`) implements the browser's `VideoDecoder` interface by wrapping the VA-API session lifecycle. When a JavaScript `VideoDecoder.decode()` call arrives in the GPU process, the browser constructs a `VaapiWrapper`, fills a `VABufferID` with the encoded slice data, calls `vaRenderPicture()` and `vaEndPicture()`, and waits for the decoded surface to be signalled. The surface is subsequently imported as a DMA-BUF to enable zero-copy transfer to a GL texture or WebGPU `GPUExternalTexture`. VA-API is covered in detail in §4 and in Chapter 147.
+
+---
+
+### 1.11 What is DMA-BUF?
+
+DMA-BUF is a Linux kernel subsystem that enables multiple hardware devices — a GPU video decoder, a display controller, a V4L2 camera — to share the same physical memory buffer without copying it through the CPU. A DMA-BUF handle is a file descriptor exported by the kernel from a specific driver context; any other driver that can import that file descriptor gains access to the same pages mapped to its own device address space. The subsystem is implemented in `drivers/dma-buf/dma-buf.c` and is closely tied to the DRM GEM (Graphics Execution Manager) object model: a GEM object can be exported as a DMA-BUF fd via `DRM_IOCTL_PRIME_HANDLE_TO_FD` and imported via `DRM_IOCTL_PRIME_FD_TO_HANDLE`.
+
+In the WebCodecs context, DMA-BUF enables the zero-copy pipeline described in §5: when VA-API decodes a video frame onto a GPU surface (`VASurface`), the surface's backing GEM object is exported as a DMA-BUF file descriptor. The GPU process passes this fd — via Chrome's IPC layer — to the point of consumption, where it is imported as an `OzoneImageBacking`, a Chromium abstraction that wraps a DMA-BUF fd as a GL texture or a WebGPU texture. JavaScript receives this as a `VideoFrame` whose pixel data never touches CPU memory, provided the application only reads it on the GPU via WebGL's `texImage2D` or WebGPU's `importExternalTexture`. When JavaScript calls `VideoFrame.copyTo()`, the buffer is read back to CPU memory and the zero-copy guarantee is broken.
+
+---
+
+### 1.12 What is VideoFrame?
+
+`VideoFrame` is the WebCodecs primitive that represents a single decoded video frame and serves as the bridge between the codec layer and the web rendering APIs — Canvas 2D, WebGL, WebGPU, and `OffscreenCanvas`. A `VideoFrame` carries pixel data in one of the formats defined by the WebCodecs specification (`VideoPixelFormat`: `I420`, `I420A`, `I422`, `I444`, `NV12`, `RGBA`, `RGBX`, `BGRA`, `BGRX`), along with the timestamp in microseconds, optional duration, visible and display rectangles (`visibleRect`, `displayWidth`/`displayHeight`), and, on platforms that support zero-copy, a GPU-resident backing store that avoids a CPU round-trip.
+
+A `VideoFrame` can be constructed by JavaScript from a pixel buffer, `ImageBitmap`, `OffscreenCanvas`, or `HTMLVideoElement`; received as the output of `VideoDecoder.decode()`; or obtained via the `ImageCapture` API from a camera. Regardless of origin, it exposes three access paths: `copyTo(ArrayBuffer)` reads pixel data to CPU memory; `createImageBitmap()` produces a GPU-compositable image; and `importExternalTexture()` on a `GPUDevice` wraps a GPU-resident `VideoFrame` as a `GPUExternalTexture` for direct use in WGSL shaders, without a CPU round-trip when the frame is DMA-BUF-backed. Every `VideoFrame` holds a reference to the underlying GPU surface or DMA-BUF allocation and must be explicitly released via `VideoFrame.close()`; failing to do so leaks VA-API surfaces and causes decoder stalls once the codec's surface pool is exhausted. `VideoFrame` is covered in §5 and §6 of this chapter.
 
 ---
 

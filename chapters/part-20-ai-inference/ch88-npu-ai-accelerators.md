@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Introduction: The AI PC Inflection Point](#1-introduction-the-ai-pc-inflection-point)
+   - [1.1 What is an NPU?](#11-what-is-an-npu)
+   - [1.2 What is the DRM accel Subsystem?](#12-what-is-the-drm-accel-subsystem)
+   - [1.3 What is an AI PC?](#13-what-is-an-ai-pc)
 2. [Intel NPU: The ivpu Kernel Driver](#2-intel-npu-the-ivpu-kernel-driver)
 3. [Intel NPU and OpenVINO](#3-intel-npu-and-openvino)
 4. [AMD XDNA: Ryzen AI NPU](#4-amd-xdna-ryzen-ai-npu)
@@ -79,6 +82,30 @@ The chapter covers the following topics in depth:
 - **Section 8: Framework Integration** — **`ipex-llm`** (Intel Extension for **PyTorch** LLM) and the successor **OpenVINO GenAI** pipeline, **HuggingFace** **`optimum-amd`** and **`RyzenAIModel`** for Ryzen AI, the experimental **llama.cpp** **GGML** **XDNA** backend using the **`ggml_backend_reg`** API and **IRON** operator library, and **`torch.compile`** + **`torch.onnx.export()`** export paths for NPU targets
 - **Section 9: Power and Thermal Management** — Intel NPU **ACPI** D-states and **`ivpu_pm.c`** runtime PM via **`dev_pm_ops`** and **`autosuspend_delay`**, NPU frequency visibility through **sysfs**, AMD **`xrt-smi`** power modes (**powersaver**, **balanced**, **performance**, **turbo**) and **SMU** thermal coordination, NPU vs. GPU power efficiency comparisons for 7B-parameter models, and thermal throttling behaviour across vendors
 - **Section 10: Developer Workflow and Tools** — Intel's **`benchmark_app`** and **VTune** NPU profiling, AMD **`xrt-smi`** hardware context inspection and **GEMM** validation, **`ivpu`** driver tracing via **`trace_ivpu_*`** tracepoints defined in **`ivpu_trace.h`** and the **ftrace** subsystem, **sysfs** and **debugfs** inspection under **`/sys/kernel/debug/accel/`**, and **udev** rules for **`/dev/accel/accel0`** device node permissions
+
+### 1.1 What is an NPU?
+
+A Neural Processing Unit (NPU) is a dedicated silicon tile integrated into a system-on-chip alongside the CPU and GPU, purpose-built for sustained low-batch inference of neural network models. Unlike a GPU, which executes general-purpose parallel workloads using a SIMT execution model, an NPU's datapath is optimised around the two operations that dominate transformer and CNN inference: matrix-multiply-accumulate (MMA) and activation functions such as GELU and SoftMax. NPUs achieve this through a combination of dense systolic arrays or VLIW+SIMD compute fabrics and large software-managed on-chip SRAM scratchpads that reduce DRAM bandwidth pressure on activation tensors.
+
+The defining characteristic that distinguishes an NPU from a discrete GPU or integrated graphics core is its power envelope during sustained inference. An NPU running a quantised 7B-parameter language model at INT4 precision typically draws 3–15 W, compared to 50–300 W for a discrete GPU performing the same workload. This efficiency enables always-on inference scenarios — continuous speech recognition, on-device LLM chat, background camera processing — without exhausting a laptop battery.
+
+On Linux, NPUs appear as DRM accelerator devices under `/dev/accel/`. User-space software reaches them through vendor-specific runtime libraries — OpenVINO for Intel NPUs, the XRT/IRON stack for AMD XDNA, and the QNN SDK for Qualcomm Hexagon — which in turn issue ioctls to the kernel driver. This chapter describes how each kernel driver implements the DRM accel interface and how ML framework APIs bridge down to the hardware.
+
+### 1.2 What is the DRM accel Subsystem?
+
+The DRM accel subsystem (`drivers/accel/`, introduced in Linux 6.2) is the kernel infrastructure for compute accelerators that are not rendering devices. Before its introduction, compute accelerator drivers were typically implemented as miscdevice or character device nodes with entirely bespoke ioctl interfaces, offering no shared infrastructure for buffer management or context isolation. The accel subsystem provides a standardised approach: devices appear as `/dev/accel/accelN` nodes with major number 261, are managed via the same `struct drm_device` and `struct drm_file` lifetime model used by GPU drivers, and inherit DRM's established primitives for memory management (GEM buffer objects, DMA-BUF cross-device sharing) and file-descriptor-based context isolation.
+
+Accel devices are distinct from DRM render nodes (`/dev/dri/renderDN`). A driver can register both a DRM GPU device and a DRM accel device when the hardware serves dual roles, but NPU tiles register exclusively under accel because they provide no scanout or 3D rendering capability. This separation is enforced by the `DRIVER_COMPUTE_ACCEL` feature flag, which changes the device node allocation path and prevents the accel device from appearing to seat management frameworks such as logind as a graphics resource.
+
+Current mainline users of the accel subsystem include `ivpu` (Intel NPU, since Linux 6.3), `amdxdna` (AMD XDNA/AIE2, since Linux 6.14), and `habanalabs` (Intel Gaudi training accelerators). Section 6 of this chapter covers the subsystem's internal structure and registration model in detail.
+
+### 1.3 What is an AI PC?
+
+An AI PC is the industry term for a client computing platform — laptop or desktop — that integrates a dedicated NPU tile alongside the CPU and GPU in the same package or die. The category emerged as a distinct product class in 2023 when Intel shipped Meteor Lake (Core Ultra, 14th generation), the first mainstream x86 client processor to include a fixed-function neural accelerator tile on the same package substrate. AMD followed with Ryzen AI (Phoenix Point), and Qualcomm entered the Windows and Linux laptop market with the Snapdragon X Elite carrying a Hexagon NPU.
+
+The practical significance of the AI PC for Linux systems engineers is that a new class of kernel driver, runtime library, and scheduling problem has entered mainstream hardware. Unlike discrete GPU compute or DSP coprocessors — historically confined to specific workstation or embedded SKUs — NPU tiles now ship in every mainstream laptop processor from Intel, AMD, and Qualcomm. Linux support has tracked this availability closely: `ivpu` reached mainline in Linux 6.3 for Meteor Lake and extended to Lunar Lake and Arrow Lake; `amdxdna` reached mainline in Linux 6.14 covering Phoenix through Strix Point.
+
+For application developers, the AI PC implies a heterogeneous scheduling problem: an inference workload can run on the CPU (via an ONNX Runtime CPU provider), the iGPU (via OpenCL or Vulkan compute), or the NPU. Selecting the right device requires understanding their relative throughput, latency characteristics, and power costs — a topic Section 7 of this chapter examines in depth.
 
 ---
 

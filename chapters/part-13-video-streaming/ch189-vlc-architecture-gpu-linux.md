@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [VLC Architecture Overview](#vlc-architecture-overview)
+   - [1.1 What is VLC Media Player?](#11-what-is-vlc-media-player)
+   - [1.2 What is the VLC Module Bank?](#12-what-is-the-vlc-module-bank)
+   - [1.3 What is libVLC?](#13-what-is-libvlc)
 2. [Demux and Input Layer](#demux-and-input-layer)
 3. [Hardware Video Decode — VA-API Path](#hardware-video-decode--va-api-path)
 4. [Embedded Hardware Decode — V4L2 and MMAL Paths](#v4l2-hardware-decode-path)
@@ -153,6 +156,18 @@ On Linux distributions, VLC is typically split into:
 - `vlc-plugin-*` packages — individual codec, access, and output plugin packages (exact package names vary by distribution; common examples include `vlc-plugin-base`, `vlc-plugin-video-output`, and GPU-specific packages)
 
 This packaging mirrors the plugin boundary at the package level: distributors can ship the player without optional GPU plugins and users can install them independently.
+
+### 1.1 What is VLC Media Player?
+
+VLC Media Player is a cross-platform multimedia player and framework distributed by VideoLAN. Unlike application-layer players that delegate all media decoding to the operating system's media subsystem, VLC ships its own codec implementations alongside a comprehensive plugin architecture that handles every stage of media handling: input access, container parsing, elementary stream decoding, audio and video rendering, and network streaming. On Linux, VLC integrates directly with the kernel-level graphics stack — VA-API for hardware-accelerated video decode, DMABuf for zero-copy frame transfer to the display, Wayland protocols for direct buffer sharing with compositors, and Vulkan or OpenGL/EGL for GPU-based video post-processing and rendering. VLC is simultaneously a consumer-facing GUI application and an embeddable framework: its libVLC C API allows applications to instantiate a full playback engine in-process with access to the same hardware acceleration paths used by the standalone player. This chapter examines the internal architecture that makes this dual role possible — tracing the path from a URL through demuxing, hardware decoding, and zero-copy buffer hand-off to the Wayland compositor.
+
+### 1.2 What is the VLC Module Bank?
+
+The VLC module bank is the runtime plugin registry that underpins VLC's portability and extensibility. At startup, VLC scans its plugin directories (typically `/usr/lib/vlc/plugins/` on Linux) and dynamically loads each plugin shared object via `dlopen()`. Every plugin exports a `vlc_entry()` symbol that registers its capabilities, configuration parameters, and callback function pointers into the in-memory module list maintained by `src/modules/`. When the core pipeline engine needs a component for a given role — a video decoder, an audio output, a network access module — it queries the bank by capability string and selects the plugin with the highest numeric score whose `open()` callback succeeds in the current environment. This capability-score mechanism means hardware-accelerated paths automatically win over software fallbacks when the required kernel interfaces (VA-API device nodes, V4L2 decoder nodes, DRM/KMS outputs) are present, without requiring the user to configure anything. The module bank is distinct from GStreamer's registry: whereas GStreamer serialises its registry to disk for faster startup, VLC performs its scan at every launch and stores results only in process memory.
+
+### 1.3 What is libVLC?
+
+libVLC is the stable public C library that exposes VLC's playback engine to embedding applications. It lives under `lib/` in the VLC source tree and presents three principal opaque types: `libvlc_instance_t` (the engine instance), `libvlc_media_t` (a media descriptor associating a URL with playback options), and `libvlc_media_player_t` (the active playback pipeline). Behind these types, libVLC instantiates the full internal plugin machinery — module bank scanning, hardware-decode probing, audio and video output selection — and exposes asynchronous events through `libvlc_event_manager_t`. On Linux, command-line options passed to `libvlc_new()` such as `--avcodec-hw=vaapi` or `--vout=gles2` select the hardware decode and rendering paths at the library level. The stable ABI guarantee means application code compiled against one soname continues to work as VLC upgrades its internal modules; the separation between `libvlc.so` and `libvlccore.so` enforces this boundary by keeping the public surface thin while the core remains free to evolve.
 
 ---
 

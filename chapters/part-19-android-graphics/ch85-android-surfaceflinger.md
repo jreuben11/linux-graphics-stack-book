@@ -10,6 +10,9 @@
 
 1. [Android's Graphics Architecture Overview](#1-androids-graphics-architecture-overview)
     - [1.3 Consolidation Efforts: Where the Stacks Are Converging](#13-consolidation-efforts-where-the-stacks-are-converging)
+    - [1.5 What is SurfaceFlinger?](#15-what-is-surfaceflinger)
+    - [1.6 What is AHardwareBuffer?](#16-what-is-ahardwarebuffer)
+    - [1.7 What is BufferQueue?](#17-what-is-bufferqueue)
 2. [Gralloc: Android's GPU Memory Allocator](#2-gralloc-androids-gpu-memory-allocator)
 3. [AHardwareBuffer — The Public Buffer API](#3-ahardwarebuffer--the-public-buffer-api)
 4. [BufferQueue: The Producer-Consumer Pipeline](#4-bufferqueue-the-producer-consumer-pipeline)
@@ -206,6 +209,30 @@ graph TD
     SF -. "releaseBuffer() + release_fence" .-> BQ
     BQ -. "dequeueBuffer() returns fence" .-> Producer
 ```
+
+### 1.5 What is SurfaceFlinger?
+
+SurfaceFlinger is Android's system compositor — the privileged process that receives rendered buffers from every application and merges them into the final image delivered to the display controller. It runs as a persistent, always-on system service and manages a hierarchy of `Layer` objects: `BufferLayer` for GPU-rendered content arriving through a `BufferQueue`, `ColorLayer` for solid-color fills, `ContainerLayer` for grouping transforms, and `EffectLayer` for compositing effects. Each visible surface — status bar, navigation bar, lock screen overlay, application window — corresponds to one such layer.
+
+Per display frame, SurfaceFlinger acquires the latest buffer from each layer's `BufferQueue`, asks the HWComposer HAL whether the display hardware can composite each layer as a hardware overlay or whether GPU blending is required, and drives an atomic validate-present cycle (`validateDisplay()` followed by `presentDisplay()`) that ultimately triggers a `drmModeAtomicCommit()` into the DRM/KMS driver. VSYNC timing is coordinated through `DispSync`, which derives phase-offset virtual sync signals (`VSYNC-app`, `VSYNC-sf`) from the hardware VSYNC interrupt to pace both the application render loop and SurfaceFlinger's own composition pass.
+
+From the Linux kernel's perspective SurfaceFlinger is a DRM/KMS client like any Wayland compositor: it programs display-controller planes and triggers scanout through the same atomic commit interface. The difference lies entirely in the userspace above it — Binder IPC and the HWComposer HAL abstraction replace the Wayland wire protocol and direct `libdrm` calls used by wlroots, Mutter, or KWin. This chapter covers SurfaceFlinger's layer model, the HWC2/HWC3 validate-present flow, VSYNC pacing, and the complete path from an application draw call to panel scanout.
+
+### 1.6 What is AHardwareBuffer?
+
+AHardwareBuffer is Android's public NDK type for allocating and sharing GPU-accessible memory buffers across process boundaries without data copies. Introduced at API level 26 (Android 8.0), it is the stable replacement for the previously internal `GraphicBuffer` type and the foundational unit of buffer exchange throughout Android's graphics stack — from camera capture to video decode to GPU rendering to display composition.
+
+At the kernel level an `AHardwareBuffer` wraps one or more DMA-BUF file descriptors. The HAL-layer representation is a `native_handle_t`, an opaque bundle of file descriptors and integers whose layout is defined by the Gralloc vendor implementation. From NDK code, `AHardwareBuffer_allocate()` takes a descriptor specifying width, height, layer count, pixel format (`AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM`, YUV formats, depth formats, etc.), and usage flags (`AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER`, `AHARDWAREBUFFER_USAGE_VIDEO_ENCODE`, `AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN`, etc.). Buffers cross process boundaries via `AHardwareBuffer_sendHandleToUnixSocket()` or Binder `Parcel`. CPU access uses `AHardwareBuffer_lock()` and `AHardwareBuffer_unlock()`.
+
+GPU import follows two paths: EGL imports a buffer through `eglCreateImageKHR()` with the `EGL_NATIVE_BUFFER_ANDROID` target, while Vulkan import uses the `VK_ANDROID_external_memory_android_hardware_buffer` extension — calling `vkGetAndroidHardwareBufferPropertiesANDROID()` to query memory requirements and supplying `VkImportAndroidHardwareBufferInfoANDROID` at `vkAllocateMemory()` time. On the Linux desktop the functional equivalent is a `gbm_bo` / DMA-BUF pair; `AHardwareBuffer_getNativeHandle()` exposes the underlying DMA-BUF fd for cross-platform interoperability. This chapter covers the full allocation, CPU lock, cross-process sharing, EGL/Vulkan import, and synchronization API.
+
+### 1.7 What is BufferQueue?
+
+BufferQueue is Android's inter-process producer-consumer pipeline for passing rendered frames from an application to SurfaceFlinger — or any other consumer — without copying buffer data. It implements a slot-based buffering model, typically two or three slots, where each `GraphicBuffer` slot cycles through states: FREE, DEQUEUED, QUEUED, and ACQUIRED. Only one process owns a given slot at any moment, enforced through Binder transactions that carry the slot index and an associated `sync_file` acquire or release fence.
+
+The two ends of a `BufferQueue` pair are exposed through Binder interfaces: `IGraphicBufferProducer` (IGBP) on the application side and `IGraphicBufferConsumer` (IGBC) on the compositor side. A producer calls `dequeueBuffer()` to obtain a free slot, renders into the backing `GraphicBuffer` (a DMA-BUF object at the kernel level), and calls `queueBuffer()` with an acquire fence that signals when GPU work is complete. SurfaceFlinger calls `acquireBuffer()`, waits on the acquire fence, composites the frame, and returns a `releaseBuffer()` with a release fence so the producer knows when the slot is safe to reuse.
+
+`ANativeWindow` — exposed to EGL as `EGLNativeWindowType` and to Vulkan as the handle for `VK_KHR_android_surface` — wraps an `IGraphicBufferProducer`, making the slot lifecycle transparent to OpenGL ES and Vulkan applications: `eglSwapBuffers()` and `vkQueuePresentKHR()` both drive `ANativeWindow_queueBuffer()` internally. BufferQueue is the Android equivalent of Wayland's `wl_surface` commit combined with `linux-dmabuf-v1` buffer attachment: both route GPU-rendered DMA-BUF objects from a producer to a compositor with explicit fence handoff at each transition. This chapter covers the slot state machine, fence lifecycle, triple-buffering behaviour, and HWUI's RenderThread integration on the producer side.
 
 ---
 

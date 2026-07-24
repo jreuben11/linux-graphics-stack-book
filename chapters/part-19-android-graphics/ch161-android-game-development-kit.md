@@ -9,6 +9,8 @@
 1. [What AGDK Is](#1-what-agdk-is)
    - 1.1 [Component Overview and Distribution](#11-component-overview-and-distribution)
    - 1.2 [Historical Context: Android Game Development Before AGDK](#12-historical-context-android-game-development-before-agdk)
+   - [1.3 What is the Android NDK?](#13-what-is-the-android-ndk)
+   - [1.4 What is GameActivity?](#14-what-is-gameactivity)
 2. [Play Asset Delivery: APK Limits, OBB, and On-Demand Asset Modules](#2-play-asset-delivery-apk-limits-obb-and-on-demand-asset-modules)
 3. [NativeActivity: The Foundation and Its Limits](#3-nativeactivity-the-foundation-and-its-limits)
 4. [GameActivity: The Modern Native App Model](#4-gameactivity-the-modern-native-app-model)
@@ -153,6 +155,14 @@ The [Android Developers blog post "Gingerbread NDK Awesomeness" (January 2011)](
 | `games-memory-advice` | v1.0 2021 | v2.0 (September 2023): ML-based memory pressure model |
 
 [Source: AGDK release notes](https://developer.android.com/games/agdk/release-notes), [NDK revision history](https://developer.android.com/ndk/downloads/revision_history), [Gingerbread NDK announcement](https://android-developers.googleblog.com/2011/01/gingerbread-ndk-awesomeness.html), [AGDK launch announcement](https://android-developers.googleblog.com/2021/07/introducing-android-game-development-kit.html)
+
+### 1.3 What is the Android NDK?
+
+The Android Native Development Kit (NDK) is the official toolchain and set of stable C/C++ APIs that allow application code to execute directly on the device processor without going through the Android Runtime (ART). On Android the default development path compiles Java or Kotlin to Dalvik bytecode and runs it on ART, where a garbage collector and JIT compiler manage memory and scheduling. The NDK provides a second path: compiling C or C++ to ARM, x86, or RISC-V machine code via Clang and linking against a versioned set of platform libraries — `libandroid.so`, `libEGL.so`, `libGLESv3.so`, `libvulkan.so`, `libaaudio.so`, and Bionic libc — that are guaranteed stable across Android API levels. For game development the NDK matters because game loops require deterministic, low-jitter frame timing that managed-runtime scheduling and GC pauses cannot reliably provide. A C++ game loop running on a dedicated pthread can pin to a specific CPU core, avoid garbage collection entirely, and drive the GPU driver through Vulkan or OpenGL ES with no JNI overhead on the hot path. Every AGDK library is layered entirely on the NDK: the libraries ship as CMake-consumable static or shared archives, and all runtime interaction with the Android OS — window handles, input events, audio streams, thermal signals — flows through the `<android/...>` header namespace that the NDK stabilises. Understanding the NDK's ABI stability guarantees, its Bionic libc, and its CMake integration is therefore prerequisite to understanding every AGDK component described in this chapter. [Source: NDK Guides](https://developer.android.com/ndk/guides)
+
+### 1.4 What is GameActivity?
+
+GameActivity is the AGDK library that provides the primary Android application lifecycle entry point for C/C++ game code, replacing the older `NativeActivity` class that shipped with NDK r5 in 2010. The fundamental problem with `NativeActivity` was architectural: it attached a native `.so` to an Android `Activity` by convention rather than by a typed API, which produced broken IME text input (the software keyboard could not deliver key events to native code), coarse input event batching that discarded intermediate touch samples between frames, no `SurfaceView` support (only `SurfaceHolder`), and difficulty integrating with Jetpack libraries that expect a Kotlin or Java `Activity` subclass. GameActivity resolves all of these: it is a Java/Kotlin `Activity` subclass (`androidx.games.activity.GameActivity`) that the application extends, forwarding lifecycle callbacks, window change events, and input events into the native layer through a well-typed C API defined in `<game-activity/GameActivity.h>`. Input events are placed into a thread-safe ring buffer rather than dispatched one at a time, preserving all historical touch coordinates between frames — a prerequisite for the touch prediction and gesture accuracy covered in §5 and §6. The native side interacts with the framework through the `android_app` struct and callback pointers, following the same threading model as `android_native_app_glue` but with correct lifecycle semantics and full input fidelity. GameActivity is the recommended entry point for all new AGDK-based titles and is referenced throughout §3–§10 of this chapter. [Source: GameActivity guide](https://developer.android.com/games/agdk/game-activity)
 
 ---
 

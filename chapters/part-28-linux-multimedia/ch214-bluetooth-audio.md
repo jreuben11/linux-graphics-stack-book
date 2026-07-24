@@ -6,6 +6,10 @@
 ## Table of Contents
 
 - [1. Bluetooth Stack Overview](#1-bluetooth-stack-overview)
+  - [1.3 What is BlueZ?](#13-what-is-bluez)
+  - [1.4 What is A2DP?](#14-what-is-a2dp)
+  - [1.5 What is HFP?](#15-what-is-hfp)
+  - [1.6 What is LE Audio?](#16-what-is-le-audio)
 - [2. A2DP: Advanced Audio Distribution Profile](#2-a2dp-advanced-audio-distribution-profile)
 - [3. HFP and HSP: Hands-Free and Headset Profiles](#3-hfp-and-hsp-hands-free-and-headset-profiles)
 - [4. AVRCP: Remote Control and Media Browsing](#4-avrcp-remote-control-and-media-browsing)
@@ -85,6 +89,30 @@ The public API to the rest of the system is **D-Bus** under the `org.bluez` serv
 | `org.bluez.MediaControl1` | Basic AVRCP pass-through |
 
 The `MediaEndpoint1` interface is the primary extension point through which audio servers (PipeWire, bluealsa) register codec endpoints and receive codec configuration from BlueZ. [Source](https://man.archlinux.org/man/extra/bluez-utils/org.bluez.MediaEndpoint.5.en)
+
+### 1.3 What is BlueZ?
+
+BlueZ is the official Bluetooth protocol stack for Linux, consisting of both a kernel-space component and a userspace daemon. The kernel portion, located under `net/bluetooth/` in the Linux source tree, implements the full Bluetooth protocol suite: HCI (Host Controller Interface), L2CAP (Logical Link Control and Adaptation Protocol), SCO (Synchronous Connection-Oriented links for voice), RFCOMM (serial port emulation), BNEP (Bluetooth Network Encapsulation Protocol), and the ISO layer introduced for LE Audio. Hardware drivers in `drivers/bluetooth/` bind specific USB dongles, UART modules, and SDIO adapters to the HCI core layer.
+
+The userspace component is `bluetoothd`, a D-Bus service that exposes the `org.bluez` interface hierarchy to applications. `bluetoothd` interacts with the kernel exclusively through the Management API (MGMT socket), which abstracts away controller-specific HCI command variations. Audio applications and servers interact with `bluetoothd` through D-Bus interfaces such as `org.bluez.MediaEndpoint1` and `org.bluez.MediaTransport1` to register codec endpoints and acquire streaming file descriptors. BlueZ is the foundation on which all Bluetooth audio profiles on Linux — A2DP, HFP, HSP, AVRCP, and LE Audio — are built. Persistent state for bonded devices lives under `/var/lib/bluetooth/<adapter_addr>/<device_addr>/`, including link keys, profile activation records, and cached attribute values.
+
+### 1.4 What is A2DP?
+
+A2DP (Advanced Audio Distribution Profile) is the Bluetooth profile that defines one-way stereo audio streaming from a Source device (such as a phone or computer) to a Sink device (such as wireless headphones or a speaker). It operates over AVDTP (Audio/Video Distribution Transport Protocol), which runs over L2CAP using PSM 25 for signaling and negotiates separate media transport L2CAP channels for the actual audio stream.
+
+A2DP requires support for SBC (Sub-Band Codec) as the mandatory baseline codec. Source and Sink endpoints — called Stream Endpoints (SEPs) — negotiate codec parameters using AVDTP signaling before streaming begins. Optional codecs such as aptX, AAC, LDAC, Opus, and LC3 are layered on top of the same AVDTP negotiation mechanism and require out-of-band codec capability advertisement. On Linux, BlueZ manages AVDTP signaling and SEP negotiation; the audio server (PipeWire or bluealsa) registers its supported codec endpoints through the `org.bluez.MediaEndpoint1` D-Bus interface, acquires a raw socket file descriptor via `org.bluez.MediaTransport1.Acquire()`, and encodes PCM audio into the negotiated codec format for transmission over the Bluetooth link.
+
+### 1.5 What is HFP?
+
+HFP (Hands-Free Profile) is the Bluetooth profile used for bidirectional voice communication between an Audio Gateway (AG) — typically a phone or laptop — and a Hands-Free Unit (HFU) such as a headset or car kit. It provides full call control through AT command signaling: call origination and answering, status indicators, volume adjustment, three-way calling, and codec negotiation. The predecessor HSP (Headset Profile) covers only basic microphone and speaker functionality without call control.
+
+HFP uses two separate logical connections: an RFCOMM channel for AT command signaling, and a synchronous SCO or eSCO link for raw PCM voice audio. The codec used on the SCO link is negotiated during Service Level Connection (SLC) setup: CVSD (Continuous Variable Slope Delta modulation) provides 8 kHz narrowband audio, while mSBC (modified Sub-Band Codec) provides 16 kHz wideband audio when both endpoints support HFP 1.6 or later. Qualcomm's aptX Voice provides 32 kHz super-wideband audio in HFP 1.9. On Linux, BlueZ handles HFP and HSP signaling through its profile plugins, and audio servers such as PipeWire obtain SCO audio file descriptors from BlueZ over D-Bus and route voice streams through the standard audio graph.
+
+### 1.6 What is LE Audio?
+
+LE Audio is the Bluetooth audio framework built on Bluetooth Low Energy (BLE) radio technology rather than the classic Bluetooth radio used by A2DP and HFP. It replaces SCO links and AVDTP streams with ISO (Isochronous) channel types: CIS (Connected Isochronous Streams) for unicast audio to a paired headset, and BIS (Broadcast Isochronous Streams) for one-to-many audio broadcasting under the Auracast brand. LE Audio mandates LC3 (Low Complexity Communication Codec) as its baseline codec, which achieves better audio quality than SBC at lower bitrates and targets end-to-end latency below 20 ms in low-latency mode.
+
+The LE Audio profile stack includes BAP (Basic Audio Profile) for stream setup, PACS (Published Audio Capabilities Service) for codec capability advertisement, ASCS (Audio Stream Control Service) for stream control, and TMAP and HAP for telephony and hearing aid use cases. On Linux, LE Audio support is built on `BTPROTO_ISO` sockets stabilized in kernel 6.4, which give userspace direct access to CIS and BIS Isochronous links. BlueZ 5.66 and later expose LE Audio profiles behind experimental feature flags. PipeWire's bluez5 plugin integrates LC3 codec support to complete the path from the Bluetooth ISO transport layer to the Linux audio graph.
 
 ---
 

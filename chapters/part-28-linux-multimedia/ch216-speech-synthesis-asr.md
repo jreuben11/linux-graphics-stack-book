@@ -88,6 +88,30 @@ Supported modules include: `espeak-ng`, `pico` (SVOX Pico), `flite`, `festival`,
 
 Messages arrive with a priority level that determines scheduling. From lowest to highest: `PROGRESS`, `TEXT`, `MESSAGE`, `NOTIFICATION`, `ALARM`. A higher-priority message interrupts lower-priority synthesis. The daemon maintains per-client queues and a global scheduling loop that selects the highest-priority pending message across all clients.
 
+### 1.1 What is Text-to-Speech (TTS) Synthesis?
+
+Text-to-speech (TTS) synthesis is the computational process of converting written text into audible speech signals. On Linux, TTS drives accessibility tools such as screen readers, interactive voice response systems, embedded navigation devices, and application feedback mechanisms. The fundamental task is mapping the discrete symbols of written language — graphemes — through intermediate phonetic representations to continuous acoustic waveforms that a listener recognises as speech.
+
+Two broad synthesis strategies appear in the Linux ecosystem. Formant synthesis, exemplified by espeak-ng, models the vocal tract as a filter bank driven by a periodic excitation source; it requires no recorded speech data, can produce voice in any language given phoneme rules and pronunciation dictionaries, and runs on minimal hardware. Neural synthesis, exemplified by Piper and its VITS architecture, uses deep neural networks trained on many hours of recorded speech; it produces substantially more natural output at the cost of higher compute requirements during inference. Both strategies produce PCM audio at a fixed sample rate — typically 16 kHz or 22.05 kHz — that feeds directly into ALSA or PipeWire for playback.
+
+Linux applications do not invoke synthesis engines directly in a well-structured deployment. Instead they route requests through speech-dispatcher, which decouples client priority, language selection, and engine selection from application code, allowing system-wide policies to determine which synthesis back-end is active. The full TTS stack covered in this chapter spans this abstraction daemon, the two major open-source synthesis engines (espeak-ng and Piper), and the legacy Festival and Flite lineage.
+
+### 1.2 What is Automatic Speech Recognition (ASR)?
+
+Automatic speech recognition (ASR) converts continuous acoustic input — captured from a microphone as a PCM sample stream — into text transcripts. Modern ASR systems are neural sequence-to-sequence models trained on large corpora of labelled audio. The dominant paradigm on Linux as of mid-2026 is the Whisper encoder-decoder architecture and its efficient C++ reimplementation, whisper.cpp, which quantises model weights to run on CPU or GPU without a Python runtime. A complementary streaming-capable approach is provided by Vosk, which wraps a Kaldi-derived acoustic model and graph decoder with a compact runtime suitable for embedded and server deployments.
+
+On Linux, ASR involves three pipeline stages: audio capture through ALSA or PipeWire, which delivers PCM frames into a ring buffer; feature extraction, typically log-mel spectrograms computed over 25 ms windows at a 10 ms stride; and model inference on CPU or GPU. GPU acceleration through CUDA, ROCm, or Vulkan compute can reduce inference latency from several seconds per utterance on a CPU to near real-time. The ASR subsystem produces plain-text transcripts or word-timed JSON output that downstream applications — voice command handlers, captioning tools, dictation frontends — consume directly.
+
+Unlike TTS, Linux ASR does not route through speech-dispatcher. Each ASR engine exposes its own library API: `whisper_full()` and associated context functions for whisper.cpp, and `vosk_recognizer_accept_waveform()` with its JSON result interface for Vosk. Chapter 8 covers the PipeWire capture pipeline that feeds both engines.
+
+### 1.3 What is speech-dispatcher?
+
+speech-dispatcher (daemon binary `speechd`, package `speech-dispatcher`) is the standard TTS broker on Linux desktop and embedded systems. It provides a single client-facing abstraction over multiple synthesis back-ends, allowing applications, screen readers, and shell scripts to request speech output without knowing which engine is installed, where it is located, or how audio routing is configured.
+
+The daemon accepts connections over the Speech Dispatcher Internet Protocol (SSIP), a line-oriented ASCII protocol carried on a Unix domain socket at `$XDG_RUNTIME_DIR/speech-dispatcher/speechd.sock` or on TCP port 6560. Clients authenticate, set parameters — output module, language, voice type, rate, pitch, volume — then submit text or SSML for synthesis using the `SPEAK` command. The daemon maintains per-client queues with five priority levels (`PROGRESS`, `TEXT`, `MESSAGE`, `NOTIFICATION`, `ALARM`) and a global scheduling loop that interrupts lower-priority synthesis when a higher-priority message arrives.
+
+Each synthesis back-end runs as a separate executable module communicating with `speechd` over bidirectional pipes. Supported modules include `espeak-ng`, `piper`, `flite`, `festival`, and `generic` (a shell-command wrapper). The `libspeechd` C library exposes this to applications through functions such as `spd_open()`, `spd_say()`, `spd_stop()`, and `spd_close()`, hiding SSIP details entirely. speech-dispatcher is the standard integration point for AT-SPI2-based screen readers such as Orca and for desktop notification systems. Applications targeting accessibility on Linux should use the `libspeechd` API rather than calling synthesis engines directly.
+
 ---
 
 ## espeak-ng: Formant Synthesis Engine

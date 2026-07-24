@@ -11,6 +11,9 @@ This chapter targets three primary audiences. **Kernel display driver authors** 
    - 1.2 [Lane Reconfiguration and Pin Assignments](#12-lane-reconfiguration-and-pin-assignments)
    - 1.3 [SBU Pins and the AUX Channel](#13-sbu-pins-and-the-aux-channel)
    - 1.4 [TCPM in the Linux Kernel](#14-tcpm-in-the-linux-kernel)
+   - 1.5 [What is USB-C DisplayPort Alternate Mode?](#15-what-is-usb-c-displayport-alternate-mode)
+   - 1.6 [What is the DisplayPort AUX Channel?](#16-what-is-the-displayport-aux-channel)
+   - 1.7 [What is USB Power Delivery?](#17-what-is-usb-power-delivery)
 2. [Thunderbolt 3/4: Same Connector, Different Stack](#2-thunderbolt-34-same-connector-different-stack)
    - 2.1 [ICM Firmware and Security Levels](#21-icm-firmware-and-security-levels)
    - 2.2 [Linux Thunderbolt Subsystem](#22-linux-thunderbolt-subsystem)
@@ -113,6 +116,30 @@ The TCPM state machine is defined via a `FOREACH_STATE` macro enumerating states
 The kernel exposes a clean abstraction layer for Alt Mode drivers. The DisplayPort Alt Mode driver at `drivers/usb/typec/altmodes/displayport.c` [Source](https://github.com/torvalds/linux/blob/master/drivers/usb/typec/altmodes/displayport.c) registers itself as a handler for SID `0xFF01` and receives callbacks when the TCPM completes mode entry. It then calls back into the GPU driver (via a notifier chain or direct callback) to trigger PHY reconfiguration.
 
 The `struct pd_mode_data` in tcpm.c tracks discovered SVIDs (up to 16), the current SVID index during enumeration, and the negotiated revision. CC line state analysis is handled by inline helpers `tcpm_cc_is_sink()` and `tcpm_cc_is_source()`, which decode the CC voltage level to determine the attached cable type and port role.
+
+### 1.5 What is USB-C DisplayPort Alternate Mode?
+
+USB-C DisplayPort Alternate Mode is a VESA-defined protocol extension that allows a USB Type-C port to carry DisplayPort video signals alongside USB data and power over the same physical connector. The USB-C connector contains four SuperSpeed differential pairs capable of handling high-speed electrical signals; Alternate Mode dynamically repurposes two or all four of these pairs to carry DisplayPort Main Link lanes, redirecting them at the PHY level rather than converting the signal in any way. The result is a passive electrical path from the GPU's DP transmitter to the display's DP receiver, with no active signal conversion in the cable.
+
+The Linux kernel handles Alternate Mode at two levels. The USB Power Delivery protocol is managed by the Type-C Port Manager (TCPM) in `drivers/usb/typec/tcpm/`, while the DisplayPort-specific Alt Mode negotiation and lane configuration is handled by `drivers/usb/typec/altmodes/displayport.c`. The Alt Mode driver registers for Standard ID `0xFF01`, the VESA-assigned identifier for DP Alt Mode, and receives callbacks once the TCPM completes the Structured VDM handshake with the attached device or dock. The TCPM then signals the GPU driver to reconfigure its PHY for the chosen lane assignment and signalling rate.
+
+From the GPU driver's perspective, a USB-C DP Alt Mode connection is transparent: the DP controller in the GPU communicates with the remote display's DPCD register space over the AUX channel routed through the connector's SBU pins, exactly as it would with a conventional full-size DP connector. The DRM connector state machine described in Section 8 handles the resulting connector events without special-casing the physical transport layer.
+
+### 1.6 What is the DisplayPort AUX Channel?
+
+The DisplayPort AUX channel is a half-duplex, bidirectional differential pair that carries all out-of-band communication between a DP source and a DP sink, completely separate from the unidirectional Main Link lanes that carry video pixel data. The AUX channel operates at 1 Mbps for standard DPCD transactions, using a self-clocked Manchester-II encoding scheme defined in the DisplayPort specification. It carries several distinct traffic types: I2C-over-AUX transactions for reading the display's EDID, native DPCD register reads and writes that configure link training parameters and query panel capabilities, Multi-Stream Transport (MST) sideband messages for daisy-chaining multiple displays, and DSC (Display Stream Compression) capability exchange.
+
+In a standard full-size DisplayPort connector, the AUX channel occupies dedicated pins 11 and 13 (AUX CH− and AUX CH+). In USB-C DP Alt Mode, those same signals appear on the SBU1 and SBU2 pins, which are always available regardless of how many SuperSpeed pairs have been dedicated to DP Main Link lanes. This means the AUX channel is fully functional in both 2-lane (pin assignment D) and 4-lane (pin assignments C and E) configurations.
+
+The Linux kernel GPU drivers access the AUX channel through the `drm_dp_aux` abstraction in `drivers/gpu/drm/display/drm_dp_helper.c`. Each GPU driver registers a `drm_dp_aux` structure with a hardware-specific `.transfer` callback; the DRM display helpers use this structure for EDID retrieval, link training, DSC capability queries, and MST topology discovery. The I2C-over-AUX and native-AUX read and write paths are covered in detail in Section 7.
+
+### 1.7 What is USB Power Delivery?
+
+USB Power Delivery (USB PD) is a protocol standard defined by USB-IF that runs over the CC (Configuration Channel) pin of the USB Type-C connector. Its primary function is to negotiate electrical contracts — specifying the voltage (5–48 V) and current (up to 5 A) that a power source will supply. Beyond power negotiation, USB PD provides the message-passing infrastructure over which Alternate Mode negotiation runs: the Structured Vendor Defined Message (SVDM) mechanism for DP Alt Mode entry, USB4 protocol configuration, and manufacturer-specific capabilities are all carried as USB PD messages over the CC line at approximately 300 kbps using Biphase Mark Coding (BMC).
+
+A Type-C connection begins with a purely resistive CC voltage measurement to detect cable orientation and determine which port is the Downstream Facing Port (DFP, typically the GPU or laptop) and which is the Upstream Facing Port (UFP, typically the display or dock). Only after role determination does the USB PD protocol engine begin transmitting GoodCRC-acknowledged message packets. The Discover Identity, Discover SVIDs, Discover Modes, and Enter Mode message sequence described in Section 1.1 runs as a phase within the USB PD state machine.
+
+In the Linux kernel, the USB PD state machine is implemented by the Type-C Port Manager in `drivers/usb/typec/tcpm/tcpm.c`. Hardware-specific TCPC (Type-C Port Controller) drivers — covering dedicated ICs such as the FUSB302 and Cypress CYPD3177 as well as integrated controller blocks in SoCs — register with the TCPM through `struct tcpc_ops`, supplying callbacks for transmitting PD messages and reading CC line voltage levels. The TCPM exposes the resulting Alt Mode state to userspace through the typec sysfs interface under `/sys/class/typec/`.
 
 ---
 

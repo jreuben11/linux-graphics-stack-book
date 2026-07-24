@@ -19,6 +19,9 @@ ICD built directly on the Mesa Vulkan common infrastructure without a Gallium3D 
 ## Table of Contents
 
 1. [History and Overview](#1-history-and-overview)
+   - [1.1 What is RADV?](#11-what-is-radv)
+   - [1.2 What is ACO?](#12-what-is-aco)
+   - [1.3 What is NIR?](#13-what-is-nir)
 2. [AMD GPU Hardware Relevant to RADV](#2-amd-gpu-hardware-relevant-to-radv)
 3. [Source Tree Structure](#3-source-tree-structure)
 4. [Instance, Physical Device, and Logical Device](#4-instance-physical-device-and-logical-device)
@@ -82,6 +85,74 @@ RADV supports AMD hardware from GFX6 through GFX12:
 GFX6 and GFX7 require the `amdgpu` kernel module, which is not the default for those GPUs; users
 must pass `amdgpu.si_support=1 amdgpu.cik_support=1` on the kernel command line and disable the
 older `radeon` driver. [Source](https://docs.mesa3d.org/drivers/radv.html)
+
+### 1.1 What is RADV?
+
+RADV (Radeon Vulkan) is the open-source Vulkan installable client driver (ICD) for AMD GPUs,
+distributed as part of the Mesa graphics library. It implements the Vulkan API surface directly
+against the Mesa Vulkan common infrastructure in `src/vulkan/`, deliberately bypassing the
+Gallium3D state-tracker abstraction that the RadeonSI OpenGL driver uses. The driver compiles to
+`libvulkan_radeon.so` and is discovered by the Vulkan loader through an ICD JSON manifest installed
+at `/usr/share/vulkan/icd.d/radeon_icd.x86_64.json`.
+
+Bypassing Gallium gives RADV direct, unmediated control over GPU command stream generation,
+descriptor memory layout, and shader compilation. That architectural freedom allowed Vulkan-specific
+features — bindless descriptors, dynamic rendering, mesh shaders, ray tracing — to be implemented
+without adapting them to abstractions designed for the OpenGL programming model. RADV implements
+the full Vulkan API surface, including WSI for both Wayland (via DMA-BUF) and X11 (via XCB),
+Vulkan Video decode and encode, and the device-generated commands extension
+(`VK_EXT_device_generated_commands`).
+
+On production Linux systems, RADV is the default AMD Vulkan driver on all major distributions
+(Fedora, Ubuntu, Arch, Steam Runtime), preferred over AMD's own `amdvlk` due to better game
+compatibility, integration with Mesa's shader caching infrastructure, and faster shader compile
+times through the ACO backend. The driver targets AMD hardware from GFX6 (GCN first generation)
+through GFX12 (RDNA4), covering GPUs released from approximately 2011 through 2024.
+
+### 1.2 What is ACO?
+
+ACO (AMD Compiler) is RADV's native shader compiler backend, replacing LLVM as the default
+compilation path starting with Mesa 20.1. ACO takes NIR — Mesa's shader intermediate
+representation — as input and produces AMD GPU machine code directly, without routing through
+LLVM's general-purpose code generation infrastructure.
+
+The primary motivation for ACO was shader compile latency. LLVM provides thorough optimization
+passes but incurs substantial compilation overhead; compiling a complex shader could take hundreds
+of milliseconds, causing perceptible stutter in games when a new pipeline is first encountered at
+runtime. ACO was designed from the ground up for low-latency compilation, implementing only the
+optimizations that matter for GPU ISA: register allocation with spill minimization, instruction
+scheduling aware of VALU/SALU/memory latency, VGPR live-range splitting, and wave-size selection
+(Wave32 vs. Wave64) per shader stage.
+
+ACO's register allocator operates on its own SSA-based IR derived from NIR after RADV-specific
+lowering passes run. The allocator uses a graph-coloring approach with preference-based coalescing
+to reduce move instructions. Instruction selection covers the full AMD ISA for GFX6 through GFX12,
+including scalar memory (`SMEM`), vector memory (`VMEM`), LDS operations, image sampling, exports,
+and the RDNA3/RDNA4 dual-issue instructions. The LLVM backend remains available as a fallback via
+`RADV_DEBUG=llvm` and is used in driver testing to cross-check code quality. For production
+workloads, ACO is always the preferred path.
+
+### 1.3 What is NIR?
+
+NIR (New Intermediate Representation) is Mesa's central shader IR, shared by all Mesa drivers as
+the common language between front-end language parsers and back-end code generators. In the RADV
+compilation pipeline, SPIR-V shader modules submitted through `vkCreateShaderModule` are first
+converted to NIR by `spirv_to_nir()`, then transformed through a series of RADV-specific lowering
+passes before being handed to the ACO backend for final machine code generation.
+
+NIR is a typed, SSA-based IR with explicit control flow represented as basic blocks linked by
+`nir_cf_node` trees. Instructions are expressed as `nir_instr` nodes with explicit use-def chains.
+The IR is intentionally multi-level: high-level GLSL-like intrinsics remain valid NIR, as do
+low-level hardware-specific intrinsics that RADV inserts during lowering. This range lets the
+driver apply general-purpose Mesa optimization passes — dead code elimination, copy propagation,
+algebraic simplifications — early in the pipeline, before committing to hardware-specific
+representations.
+
+RADV's `nir/` subdirectory adds lowering passes that translate generic NIR intrinsics into
+AMD-specific forms: mapping shader inputs and system values to hardware user-SGPRs, lowering
+barycentric coordinate computation for fragment shaders, and transforming ray tracing shader stages
+into compute-compatible kernels. After RADV's NIR lowering completes, ACO performs final
+instruction selection from this lowered NIR to emit AMD ISA.
 
 ---
 

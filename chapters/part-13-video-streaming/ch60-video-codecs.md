@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Overview](#overview)
+   - [1.1 What is a Video Codec?](#11-what-is-a-video-codec)
+   - [1.2 What is the Discrete Cosine Transform (DCT)?](#12-what-is-the-discrete-cosine-transform-dct)
+   - [1.3 What is Motion Estimation?](#13-what-is-motion-estimation)
 2. [The Compression Duality: Intra vs. Inter Redundancy and Quality Metrics](#the-compression-duality)
 3. [Discrete Cosine Transform: Energy Compaction and Entropy Coding](#dct-energy-compaction)
 4. [Motion Estimation and Compensation](#motion-estimation)
@@ -88,6 +91,18 @@ Before reading the algorithmic detail, the table below answers the practical que
 - **Encoding speed**: H.264 >> H.265 > VP9 ≈ AV1 (hardware); software AV1 (libaom) is 5–10× slower than x265. SVT-AV1 narrows the gap significantly.
 - **Royalties**: AV1, VP9, and VVC (under the MFI pool) are royalty-free for most uses; H.264 and H.265 carry MPEG-LA patent pools that affect commercial software encoders.
 - **Hardware decode coverage** (desktop Linux, mid-2026): H.264 = universal; H.265 = near-universal (Mesa 23+, all NVIDIA, Intel); AV1 = RTX 30xx+/RDNA2+/Arc/Tiger Lake+; VVC = no desktop GPU support yet.
+
+### 1.1 What is a Video Codec?
+
+A video codec (coder-decoder) is a specification and corresponding software or hardware implementation that compresses raw video frames into a compact bitstream and decompresses that bitstream back to frames. On Linux, video codecs surface through multiple layers of the graphics stack. The raw algorithm runs either in software — via libraries such as libx264, libaom, or dav1d — or in dedicated fixed-function silicon on the GPU or SoC, exposed through kernel driver interfaces and user-space APIs including VA-API (Chapter 26), NVDEC/NVENC (Chapter 66), and Vulkan Video (Chapter 50). A codec specification defines the bitstream syntax (the container of headers, metadata, and entropy-coded data), the decoding procedure (the operations a conformant decoder must perform), and, in practice, the encoder-side compression techniques that generate compliant bitstreams. This chapter focuses on those encoder-side algorithms — DCT, quantisation, motion estimation, and entropy coding — that determine compression efficiency, quality, and computational cost. Understanding them is essential for correctly configuring VA-API encoding parameters, interpreting hardware decoder constraints, and diagnosing quality or bitrate anomalies in Linux video pipelines.
+
+### 1.2 What is the Discrete Cosine Transform (DCT)?
+
+The Discrete Cosine Transform is a frequency-domain transform applied to rectangular blocks of pixel samples. It maps the spatial representation — a 2D grid of integer luma or chroma values — into a corresponding grid of frequency coefficients. The transform exploits a fundamental property of natural image statistics: visual energy concentrates heavily in low-frequency components (slow luminance gradients, large homogeneous regions), while high-frequency components (fine texture, sharp edges) carry comparatively little energy and can be quantised coarsely or discarded without visible quality loss. This property, called energy compaction, is what makes block-based coding practical. After the forward DCT, each coefficient is divided by a quantisation step size and rounded to an integer; the resulting sparse set of non-zero integers is then entropy-coded. The inverse DCT on the decoder side reconstructs an approximation of the original block. Every codec generation covered in this chapter — H.264, H.265/HEVC, AV1, and VVC/H.266 — uses integer DCT approximations as its core spatial transform, differing primarily in the supported transform sizes and the additional transform types layered on top of the basic DCT.
+
+### 1.3 What is Motion Estimation?
+
+Motion estimation is the process by which a video encoder searches reference frames — previously encoded and decoded pictures — to find a region that closely resembles the current block of pixels. The spatial offset between the current block position and the matching reference region is called a motion vector. Signalling this vector and coding only the pixel-level difference (the residual) between the current block and the reference region requires far fewer bits than coding the block from scratch, because successive video frames of natural content are highly correlated. Motion compensation is the complementary decoding step: the decoder uses the motion vector to copy the reference region and adds the decoded residual. Together, motion estimation and compensation form inter-frame prediction — the dominant source of compression efficiency in modern codecs. On Linux, motion estimation runs in software encoders such as x264 and libaom, and in hardware engines exposed through NVENC, VA-API encoding, and Vulkan Video encode extensions. The quality-speed trade-off in motion estimation — ranging from fast diamond-pattern block matching to exhaustive full-search — is the primary lever that controls encoder CPU load and output quality.
 
 ---
 

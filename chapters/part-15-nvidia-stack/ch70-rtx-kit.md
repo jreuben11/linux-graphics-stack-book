@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Overview](#1-overview)
+   - [1.1 What is ReSTIR?](#11-what-is-restir)
+   - [1.2 What is Radiance Caching?](#12-what-is-radiance-caching)
+   - [1.3 What is Spatiotemporal Denoising?](#13-what-is-spatiotemporal-denoising)
 2. [RTX Kit Architecture: Five SDKs as a Coherent System](#2-rtx-kit-architecture-five-sdks-as-a-coherent-system)
 3. [RTXDI v3.0: Reservoir-Based Spatiotemporal Importance Sampling](#3-rtxdi-v30-reservoir-based-spatiotemporal-importance-sampling)
    - 3.1 [ReSTIR DI: Direct Light Importance Sampling](#31-restir-di-direct-light-importance-sampling)
@@ -86,6 +89,28 @@ The open-source reference is NVIDIA's own `NRD Sample` and `SHARC Sample` on Git
 - **Section 8** — assembles all five SDKs into a complete annotated rendering frame, with measured per-SDK GPU time budgets on **RTX 4080** at 1080p.
 
 This chapter targets developers integrating these SDKs into a custom **Vulkan** renderer or evaluating them for an existing engine. A working **Vulkan** renderer with ray tracing support (Ch56 prerequisite) is assumed. **CUDA** knowledge is useful but not required — all five SDKs have primary **Vulkan** paths on Linux.
+
+### 1.1 What is ReSTIR?
+
+ReSTIR (Reservoir-based Spatiotemporal Importance Resampling) is a family of Monte Carlo sampling algorithms designed to efficiently select light samples in scenes with large numbers of emissive sources. Classical path tracing must draw from an enormous pool of candidate lights per pixel per frame — brute-force uniform sampling produces severe variance unless many shadow rays are cast. ReSTIR solves this by maintaining a compact per-pixel data structure called a reservoir that tracks a single selected candidate and an unbiased importance weight. New candidates are merged into the reservoir via weighted reservoir sampling (WRS) in O(1) storage per pixel regardless of the candidate pool size.
+
+The key insight is that reservoirs can be combined across pixels and across time. Temporal reuse re-projects each pixel's reservoir from the previous frame using motion vectors; spatial reuse combines reservoirs from geometrically similar neighbouring pixels. After these passes each pixel's reservoir represents a weighted draw from a combined pool of hundreds to thousands of candidate samples, while requiring only one shadow ray per pixel to evaluate. This trades a small amount of additional shader bandwidth against a dramatic reduction in required rays.
+
+Within RTX Kit, RTXDI v3.0 implements two ReSTIR variants: ReSTIR DI for direct illumination (sampling individual light sources) and ReSTIR PT for full path tracing (resampling entire path suffixes). Both operate on the same reservoir data format and share infrastructure such as the light BVH and the motion vector pass.
+
+### 1.2 What is Radiance Caching?
+
+A radiance cache is a data structure that stores pre-computed incoming radiance values at discretised positions in the scene, allowing shaders to query multi-bounce indirect illumination without tracing complete recursive path trees every frame. In real-time rendering, full recursive path tracing is impractical because each additional bounce multiplies ray cost exponentially. A radiance cache breaks this cost by separating direct and indirect light evaluation: direct illumination is traced each frame via RTXDI, while indirect illumination is read from a cache that is updated incrementally as new ray tracing results arrive.
+
+RTXGI 2.0 provides two complementary radiance cache implementations. The Spatially Hashed Radiance Cache (SHaRC) stores per-voxel incoming radiance in a GPU-resident hash map keyed on world-space position and updated via exponential moving average, providing stable low-noise indirect illumination for diffuse and mildly specular surfaces. The Neural Radiance Cache (NRC) replaces the hash map with a small multi-layer perceptron (MLP) that learns the scene's radiance field online during rendering, using multi-resolution hash encoding for compact, high-quality lookup. DDGI, the older probe-based approach also included in RTXGI, discretises the scene into a regular grid of irradiance probes instead.
+
+Both SHaRC and NRC share a common query API: the renderer issues cache queries from closest-hit shaders and writes update records from path termination events, allowing the cache to train and converge using the renderer's own ray tracing output.
+
+### 1.3 What is Spatiotemporal Denoising?
+
+Real-time ray tracing budgets typically allow only one to four samples per pixel (spp) within a frame time of 8–16 ms. At these sampling rates the raw ray tracing output is extremely noisy — individual pixels show fireflies (bright outliers from high-variance paths) and dark regions from paths that miss light sources. Spatiotemporal denoising reconstructs a clean image by exploiting two sources of redundancy: spatial redundancy, because nearby pixels that land on similar geometry and materials have similar expected radiance; and temporal redundancy, because pixels in successive frames that correspond to the same world-space surface have correlated radiance across frames.
+
+NRD (NVIDIA Real-time Denoisers) implements this as a series of GPU compute dispatches that operate on G-buffer data alongside the noisy radiance signal. The G-buffer provides per-pixel surface attributes — surface normal, roughness, linear depth, and motion vectors — that allow the denoiser to distinguish true geometric edges (which must not be blurred across) from noise. REBLUR propagates an exponential moving average accumulation along reprojected pixel histories and then applies a multi-pass Gaussian blur with geometry-aware weights. RELAX uses a different accumulation strategy optimised for specular surfaces to prevent ghosting on glossy reflections. SIGMA handles shadow-specific denoising. All three algorithms execute the same multi-pass structure: pre-pass, history fix, blur, post-blur, and split-screen dispatch, managed by the NrdIntegration helper layer.
 
 ---
 

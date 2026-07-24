@@ -8,6 +8,9 @@
 
 - [Overview](#overview)
 - [1. Why GPU Acceleration Matters for Terminals](#1-why-gpu-acceleration-matters-for-terminals)
+  - [1.1 What is a Glyph Atlas?](#11-what-is-a-glyph-atlas)
+  - [1.2 What is a Character-Cell Grid?](#12-what-is-a-character-cell-grid)
+  - [1.3 What is wgpu?](#13-what-is-wgpu)
 - [2. Glyph Atlas Fundamentals](#2-glyph-atlas-fundamentals)
 - [3. kitty: Mature OpenGL Renderer](#3-kitty-mature-opengl-renderer)
   - [Rendering the Grid: Vertex Attributes vs. the Fullscreen Quad Approach](#rendering-the-grid-vertex-attributes-vs-the-fullscreen-quad-approach)
@@ -90,6 +93,30 @@ graph TD
     FS --> FB
     FB --> WL
 ```
+
+### 1.1 What is a Glyph Atlas?
+
+A glyph atlas is a GPU texture that caches rasterised glyph bitmaps — the rendered pixel representations of Unicode characters at a specific font, size, and rendering mode. Rather than invoking FreeType to rasterise each character on every rendered frame, a terminal renderer rasterises each glyph once, packs the resulting bitmap into a region of the atlas texture resident in VRAM, and records the UV coordinates of that region in a per-glyph lookup table. Subsequent render frames that need the same glyph simply sample the atlas at the cached UV coordinates, making the per-frame rendering cost nearly independent of the complexity of the font outlines.
+
+The atlas is typically implemented as a `GL_TEXTURE_2D_ARRAY` (in OpenGL) or a `VkImage` with multiple array layers (in Vulkan), where each layer is a 2D packing plane. Glyph bitmaps are inserted using a bin-packing algorithm — skyline or guillotine in most implementations — and evicted by an LRU policy when the atlas fills. Because terminal usage skews heavily toward a small set of frequently used characters, cache hit rates are high and eviction is rare in normal interactive use.
+
+The atlas must handle at least two pixel formats: a single-channel `GL_RED` or `A8` format for ordinary text glyphs, whose coverage value is multiplied against the foreground colour at composite time, and a four-channel BGRA format for colour emoji whose pixels embed full RGB colour. Maintaining separate textures for these formats — rather than a single mixed atlas — avoids memory waste and simplifies the fragment shader's blending logic. Section 2 of this chapter covers atlas packing algorithms, eviction, and the 3D texture array API in detail.
+
+### 1.2 What is a Character-Cell Grid?
+
+A character-cell grid is the display model used by all VT-compatible terminal emulators. The terminal surface is divided into a fixed array of rows and columns, where each cell holds exactly one printable unit — a Unicode grapheme cluster, a control-character placeholder, or a blank — together with rendering metadata: foreground colour, background colour, and attribute flags such as bold, italic, underline, blink, and reverse video. The grid dimensions are communicated to the running application through the `TIOCSWINSZ` ioctl on the pseudoterminal master, and applications query them via `TIOCGWINSZ`. Most terminals also propagate `SIGWINCH` to the foreground process group when the window is resized.
+
+In GPU terminal renderers, the character-cell grid is the primary input to the rendering pipeline. At render time the renderer iterates each visible cell, resolves the Unicode grapheme cluster to a glyph atlas entry via HarfBuzz shaping and FreeType rasterisation, and emits one GPU quad per cell. The quad carries atlas UV coordinates, foreground colour, background colour, and attribute flags as vertex attributes or instance data. The vertex shader transforms the cell's row-and-column position into clip-space coordinates; the fragment shader samples the glyph atlas to obtain per-pixel coverage and composites it over the background colour using the foreground colour.
+
+Cell contents can span more than one column: a CJK ideograph or a wide emoji occupies two adjacent columns, with the right-hand column marked as a continuation cell. The renderer handles wide cells by emitting a single quad spanning both columns, and must accommodate grapheme clusters that map to ligature glyphs wider than a single cell advance.
+
+### 1.3 What is wgpu?
+
+wgpu is a safe, cross-platform graphics API implemented in Rust that provides a uniform programming interface over Vulkan, Metal, Direct3D 12, and OpenGL ES. It implements the WebGPU specification — defined by the W3C WebGPU Working Group and designed to be portable across rendering backends — using the `naga` shader translation library to convert WGSL (WebGPU Shading Language) shader source into backend-specific IR: SPIR-V for Vulkan, MSL for Metal, HLSL for D3D 12. On Linux, wgpu dispatches Vulkan commands via `ash` (a Rust Vulkan binding generated from the Vulkan XML specification), which in turn drives Mesa's Vulkan drivers — RADV for AMD hardware, ANV for Intel, NVK for NVIDIA.
+
+Within the terminal rendering context, wgpu matters primarily because WezTerm adopts it as its sole GPU backend, gaining the ability to run the same WGSL shaders on Linux (Vulkan via Mesa), macOS (Metal), and Windows (D3D 12) from a single codebase. Image data from Sixel streams, the Kitty Graphics Protocol, and the iTerm2 protocol is staged through `wgpu::Buffer` upload paths and bound as `wgpu::Texture` resources in the render pass. The `naga` IR layer also serves as a validation pass, catching shader errors at compile time rather than at driver dispatch.
+
+For readers already familiar with Vulkan from Parts IV–VI of this book, wgpu is best understood as a safe Rust wrapper that abstracts driver selection and platform portability, at the cost of some low-level control over synchronisation primitives and memory allocation strategies. Section 5 examines WezTerm's wgpu architecture in detail.
 
 ---
 

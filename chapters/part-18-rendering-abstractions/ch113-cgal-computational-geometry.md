@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Overview: What CGAL Is and Where It Fits](#1-overview-what-cgal-is-and-where-it-fits)
+   - [1.1 What is Computational Geometry?](#11-what-is-computational-geometry)
+   - [1.2 What is CGAL's Kernel Model?](#12-what-is-cgals-kernel-model)
+   - [1.3 What is Polygon Mesh Processing (PMP)?](#13-what-is-polygon-mesh-processing-pmp)
 2. [Exact Arithmetic Kernels: The Robustness Foundation](#2-exact-arithmetic-kernels-the-robustness-foundation)
 3. [Surface_mesh and the Halfedge Data Structure](#3-surface_mesh-and-the-halfedge-data-structure)
 4. [GPU Vertex Buffer Interop: The CPU–GPU Handoff Boundary](#4-gpu-vertex-buffer-interop-the-cpugpu-handoff-boundary)
@@ -48,6 +51,28 @@ Understanding where CGAL ends and the GPU pipeline begins is the key intellectua
 - *Graphics application developers* building asset pipelines, mesh editors, or scientific visualization tools.
 - *DCC tool engineers* integrating robust Boolean and remeshing operations into geometry processing pipelines.
 - *Scientific visualization developers* connecting CGAL mesh generation to VTK/ParaView rendering.
+
+### 1.1 What is Computational Geometry?
+
+Computational geometry is the branch of computer science that studies algorithms and data structures for solving geometric problems. Unlike pure mathematical geometry, which reasons over infinite-precision real numbers, computational geometry must grapple with finite machine representations and the numerical instabilities that arise from them. Core problems include determining whether a point lies inside a polygon, finding the convex hull of a point set, triangulating a surface into simplices, and computing intersections between geometric primitives. These operations underlie the geometry processing pipelines found in DCC tools, scientific visualization, physics simulation, and ray tracing.
+
+Within the Linux graphics stack, computational geometry operates at the CPU preprocessing layer: it transforms raw or imported geometry — scan data, CAD models, procedurally generated meshes — into watertight, consistently oriented, topologically valid triangle meshes suitable for GPU rasterization or hardware ray tracing. The algorithms in this chapter produce data that flows downstream to the Vulkan and OpenGL APIs covered elsewhere in this book. The central challenge is robustness: floating-point arithmetic is a finite approximation of real arithmetic, and small rounding errors in geometric predicates can cascade into catastrophically wrong combinatorial decisions — a mesh vertex classified as "inside" when it is geometrically "outside," producing inverted faces, T-junctions, or non-manifold edges that break downstream rendering.
+
+### 1.2 What is CGAL's Kernel Model?
+
+CGAL's kernel is a C++ type bundle providing point types, vector types, and geometric predicates parametrized over a coordinate representation. Rather than hardcoding a single number type, every CGAL algorithm is a template parametrized by a kernel type `K`. Changing the kernel changes the numeric precision and correctness guarantees of every computation the algorithm performs without changing the algorithm's source code.
+
+Two kernels dominate in practice. `Epick` (Exact Predicates Inexact Constructions Kernel) uses IEEE 754 `double` coordinates with exact predicate evaluation via floating-point interval filtering followed by GMP/MPFR fallback; it is fast enough for triangulation, convex hull, and mesh processing where only the combinatorial structure matters. `Epeck` (Exact Predicates Exact Constructions Kernel) uses lazy rational arithmetic backed by GMP; it is required whenever constructed intersection points become inputs to subsequent predicates — notably Boolean solid operations. The kernel is declared once at the application level and flows through the entire type system via template instantiation. Mismatching kernels between mesh data and algorithm invocation produces a compile-time error, making kernel discipline a build-time correctness check rather than a runtime assertion. Section 2 covers the filtering mechanism and kernel variants in detail.
+
+[Source](https://doc.cgal.org/latest/Kernel_23/index.html)
+
+### 1.3 What is Polygon Mesh Processing (PMP)?
+
+CGAL's `Polygon_mesh_processing` package, universally aliased as `PMP`, is the central library of mesh repair, analysis, and transformation algorithms that appears throughout this chapter. It operates on any mesh type that models the Boost Graph Library `FaceGraph` concept — including `CGAL::Surface_mesh`, `Polyhedron_3`, and third-party mesh types with adapter headers — which means algorithm implementations are decoupled from any specific mesh class.
+
+PMP provides: surface normal computation, triangle soup to watertight mesh conversion, self-intersection detection and removal, hole filling, isotropic remeshing, mesh smoothing, stitching of border edges, orientation repair, connected-component labeling, and corefinement-based Boolean operations (`corefine_and_compute_union`, `corefine_and_compute_difference`, `corefine_and_compute_intersection`). The Boolean operations are the highest-stakes algorithms in PMP: they require the `Epeck` kernel to guarantee exact output because intersection curves between faces become new vertices that must be categorized by subsequent predicates. PMP functions are the primary mechanism in this chapter for transforming raw geometry into GPU-ready triangle meshes, and they appear in sections covering Boolean operations (§5), surface reconstruction (§7), and mesh generation (§10).
+
+[Source](https://doc.cgal.org/latest/Polygon_mesh_processing/index.html)
 
 ---
 

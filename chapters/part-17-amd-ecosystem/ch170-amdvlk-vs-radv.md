@@ -10,6 +10,9 @@
 ## Table of Contents
 
 1. [Introduction: Why AMD Had Two Open Vulkan Drivers](#1-introduction-why-amd-had-two-open-vulkan-drivers)
+   - [1.1 What is AMDVLK?](#11-what-is-amdvlk)
+   - [1.2 What is RADV?](#12-what-is-radv)
+   - [1.3 What is a Vulkan ICD?](#13-what-is-a-vulkan-icd)
 2. [AMDVLK Architecture](#2-amdvlk-architecture)
    - [XGL: The Vulkan Front-End](#21-xgl-the-vulkan-front-end)
    - [PAL: Platform Abstraction Layer](#22-pal-platform-abstraction-layer)
@@ -86,6 +89,18 @@ This chapter covers:
 - **Practical guidance** — stability, bug report paths, CTS status, and migration advice for anyone still maintaining or migrating code (Sections 9–10)
 
 Code examples focus on ICD selection, driver identification, and cache management.
+
+### 1.1 What is AMDVLK?
+
+AMDVLK is AMD's official open-source Vulkan Installable Client Driver (ICD) for Linux, first published on GitHub in December 2017. It is assembled from five interconnected repositories — XGL, PAL, LLPC, GPURT, and a forked LLVM — and represents AMD's cross-platform driver infrastructure made publicly visible. The defining characteristic of AMDVLK is that it shares its Platform Abstraction Layer (PAL) with AMD's Windows DirectX 12 driver and the ROCm compute platform. This means AMDVLK is not a Linux-native creation; it is AMD's existing internal driver stack ported to Linux via a thin `Pal::Linux` module that submits command buffers directly to the `amdgpu` DRM kernel module using raw ioctls, without going through `libdrm`. AMDVLK presents itself to applications through the Vulkan loader's ICD mechanism: a shared library (`amdvlk64.so`) paired with a JSON descriptor in `/etc/vulkan/icd.d/`. Its shader compiler, LLPC, translates SPIR-V through an LLVM-based pipeline to AMD ISA. AMD officially discontinued AMDVLK in September 2025 in favour of RADV, but understanding its architecture remains relevant for anyone maintaining software that historically targeted it or who needs to understand the broader AMD driver ecosystem spanning ROCm, DirectX 12, and Linux Vulkan.
+
+### 1.2 What is RADV?
+
+RADV is the Mesa-integrated open-source Vulkan driver for AMD GPUs, developed in the open under the freedesktop.org umbrella as part of the Mesa project. Unlike AMDVLK, RADV was written specifically for the Linux graphics stack. It uses Mesa's internal shader representation (NIR) and the ACO compiler backend, which was written to optimise code generation for AMD's GCN and RDNA GPU architectures on Linux. RADV communicates with the kernel exclusively through the `amdgpu` DRM kernel module, using the `radeon_winsys` abstraction layer that is also shared with the RadeonSI OpenGL driver (`src/gallium/drivers/radeonsi/`). Being part of Mesa means RADV benefits from the same infrastructure used by all other Mesa drivers: the NIR optimisation pipeline, the Vulkan runtime helpers under `src/vulkan/`, the shared build system, and coordinated testing via the Mesa CI pipeline. RADV exposes itself as an ICD in the same way as AMDVLK — a shared library (`libvulkan_radeon.so`) paired with a JSON descriptor — but installation and updates are handled through the distribution's Mesa package rather than a separate vendor release. As of 2025, RADV is AMD's officially recommended Vulkan driver for Linux and the default in all major distributions.
+
+### 1.3 What is a Vulkan ICD?
+
+A Vulkan Installable Client Driver (ICD) is the loadable shared-library component that implements the Vulkan API for a specific GPU. The Vulkan loader (`libvulkan.so`, maintained by Khronos at [github.com/KhronosGroup/Vulkan-Loader](https://github.com/KhronosGroup/Vulkan-Loader)) discovers ICDs by reading JSON descriptor files from directories such as `/etc/vulkan/icd.d/` and `/usr/share/vulkan/icd.d/`. Each JSON file names a shared library and declares its Vulkan API version; the loader `dlopen`s the library at runtime and retrieves function pointers via `vk_icdGetInstanceProcAddr`. This design allows multiple ICDs to coexist on the same machine — one per GPU vendor, or in the AMD case, two ICDs targeting the same GPU hardware simultaneously. The loader enumerates physical devices from all discovered ICDs and presents them to the application through `vkEnumeratePhysicalDevices`. Applications can force a specific ICD by setting the `VK_ICD_FILENAMES` environment variable to the path of a single descriptor file, which bypasses loader discovery entirely. The ICD interface contract is defined in the Vulkan Loader Interface Specification. Understanding the ICD mechanism is essential for this chapter because it explains how AMDVLK and RADV can both be installed on the same system without conflict, and how a user or application can select between them at runtime.
 
 ---
 

@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Overview](#overview)
+   - [1.1 What is GStreamer?](#11-what-is-gstreamer)
+   - [1.2 What is the GLib/GObject Type System?](#12-what-is-the-glibgobject-type-system)
+   - [1.3 What is DMABuf?](#13-what-is-dmabuf)
 2. [Object Model: GLib Types, GstElement, GstPad, GstCaps, GstBuffer, GstPipeline](#object-model)
 3. [Pipeline Construction Patterns](#pipeline-construction-patterns)
 4. [The GstBuffer Memory Model](#the-gstbuffer-memory-model)
@@ -131,6 +134,24 @@ By the end of this chapter you will be able to:
 - Profile and debug pipelines with **`GST_DEBUG`**, **`GST_TRACERS`**, and dot-graph export
 
 **GStreamer** version coverage: **1.28** (released January 2026) is the current stable series, and all element names, API signatures, and deprecations reflect that release unless otherwise noted.
+
+### 1.1 What is GStreamer?
+
+GStreamer is an open-source, cross-platform multimedia framework that structures media processing as a directed graph of pluggable *elements* connected through typed *pads*. Each element encapsulates a single processing stage — decoding a video stream, converting a colour space, rendering to a display — and elements communicate by pushing or pulling *buffers* through negotiated capability contracts called *caps*. The framework is written in C and built on the GLib/GObject type system, with language bindings generated automatically via GObject introspection for Python, Rust, JavaScript, and others.
+
+On Linux, GStreamer functions as the primary integration layer that connects hardware-accelerated subsystems: VA-API decoders (Chapter 26), V4L2 camera and codec devices (Chapter 32), PipeWire session graphs (Chapter 38), and Wayland compositors (Chapter 8). The `gstreamer-1.0` core library and the plugin sets `gst-plugins-base`, `gst-plugins-good`, `gst-plugins-bad`, and `gst-plugins-rs` are shipped by all major Linux distributions. Hardware-acceleration plugins — the `va` plugin for VA-API and `v4l2codecs` for stateless decoders — reside in `gst-plugins-bad` and are compiled against the system's libva and kernel headers respectively. The `gst-launch-1.0` tool and its string-based pipeline description language make the framework introspectable without writing application code, which is important when verifying hardware decode paths and DMABuf negotiation. [Source](https://gstreamer.freedesktop.org/documentation/index.html)
+
+### 1.2 What is the GLib/GObject Type System?
+
+GLib is the foundational C utility library used throughout the GNOME and freedesktop ecosystem. It provides data structures, main loop integration, and — most critically for GStreamer — the GObject type system. GObject brings runtime type information, reference-counted object lifetimes, introspectable properties, and a signal-and-callback mechanism to C code, enabling language bindings, generic tooling, and the `gst-inspect-1.0` introspection utility without recompilation.
+
+Every GStreamer element, pad, clock, and bus derives from `GObject` through `GstObject`, which adds a name, a parent pointer enabling the pipeline containment hierarchy, and a per-object lock for thread safety. The GObject property mechanism allows elements to expose configuration knobs — bitrate, output format, device node path — discoverable and settable at runtime by applications. GStreamer extends GLib with `GstMiniObject`, a lightweight reference-counted base for high-frequency data-plane types (buffers, memory blocks, events, queries, caps) that deliberately avoids the heavier GObject machinery to keep per-frame allocation overhead low in streaming paths. The distinction between `GstObject`-derived types and `GstMiniObject`-derived types is not cosmetic: it governs which API to use when manipulating control-plane versus data-plane objects, and confusing the two is a common source of crashes in GStreamer plugin development. [Source](https://docs.gtk.org/gobject/)
+
+### 1.3 What is DMABuf?
+
+DMABuf (DMA Buffer Sharing) is a Linux kernel mechanism that lets multiple devices and userspace processes share a single physical memory allocation identified by a file descriptor, without copying pixel data through the CPU. A DRM driver, V4L2 decoder, or VA-API backend allocates a buffer in GPU-accessible memory and exports it as a file descriptor using the kernel's `dma_buf` framework. Any driver or userspace component that receives that file descriptor can import the buffer and read from or write to it directly, subject to explicit synchronisation via `DMA_BUF_IOCTL_SYNC` or implicit fencing through the kernel's dma-fence infrastructure.
+
+In the GStreamer context, DMABuf is what makes hardware-accelerated pipelines practical at scale. A `vah264dec` element decodes a frame into a VA surface and exports it as a DMABuf file descriptor wrapped in a `GstMemory` block managed by `GstVaDmabufAllocator`. A Wayland sink or EGL renderer imports that file descriptor and attaches it directly to a texture or `wl_buffer` without touching the pixel data on the CPU. The `GstDmaBufAllocator`, `GstVideoMeta` (carrying per-plane strides and offsets for multi-planar formats such as NV12), and `GstVideoInfoDmaDrm` (pairing a format descriptor with a DRM fourcc and modifier) are the GStreamer types that mediate this sharing. Capability negotiation for zero-copy paths happens through `GST_QUERY_ALLOCATION`, which allows a downstream sink to propose a DMABuf-capable buffer pool that the upstream hardware decoder fills in-place. [Source](https://www.kernel.org/doc/html/latest/driver-api/dma-buf.html)
 
 ---
 

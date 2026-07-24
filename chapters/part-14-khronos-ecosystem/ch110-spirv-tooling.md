@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Introduction — SPIR-V as the Lingua Franca](#1-introduction--spir-v-as-the-lingua-franca)
+   - [1.1 What is SPIR-V?](#11-what-is-spirv)
+   - [1.2 What is spirv-tools?](#12-what-is-spirv-tools)
+   - [1.3 What is SPIRV-Cross?](#13-what-is-spirv-cross)
 2. [SPIR-V Binary Format](#2-spir-v-binary-format)
 3. [Front-End Compilers: glslang and DXC](#3-front-end-compilers-glslang-and-dxc)
 4. [spirv-tools: Assembler, Disassembler, Validator](#4-spirv-tools-assembler-disassembler-validator)
@@ -50,6 +53,30 @@ Around this binary format has grown a rich tooling ecosystem. The major componen
 | spirv-reflect | KhronosGroup/SPIRV-Reflect | Lightweight pipeline layout reflection |
 
 This chapter maps the ecosystem in depth: binary format first, then each major tool, then Mesa's ingestion layer, then the extended instruction sets that push SPIR-V into ray tracing, mesh shading, and tensor compute.
+
+### 1.1 What is SPIR-V?
+
+SPIR-V (Standard Portable Intermediate Representation — Vulkan) is a binary intermediate representation for GPU shader programs and GPU compute kernels, standardised by the Khronos Group. Unlike text-based shading languages such as GLSL or HLSL, SPIR-V is a compact stream of 32-bit words — a machine-readable format designed for low-latency ingestion by GPU drivers rather than human authorship. The format encodes a shader's full type system, decoration metadata, control flow, and instruction stream in a single self-contained binary module, identified by the magic number `0x07230203`.
+
+SPIR-V was introduced as the mandatory shading language for Vulkan 1.0 (2016), removing the requirement for GPU drivers to include per-vendor GLSL front ends and the divergent parsing behaviour that entailed. On the Linux graphics stack, every Vulkan shader reaches the driver as a SPIR-V module; Mesa's compiler backends consume SPIR-V via the `spirv_to_nir` translation layer before lowering to per-hardware IR. OpenCL 2.1 adopted SPIR-V as its binary program format, replacing the older SPIR 1.2 format, and Mesa's Rusticl runtime accepts SPIR-V directly. WebGPU compilers (Dawn/Tint, wgpu/naga) target SPIR-V on their Vulkan backends. The format is versioned independently of the APIs that consume it: SPIR-V 1.6 corresponds to Vulkan 1.3. Understanding the binary module structure — its five-word header, instruction encoding, and mandatory logical layout — is the foundation for every tool covered in this chapter.
+
+[Source: SPIR-V Specification](https://registry.khronos.org/SPIR-V/)
+
+### 1.2 What is spirv-tools?
+
+spirv-tools is the Khronos Group's canonical open-source tool suite for manipulating SPIR-V modules. It is hosted at [KhronosGroup/SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools) and ships as both standalone command-line binaries and a C++ library (`libSPIRV-Tools`) that graphics drivers, game engines, and shader compilers link against. The suite is specification-driven: its validator tracks the normative SPIR-V specification and every Khronos-ratified extension, making it the authoritative check for driver and toolchain compliance.
+
+The suite contains several cooperating tools: `spirv-as` (text assembler), `spirv-dis` (disassembler), `spirv-val` (specification validator), `spirv-opt` (optimiser), `spirv-link` (multi-module linker), `spirv-reduce` (bug reproducer minimiser), and `spirv-cfg` (control-flow graph visualiser). On the Linux graphics stack, spirv-tools is a build dependency of Mesa, glslang, SPIRV-Cross, Dawn, and virtually every Vulkan-capable project. Valve's shader pipeline for Steam games passes modules through `spirv-opt` before driver submission; Mesa's CI runs `spirv-val` over generated SPIR-V to catch regressions during driver development. Each component operates directly on the binary format, allowing the tools to chain together in pipelines — compile with glslang, optimise with spirv-opt, validate with spirv-val, disassemble with spirv-dis for human inspection — without requiring any intermediate conversion to source form. This chapter covers the assembler, disassembler, and validator in §4, and the optimiser separately in §5.
+
+[Source: SPIRV-Tools GitHub](https://github.com/KhronosGroup/SPIRV-Tools)
+
+### 1.3 What is SPIRV-Cross?
+
+SPIRV-Cross is a Khronos-hosted library and command-line tool for transpiling — translating — SPIR-V binary modules back into compilable shading language source code. Its primary targets are GLSL (for OpenGL and OpenGL ES drivers that do not natively accept SPIR-V), HLSL (for Direct3D backends in cross-platform engines), MSL (Metal Shading Language, for macOS and iOS portability layers), and C++ (for CPU-side shader emulation and unit testing). Beyond code generation, SPIRV-Cross provides a reflection API for querying descriptor set layouts, push constant ranges, specialisation constants, and interface variables directly from a SPIR-V module.
+
+On the Linux graphics stack, SPIRV-Cross occupies a critical role in cross-platform engine portability. Game engines compile a single GLSL or HLSL source to SPIR-V for the Vulkan path, then use SPIRV-Cross to regenerate GLSL for an OpenGL ES fallback path on older drivers. Godot Engine, ANGLE's Vulkan backend, and several Vulkan portability layers rely on SPIRV-Cross for this purpose. The library works by parsing the SPIR-V module into an internal compiler intermediate representation — the `Compiler` class hierarchy in `spirv_cross.hpp` — and then traversing that representation to emit target-language syntax, handling type conversion, decoration mapping, built-in variable renaming, and control-flow restructuring. The library is header-only-compatible and widely vendored into engine source trees. This chapter covers SPIRV-Cross in §6.
+
+[Source: SPIRV-Cross GitHub](https://github.com/KhronosGroup/SPIRV-Cross)
 
 ---
 

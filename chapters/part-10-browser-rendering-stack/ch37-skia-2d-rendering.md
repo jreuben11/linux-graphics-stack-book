@@ -8,6 +8,9 @@
 ## Table of Contents
 
 1. [Skia's Role in Chrome's Rendering Pipeline](#1-skias-role-in-chromes-rendering-pipeline)
+   - [1.1 What is Skia?](#11-what-is-skia)
+   - [1.2 What is Ganesh?](#12-what-is-ganesh)
+   - [1.3 What is Graphite?](#13-what-is-graphite)
 2. [SkiaGanesh: The Mature GPU-Accelerated Backend](#2-skiaganesh-the-mature-gpu-accelerated-backend)
 3. [SkiaGraphite: The New GPU Architecture](#3-skiagraphite-the-new-gpu-architecture)
 4. [The Ganesh-to-Graphite Transition in Chrome](#4-the-ganesh-to-graphite-transition-in-chrome)
@@ -84,6 +87,24 @@ graph TD
 ```
 
 Software **Skia** — **SkCanvas** backed by a CPU **SkBitmap** with no GPU backend — still handles print rendering, PDF output, and certain offscreen operations where a GPU context is unavailable. It is not the focus of this chapter, but it is worth noting that **Skia**'s software rasteriser is the same codebase; only the destination surface changes.
+
+### 1.1 What is Skia?
+
+Skia is an open-source 2D vector graphics library that serves as the rasterisation engine for Chrome, Android's graphics stack, Flutter, and several other major software systems. Its source repository is maintained at `https://skia.googlesource.com/skia`. Skia provides a hardware-agnostic drawing API centred on five primary abstractions: `SkCanvas` (the drawing surface onto which all operations are issued), `SkPaint` (the description of colour, blend mode, and effects applied to a drawing operation), `SkPath` (a vector path of lines, Bézier curves, and arcs), `SkImage` (a decoded pixel source), and `SkSurface` (an allocation target that wraps either a GPU texture or a CPU bitmap). Together these abstractions allow callers to issue drawing commands without knowing whether execution will happen on the CPU or through a GPU API such as OpenGL ES, Vulkan, or WebGPU.
+
+Within Chrome, Skia sits between Blink's paint system and the GPU. Blink records drawing operations into `SkPicture` objects; the compositor's Out-of-Process Rasterisation workers replay those pictures onto `SkCanvas` instances backed by GPU textures; and the display compositor uses `SkCanvas` directly to composite finished tiles into the on-screen framebuffer. Because the `SkCanvas` API is backend-agnostic, Chrome can switch its underlying GPU implementation without changing any Blink paint code. On Linux, Skia ultimately communicates with the Mesa Vulkan driver, either directly or through the ANGLE and Dawn abstraction layers described in Chapters 34 and 35.
+
+### 1.2 What is Ganesh?
+
+Ganesh is Skia's original GPU-accelerated backend, first introduced around 2011 and continuously maintained since. It supports OpenGL, OpenGL ES, Vulkan, and Metal as underlying GPU APIs. On Linux, Chrome uses Ganesh through ANGLE, which translates OpenGL ES calls into Vulkan commands delivered to the Mesa driver; a native Vulkan backend that bypasses ANGLE also exists. Ganesh organises all GPU state and resources around a central `GrDirectContext` object, which owns the connection to the GPU API, the resource cache (`GrResourceCache`), the glyph atlas manager, and the pending command buffer.
+
+Ganesh follows a deferred execution model: drawing commands recorded through `SkCanvas` accumulate as `GrOp` objects inside `GrOpsTask` lists, which are flushed to the GPU in batch when `GrDirectContext::flush()` and `GrDirectContext::submit()` are called. During accumulation, Ganesh applies two optimisations — op fusion, which merges adjacent draw calls with identical GPU state, and op reordering, which sorts draws to minimise pipeline state changes. Shader programs in Ganesh are compiled lazily: the first time a particular combination of paint effects and geometry type is encountered, Ganesh assembles an SkSL program and compiles it to the target API's shading language. This lazy compilation works well for warm workloads but causes noticeable first-draw stutter when a page introduces a paint effect combination not previously encountered in the current session, a limitation that directly motivated the design of Graphite.
+
+### 1.3 What is Graphite?
+
+Graphite is Skia's second-generation GPU backend, designed from first principles around explicit GPU APIs — Vulkan, Metal, Direct3D 12, and WebGPU via Dawn. Its defining architectural difference from Ganesh is a strict separation of the recording phase from the submission phase. A `skgpu::graphite::Recorder` accumulates draw commands on any thread independently and without locking, then produces an immutable `Recording` object via `Recorder::snap()`. A separate `skgpu::graphite::Context` object, which owns the GPU device connection and resource cache, accepts completed `Recording` objects from any thread and submits them to the GPU. This split enables parallel recording across CPU cores and removes shader-compilation work from the frame submission path.
+
+Graphite's most consequential innovation is pipeline pre-compilation. Before the first frame is drawn, `PrecompileContext::precompile()` compiles every GPU pipeline required by a specified set of CSS effect combinations. Because real web pages use a bounded subset of possible effect combinations, the pre-compilation phase completes at startup and eliminates the per-frame pipeline compilation hitches that affect Ganesh. On Linux, Graphite uses Dawn as its GPU abstraction layer, and shaders travel the path SkSL → WGSL → Tint → SPIR-V → Mesa NIR → GPU machine code. As of mid-2026, Graphite is the default backend on Apple Silicon Macs and is under active experimentation on Linux via `--enable-features=SkiaGraphite`.
 
 ---
 

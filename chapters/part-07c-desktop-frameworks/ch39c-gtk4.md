@@ -12,6 +12,9 @@
   - [1.2 What Changed From GTK3](#12-what-changed-from-gtk3)
   - [1.3 Module Structure: gdk, gsk, gtk](#13-module-structure-gdk-gsk-gtk)
   - [1.4 Licensing and Versioning](#14-licensing-and-versioning)
+  - [1.5 What is GSK (GTK Scene Kit)?](#15-what-is-gsk-gtk-scene-kit)
+  - [1.6 What is GskRenderer?](#16-what-is-gskrenderer)
+  - [1.7 What is GDK?](#17-what-is-gdk)
 - [2. The GskRenderNode Tree](#2-the-gskrendernode-tree)
   - [2.1 Node Type Taxonomy](#21-node-type-taxonomy)
   - [2.2 Building Nodes: The GtkSnapshot API](#22-building-nodes-the-gtksnapshot-api)
@@ -121,6 +124,18 @@ GTK is licensed under the **GNU LGPL, version 2.1 or later**, which permits link
 - **GTK 4.12** (2023) — `gdk_gl_texture_new()` deprecated in favour of `GdkGLTextureBuilder`.
 - **GTK 4.14** (2024) — the unified GPU renderer in `gsk/gpu/`; `GdkDmabufTexture` / `GdkDmabufTextureBuilder`.
 - **GTK 4.16** (2024) — `GskVulkanRenderer` becomes the default on Wayland; `wp_linux_drm_syncobj_v1` explicit sync. The 4.16.0 NEWS states: "This release changes the default GSK renderer to be Vulkan, on Wayland. Other platforms still use ngl." [Source](https://gitlab.gnome.org/GNOME/gtk/-/blob/4.16.0/NEWS)
+
+### 1.5 What is GSK (GTK Scene Kit)?
+
+GSK — the GTK Scene Kit — is the retained-mode rendering layer that sits between the GTK widget tree and the GPU. It defines two primary abstractions: the `GskRenderNode` type hierarchy, which represents a frame as an immutable tree of compositing operations, and the `GskRenderer` interface, which consumes that tree and issues the corresponding GPU commands. The design follows the retained-mode scene graph pattern: instead of each widget painting directly into a surface pixel buffer, it contributes an immutable subtree of nodes describing what to draw, and the renderer decides how and when to execute those draw calls. The immutability property is load-bearing — it allows the renderer to operate on a separate thread or GPU context from the widget tree, supports cross-frame diffing for incremental damage tracking, and makes the frame state serialisable for offline inspection with `gtk4-rendernode-tool`. GSK lives in the `gsk/` subdirectory of the GTK source tree and is exposed under the `Gsk` GIR namespace. The concrete node subtypes (colour fills, texture quads, gradient shaders, rounded clip passes, blur and shadow nodes) are catalogued in Section 2. GPU renderer implementations reside in `gsk/gpu/` and are discussed in Section 3. [Source](https://docs.gtk.org/gsk4/)
+
+### 1.6 What is GskRenderer?
+
+`GskRenderer` is the abstract interface through which GSK drives the GPU. A renderer accepts a `GskRenderNode` tree and a `GdkSurface`, traverses the node hierarchy, and emits the Vulkan command buffers or OpenGL draw calls that produce the final pixel output. GTK4 ships four concrete renderer backends: `GskVulkanRenderer`, which uses Vulkan and became the default on Wayland in GTK 4.16; `GskNglRenderer`, which uses modern OpenGL without deprecated fixed-function state; `GskGLRenderer`, the older OpenGL path retained for compatibility; and `GskCairoRenderer`, a CPU-only fallback for environments without usable GPU drivers. The renderer is selected at application startup based on the active display backend and the `GSK_RENDERER` environment variable. Because the `GskRenderNode` tree is a stable, backend-agnostic representation, swapping renderers at runtime requires no changes to widget or application code. The unified GPU renderer infrastructure in `gsk/gpu/`, introduced in GTK 4.14, allows the Vulkan and OpenGL backends to share shader logic and differ only in their command-emission layers, reducing the maintenance cost of supporting two GPU APIs simultaneously. Section 3 covers each backend in detail. [Source](https://docs.gtk.org/gsk4/class.Renderer.html)
+
+### 1.7 What is GDK?
+
+GDK — the GTK Display Kit — is the windowing and input abstraction layer that isolates GTK and GSK from the specifics of the underlying window system. On Linux, GDK ships two primary backends: the Wayland backend in `gdk/wayland/` and the X11 backend in `gdk/x11/`. The Wayland backend creates `wl_surface` objects, obtains EGL or Vulkan surfaces for GPU rendering, negotiates DMA-BUF formats with the compositor via `zwp_linux_dmabuf_v1`, and manages explicit GPU synchronisation fences through `wp_linux_drm_syncobj_v1`. The key GDK types are `GdkDisplay` (a connection to the compositor or X server), `GdkSurface` (a toplevel window or popup), `GdkGLContext` and `GdkVulkanContext` (GPU context handles bound to a surface), `GdkTexture` (a GPU- or CPU-resident image that can wrap a DMA-BUF), and `GdkFrameClock` (the vsync-driven frame scheduler that paces rendering to the display refresh cycle). Widget code never calls Wayland protocol functions directly; it interacts with GDK abstractions that the backend translates into the appropriate compositor protocol at runtime. This separation makes GTK applications portable across Wayland, X11, macOS, and Windows without changes above the GDK layer. Section 4 covers the GDK Wayland backend in depth. [Source](https://docs.gtk.org/gdk4/)
 
 ---
 

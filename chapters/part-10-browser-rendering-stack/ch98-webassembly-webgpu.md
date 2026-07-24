@@ -11,6 +11,9 @@
 ## Table of Contents
 
 1. [Introduction: The Portability Promise](#1-introduction-the-portability-promise)
+   - [1.3 What is WebAssembly?](#13-what-is-webassembly)
+   - [1.4 What is WebGPU?](#14-what-is-webgpu)
+   - [1.5 What is wgpu?](#15-what-is-wgpu)
 2. [WebAssembly Fundamentals](#2-webassembly-fundamentals)
 3. [Emscripten: C++ to WebGPU via emdawnwebgpu](#3-emscripten-c-to-webgpu-via-emdawnwebgpu)
 4. [wgpu: Rust's Portable GPU Abstraction](#4-wgpu-rusts-portable-gpu-abstraction)
@@ -74,6 +77,24 @@ Understanding how these pieces assemble is helpful before diving into each layer
 ```
 
 Each arrow in this stack represents a translation or abstraction boundary. The developer writes WGSL shaders and wgpu/WebGPU API calls once; the runtime selects the appropriate path based on whether the code runs natively or in the browser.
+
+### 1.3 What is WebAssembly?
+
+WebAssembly (WASM) is a binary instruction format designed as a portable compilation target for languages such as C, C++, and Rust. The W3C standardizes it; all major browsers support it natively, and standalone runtimes such as Wasmtime and WasmEdge run it outside the browser. A WASM module is a self-contained unit of code that the runtime validates and executes in a sandboxed environment: the module sees only the memory the host explicitly grants it, cannot perform syscalls directly, and must import every external capability through a well-defined interface. The binary format is compact and designed for fast streaming compilation — a browser can begin compiling a large WASM module before the download completes. [Source: WebAssembly specification](https://webassembly.github.io/spec/core/)
+
+For GPU work, WASM is the transport layer: it carries compiled, platform-agnostic application logic from the developer's machine to the execution environment. The GPU code itself is expressed in WGSL (covered in §6) and submitted through the WebGPU API. WASM holds the coordinate, scene-graph, and control logic that determines what to draw; the GPU API carries the rendering and compute commands. This chapter covers WASM's binary format, memory model, threading primitives, and the toolchain choices — Emscripten for C++, wasm-bindgen for Rust — that connect application code to WebGPU.
+
+### 1.4 What is WebGPU?
+
+WebGPU is a web API specification that exposes GPU compute and rendering capabilities to browsers and WASM runtimes. It is defined by the W3C GPU for the Web Community Group and draws on lessons from Vulkan, Metal, and Direct3D 12 to provide a modern, explicit GPU programming model without requiring full exposure of any single native API. The specification defines a JavaScript API (`navigator.gpu`, `GPUDevice`, `GPURenderPipeline`, `GPUComputePipeline`) and a portable shader language, WGSL. [Source: WebGPU specification](https://www.w3.org/TR/webgpu/)
+
+On Linux, Chrome's WebGPU implementation (Dawn) and Firefox's implementation (wgpu-based) both translate WebGPU calls to Vulkan through Mesa's Vulkan drivers — RADV for AMD hardware, ANV for Intel, NVK for NVIDIA. The translation is not a compatibility shim; WebGPU maps cleanly onto Vulkan's descriptor sets, render passes, and compute dispatches. The overhead relative to native Vulkan comes primarily from the V8 JavaScript JIT layer between the WASM module and Dawn, not from the Vulkan translation itself. This chapter covers how WebGPU's resource model maps to Vulkan primitives in §7, and how Rust and C++ applications consume WebGPU through wgpu and emdawnwebgpu respectively.
+
+### 1.5 What is wgpu?
+
+wgpu is a Rust library that implements the WebGPU API across multiple backends: Vulkan, Metal, Direct3D 12, Direct3D 11, OpenGL ES, and the browser's native WebGPU via WebAssembly. It also serves as the GPU backend for Firefox's WebGPU implementation. A Rust application built on wgpu targets a single API surface (`wgpu::Device`, `wgpu::RenderPipeline`, `wgpu::Queue`) and compiles to both a native binary — selecting Vulkan on Linux — and a WASM module — selecting the browser's WebGPU. Backend selection is automatic based on the compilation target: `wasm32-unknown-unknown` activates the WebGPU-over-JS path; `x86_64-unknown-linux-gnu` activates Vulkan. [Source: wgpu repository](https://github.com/gfx-rs/wgpu)
+
+This portability is the core value proposition described throughout this chapter. The same WGSL shaders and rendering logic that run on a native Mesa/Vulkan driver also run inside a browser tab, with only the initialization and window-surface code differing between the two targets. wgpu sits at the intersection of §4 (library API) and §7 (Vulkan mapping), and is covered in depth starting at §4.
 
 ---
 

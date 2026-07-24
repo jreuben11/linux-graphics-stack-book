@@ -13,6 +13,9 @@ This chapter examines the full stack: the two-component Blender MCP bridge and i
 ## Table of Contents
 
 - [1. The Model Context Protocol and Blender](#1-the-model-context-protocol-and-blender)
+  - [1.1 What is the Model Context Protocol (MCP)?](#11-what-is-the-model-context-protocol-mcp)
+  - [1.2 What is Blender's Python API (bpy)?](#12-what-is-blenders-python-api-bpy)
+  - [1.3 What is Claude Code?](#13-what-is-claude-code)
 - [2. Blender MCP Architecture: The Two-Component Bridge](#2-blender-mcp-architecture-the-two-component-bridge)
 - [3. MCP Tool Surface: What the AI Sees](#3-mcp-tool-surface-what-the-ai-sees)
 - [4. Thread Safety and bpy.app.timers](#4-thread-safety-and-bpyapptimers)
@@ -41,6 +44,24 @@ MCP, published by Anthropic in late 2024 and now governed as an open specificati
 For Blender, MCP addresses a fundamental ergonomic problem: Blender's entire UI — every menu item, slider, and button — is represented as a Python operator call. A capable agent with access to the operator reference can write correct bpy scripts, but without live scene feedback it cannot inspect what is actually present, verify results, or react to errors. MCP closes that loop.
 
 **Why MCP over a simple subprocess pipe?** The MCP specification standardises tool discovery (the client asks the server for its tool list at connection time), error reporting (tools return structured `isError` responses), and sampling (the client can ask the server to run LLM completions). This standardisation means a single Blender MCP server works unmodified with Claude Desktop, Claude Code, Cursor, VS Code with Copilot MCP extensions, or any open-source MCP client.
+
+### 1.1 What is the Model Context Protocol (MCP)?
+
+The Model Context Protocol (MCP) is an open specification, published by Anthropic in late 2024 and now maintained at [modelcontextprotocol.io](https://modelcontextprotocol.io), that standardises how AI language model agents communicate with external tools and data sources. At its core, MCP defines a JSON-RPC-over-stdio (or Server-Sent Events) wire format with three primitives: tools (callable functions with typed JSON Schema parameters and structured return values), resources (read-only named data blobs the agent can pull into its context window), and prompts (server-defined prompt templates). A conforming MCP server advertises its tool list at connection time, so any MCP-capable client — Claude Code, Claude Desktop, Cursor, VS Code with Copilot extensions, or open-source alternatives — can discover and invoke those tools without bespoke integration code for each client.
+
+In the Linux graphics and creative-tools context, MCP solves the impedance mismatch between a language model that reasons about code and an application whose internal state is only accessible at runtime. For Blender in particular, a script written without live scene feedback cannot know the names of existing objects, the state of materials, or the geometry counts produced by a modifier stack. MCP provides a bidirectional channel so the AI can inspect the scene, execute operations via Blender's Python API, and observe results in a tight reasoning loop without any manual copy-paste between the agent and Blender's script console. The specification is intentionally application-agnostic: the same protocol used to connect an agent to Blender is used to connect it to databases, version-control systems, browser automation engines, and Linux system tools.
+
+### 1.2 What is Blender's Python API (bpy)?
+
+Blender exposes almost its entire feature set through an embedded CPython interpreter and a module called `bpy`. Every mesh operation, object property, shader node, render setting, and UI panel accessible through Blender's graphical interface corresponds to a Python operator, property, or data accessor reachable through `bpy`. The module is divided into four main namespaces: `bpy.data` (the Blender internal database — all scenes, objects, meshes, materials, and other data-blocks); `bpy.context` (the current active object, mode, scene, and selection state); `bpy.ops` (operator calls that mirror menu actions and are undo-aware); and `bpy.types` (the RNA type system that defines the schema of every data-block, used for property registration and introspection).
+
+This architecture means that any Blender workflow automatable through the GUI is also automatable through Python — which is what makes an AI agent capable of driving Blender programmatically, given only the API reference as context. A critical constraint is that `bpy` is only importable from within Blender's embedded interpreter; it cannot be imported from an external Python process. This is the fundamental architectural constraint that necessitates the two-component MCP bridge described in §2: a Blender addon runs inside Blender's interpreter to access `bpy`, while a separate MCP server process handles the protocol conversation with the AI client and relays commands to the addon over a local TCP socket.
+
+### 1.3 What is Claude Code?
+
+Claude Code is Anthropic's terminal-based AI coding assistant, distributed as the `claude` command-line tool. Unlike chat-oriented interfaces, Claude Code has direct access to the local filesystem, can execute shell commands, read compiler and interpreter output, and maintain multi-step task context across an entire implementation session. It functions as a first-class MCP client: when MCP server entries are declared in its configuration (`~/.claude/settings.json` or a project-level `.claude/settings.json`), Claude Code discovers and calls those servers' tools as part of its normal reasoning loop — alongside filesystem reads, shell invocations, and web searches — without requiring the user to manually relay outputs.
+
+In the context of this chapter, Claude Code acts as the orchestrating agent that drives Blender through the MCP bridge. Given a natural-language description of a 3D modelling or rendering task, Claude Code queries the scene state via MCP inspection tools, formulates `bpy` Python code, executes it through the `execute_blender_code` tool, and iterates based on the returned output and viewport screenshots. This closed-loop workflow eliminates the context-switching between an editor and Blender's script console that characterised earlier AI-assisted Blender approaches, and it makes the full Blender operator and API surface available to the agent without any Blender-specific fine-tuning.
 
 ---
 

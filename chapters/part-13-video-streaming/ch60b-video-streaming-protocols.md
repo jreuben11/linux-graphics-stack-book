@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Overview](#1-overview)
+   - [1.1 What is Adaptive Bitrate (ABR) Streaming?](#11-what-is-adaptive-bitrate-abr-streaming)
+   - [1.2 What is HLS (HTTP Live Streaming)?](#12-what-is-hls-http-live-streaming)
+   - [1.3 What is MPEG-DASH?](#13-what-is-mpeg-dash)
 2. [HLS: HTTP Live Streaming](#2-hls-http-live-streaming)
    - 2.1 [Playlist Grammar: Master and Media Manifests](#21-playlist-grammar-master-and-media-manifests)
    - 2.2 [Segment Containers: MPEG-2 TS vs fMP4/CMAF](#22-segment-containers-mpeg-2-ts-vs-fmp4cmaf)
@@ -149,6 +152,24 @@ graph TD
     MOQT --> Codec
     Codec --> HW
 ```
+
+### 1.1 What is Adaptive Bitrate (ABR) Streaming?
+
+Adaptive Bitrate (ABR) streaming is a technique for delivering video over HTTP in which the player dynamically selects the quality level — resolution, bitrate, and codec profile — that best matches the viewer's current network conditions and device capabilities. The server pre-encodes the same content at multiple bitrates and resolutions, packages each into fixed-duration segments (typically 2–10 seconds), and makes all renditions available at known URLs. The player maintains an internal buffer and runs an adaptation algorithm that monitors either observed download throughput, the current buffer level, or both, then switches between renditions segment-by-segment to maximise perceptual quality while minimising rebuffering events.
+
+ABR streaming operates entirely over standard HTTP, which means the server is a plain file server or CDN with no streaming-specific state — the entire delivery mechanism is pull-based. This makes ABR streaming architecturally simpler and more scalable than push-based protocols such as RTSP or RTMP, and it is the foundation of modern on-demand and live video platforms. The two dominant ABR protocols are HLS (§2) and MPEG-DASH (§3), which share the same segment-and-manifest model but differ in playlist format and standardisation body. CDN delivery strategies that leverage ABR's pull model — origin shielding, HTTP/3 at the edge, byte-range seeking via `sidx` boxes — are covered in §10. The adaptation algorithms that control quality selection — EWMA, BBA, BOLA, MPC, and Pensieve — are covered in §8.
+
+### 1.2 What is HLS (HTTP Live Streaming)?
+
+HTTP Live Streaming (HLS), standardised as RFC 8216, is an ABR streaming protocol for HTTP delivery of segmented audio and video. An HLS deployment exposes two tiers of text-format M3U8 playlists: a master playlist that enumerates available renditions (video bitrate variants, alternate audio tracks, subtitle tracks), and one media playlist per rendition that lists the URL of each segment in sequence. Clients periodically refresh the media playlist to discover new segments as they become available for live streams.
+
+Segments are self-contained media files delivered as MPEG-2 Transport Stream (`.ts`) or fragmented MP4 (`.m4s` with a separate initialisation segment addressed via `#EXT-X-MAP`). The fMP4/CMAF variant is preferred for new deployments because it shares a container with MPEG-DASH and supports the Common Encryption (CENC) standard. The Low-Latency HLS extension, added to RFC 8216 in 2019, introduces partial segments (`#EXT-X-PART`) and blocking playlist reload via the `_HLS_msn` and `_HLS_part` query parameters, reducing live latency from 10–30 seconds to 2–4 seconds. FFmpeg's `hls` muxer (`-hls_segment_type fmp4`) supports both segment formats and the LL-HLS extensions. Section §2 covers the full playlist grammar, segment containers, LL-HLS mechanics, and FFmpeg packaging commands in detail.
+
+### 1.3 What is MPEG-DASH?
+
+MPEG-DASH (Dynamic Adaptive Streaming over HTTP), standardised as ISO/IEC 23009-1, is an international ABR streaming protocol that uses an XML manifest called the Media Presentation Description (MPD) to describe the available renditions and the URL patterns for their segments. Unlike HLS, which uses a custom text format, the XML MPD supports a richer hierarchical structure: a presentation is divided into Periods (programme and ad break), each Period contains AdaptationSets (one per media type), and each AdaptationSet lists Representations — the individual quality renditions.
+
+DASH supports three segment-addressing modes: `$Number$`-based templates, `$Time$`-based templates with `SegmentTimeline`, and explicit `SegmentList`, giving packagers flexibility in how they reference segments. MPEG-DASH is codec-agnostic and standardised for use with the Common Encryption (CENC) scheme (ISO 23001-7), making it the preferred format in broadcast and SVOD deployments that require content protection. The Low-Latency DASH profile, defined by the DASH Industry Forum, uses CMAF chunked transfer encoding over HTTP/1.1 to stream `moof`+`mdat` pairs to the CDN edge before a segment closes, targeting 3–5 second live latency. Section §3 covers the MPD structure, segment addressing modes, CMAF integration, and DASH-IF interoperability points in depth.
 
 ---
 

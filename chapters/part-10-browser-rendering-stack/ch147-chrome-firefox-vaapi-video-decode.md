@@ -28,6 +28,9 @@
 ## Table of Contents
 
 1. [Why Hardware Video Decode Matters](#1-why-hardware-video-decode-matters)
+   - [1.1 What is Hardware Video Decode?](#11-what-is-hardware-video-decode)
+   - [1.2 What is VA-API?](#12-what-is-va-api)
+   - [1.3 What is DMA-BUF?](#13-what-is-dma-buf)
 2. [The VA-API Foundation](#2-the-va-api-foundation)
 3. [Chrome's VA-API Architecture — Two Generations](#3-chromes-va-api-architecture--two-generations)
 4. [VaapiVideoDecoder in Depth](#4-vaapivideodecoder-in-depth)
@@ -63,6 +66,24 @@ The Linux browser story for hardware video decode has a complicated timeline. Bo
 The late arrival of default-on hardware decode in Chrome on Linux relative to Windows is primarily attributable to three factors: the absence of a stable zero-copy path between VA-API surfaces and the Wayland compositor before `zwp_linux_dmabuf_v1` was widely deployed; incomplete OOP-VD sandbox policies for AMD and NVIDIA hardware; and the incompatibility of the `i965` Intel driver — which powered the original VA-API path — with the Vulkan compositing stack Chrome subsequently adopted.
 
 Thermal throttling is a less visible but practically important reason organisations care about this at scale. A server-side transcoding or viewing cluster that soft-decodes high-resolution streams will throttle CPU frequency under sustained load, causing decode frame-rate drops that manifest as buffering stalls even at adequate network bandwidth. On client laptops, sustained CPU decode at 4K creates enough heat to trigger fan activity, reducing user experience. The industry's shift from H.264 to VP9 (YouTube 2015) and then to AV1 (YouTube/Netflix 2018–2020) has progressively increased decode complexity with each codec generation. AV1 is substantially more computationally demanding to decode in software than H.264 at the same resolution; the exact multiple depends on implementation and hardware, but the difference is large enough that smooth software AV1 4K playback at 60fps is impractical on battery-powered devices, making hardware acceleration necessary rather than optional.
+
+### 1.1 What is Hardware Video Decode?
+
+Modern GPUs contain fixed-function silicon blocks dedicated to video decode, separate from the shader execution units and rasterisation pipeline. These blocks — known by vendor names such as Intel Quick Sync Video, AMD VCN (Video Core Next), and NVIDIA NVDEC — implement the full entropy decoding, inverse discrete cosine transform, motion compensation, deblocking, and loop filter pipeline for specific video codecs in hardware logic rather than in programmable shader stages. Because these operations are implemented in dedicated circuits rather than general-purpose ALUs, they consume a fraction of the power of an equivalent software decode at the same frame rate, and they operate independently of the 3D rendering pipeline, leaving shader resources free for compositing and other work.
+
+On Linux, the operating system exposes these engines through driver interfaces tied to the DRM (Direct Rendering Manager) kernel subsystem. The primary API for browser use is VA-API via `libva`; Vulkan Video is a newer alternative, and VDPAU is largely deprecated for decode. The decoded output lives in GPU-allocated surfaces — buffers in a tiled, vendor-specific memory layout — which must be shared with the compositor without a CPU round-trip to be efficient. This chapter traces the complete path from a browser-received video bitstream through hardware decode to a composited frame on screen.
+
+### 1.2 What is VA-API?
+
+VA-API (Video Acceleration API) is a vendor-neutral C library interface for accessing hardware video decode, encode, and post-processing engines on Linux. Defined in the `libva` project at `github.com/intel/libva`, VA-API abstracts over vendor-specific driver backends through a driver model: `libva` loads a backend shared object — `libva-intel-media-driver` for Intel Gen 9 (Skylake) through Xe, or `radeonsi_drv_video.so` for AMD via Mesa's Gallium VA frontend — selected by the `LIBVA_DRIVER_NAME` environment variable or detected automatically from the DRM device's PCI vendor ID.
+
+The API is structured around a `VADisplay`, an opaque connection to the hardware obtained via `vaGetDisplayDRM(drm_fd)` where `drm_fd` is a file descriptor for the DRM render node `/dev/dri/renderD128`. A codec decode session requires querying driver capability via `vaQueryConfigEntrypoints()`, allocating output surfaces via `vaCreateSurfaces()`, and submitting per-frame buffer structures that carry parsed bitstream header parameters and compressed slice data. The hardware signals completion asynchronously; the caller synchronises via `vaSyncSurface()` before accessing the decoded output. Both Chrome's `VaapiWrapper` and Firefox's `libva`-backed decode path follow this same sequence, differing in how they integrate the decoded surfaces into their respective compositor pipelines.
+
+### 1.3 What is DMA-BUF?
+
+DMA-BUF is a Linux kernel framework, implemented under `drivers/dma-buf/`, that allows a GPU-allocated buffer object to be represented as a file descriptor and passed between processes and kernel subsystems without copying the underlying pixel data. A DMA-BUF file descriptor encapsulates a reference to a DRM buffer object (BO) allocated in GPU-accessible memory; any process or subsystem that receives the file descriptor can map the buffer, use it as a render target, or import it as a texture source, subject to explicit synchronisation through the DMA-BUF fence mechanism.
+
+In the browser hardware video decode context, DMA-BUF is the mechanism that allows a decoded NV12 frame — resident in GPU VRAM after the VA-API engine finishes — to be imported into the compositor's GL or Vulkan rendering context as an `EGLImage` or Vulkan external memory object, bypassing any CPU copy of the raw pixel planes. VA-API exposes the decoded surface as a DMA-BUF file descriptor via `vaExportSurfaceHandle()` with `VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2`, returning a `VADRMPRIMESurfaceDescriptor` that carries one DRM prime FD per buffer object and per-plane layout metadata including offset, stride, and DRM format modifier. The Wayland protocol extension `zwp_linux_dmabuf_v1` uses DMA-BUF FDs to allow clients to submit rendered or decoded frames directly to the Wayland compositor, which is the mechanism Chrome uses on Wayland to composite decoded video without any CPU involvement in frame transfer.
 
 ---
 

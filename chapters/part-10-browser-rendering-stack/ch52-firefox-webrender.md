@@ -16,6 +16,9 @@ This chapter targets **browser and web platform engineers** who need to understa
   - [The Fundamental Design Divergence](#the-fundamental-design-divergence)
   - [Why GPU Compositing Moved Into WebRender](#why-gpu-compositing-moved-into-webrender)
   - [Strategic Outlook: Which Architecture Wins, and Will They Converge?](#strategic-outlook-which-architecture-wins-and-will-they-converge)
+  - [1.1 What is WebRender?](#11-what-is-webrender)
+  - [1.2 What is a Display List?](#12-what-is-a-display-list)
+  - [1.3 What is wgpu?](#13-what-is-wgpu)
 - [WebRender: Crate Layout and Display List Wire Format](#webrender-crate-layout-and-display-list-wire-format)
 - [WebRender Render Graph](#webrender-render-graph)
 - [Picture Caching](#picture-caching)
@@ -136,6 +139,24 @@ graph LR
 ```
 
 The **BuiltDisplayList** blob crosses the content/GPU process boundary as raw bytes. On the GPU side, Rust code in **webrender** deserialises it into a **Scene**, which is then culled to a **Frame** for the current viewport, and finally submitted as GL draw calls by the **Renderer** thread.
+
+### 1.1 What is WebRender?
+
+WebRender is Firefox's GPU-accelerated rendering engine, written in Rust, that treats the entire web page as a retained-mode 3D scene submitted to the GPU each frame. Unlike the traditional browser rendering model — where the CPU paints content into bitmap tiles that a compositor then assembles — WebRender eliminates the CPU rasterisation step for most content. The page's visual representation is encoded as a display list of high-level primitives (rectangles, text runs, gradients, borders, clip regions, and images), which the GPU process compiles into batched OpenGL or Vulkan draw calls. This allows the GPU's parallel shader threads to redraw every visible primitive every frame, much as a game engine redraws its scene geometry, rather than relying on the CPU to track which regions need repainting.
+
+WebRender lives in `gfx/wr/` within mozilla-central as a Cargo workspace. The core crate, `webrender`, contains the `RenderBackend` thread (which builds render task graphs from incoming display lists), the `Renderer` thread (which issues GPU draw calls), and the `PictureCache` (which divides the page into invalidatable tiles). A software fallback, `swgl`, provides a SIMD-vectorised CPU rasteriser for systems without adequate GPU support. WebRender became the default renderer for Firefox on all platforms in 2020 and is the foundation on which all subsequent Firefox rendering features — picture caching, Wayland native layers, and the wgpu-based WebGPU backend — are built.
+
+### 1.2 What is a Display List?
+
+A display list is a serialised, declarative description of a frame's visual content. In WebRender's architecture, the Gecko layout engine (C++) traverses the DOM's frame tree and translates computed styles and box geometry into a flat sequence of `DisplayItem` variants — rectangles with background colours, text glyphs, border edges, box shadows, image tiles, SVG filter primitives, and clip/stacking-context delimiters. These items, along with a spatial tree encoding scroll frames and reference frames, are serialised into the `BuiltDisplayList` structure using the `peek-poke` zero-copy crate.
+
+The `BuiltDisplayList` crosses the content/GPU process IPC boundary as a raw byte blob. On the GPU side, the `SceneBuilder` thread deserialises it into a `Scene` — an internal representation of the page's visual primitives and their spatial relationships. A key property of the display list model is that it carries no GPU state: it describes what to draw, not how to draw it in terms of GL commands. This separation means the GPU process can freely choose batching strategies, allocate atlas textures, and reuse unchanged primitives across frames via the interning system, without the content process having any knowledge of GPU resource management.
+
+### 1.3 What is wgpu?
+
+`wgpu` is a Rust implementation of the WebGPU API, providing safe, cross-platform access to modern GPU features through backends for Vulkan, Metal, Direct3D 12, OpenGL ES, and WebGPU itself. It consists of two primary crates: `wgpu-core`, which implements the WebGPU specification's object model and command validation in pure Rust, and `wgpu-hal`, which provides thin, unsafe backend adapters for each underlying graphics API. On Linux, the Vulkan backend in `wgpu-hal` issues commands through the `ash` Rust crate and reaches hardware via Mesa's Vulkan drivers (ANV for Intel, RADV for AMD, NVK for NVIDIA).
+
+Firefox uses `wgpu-core` as the backbone of its WebGPU implementation. The content-process DOM layer serialises `GPUCommandEncoder` commands over IPC to a `WgpuServer` in the GPU process, which executes them against a `wgpu-core` device. WGSL shaders are compiled by the `naga` crate — `wgpu`'s companion shader compiler — through a typed SSA intermediate representation into SPIR-V for Vulkan or GLSL for GLES backends. The `naga` IR also enables cross-validation of shader programs and is shared with the Rust game engine ecosystem (Bevy, Rend3), giving Firefox's GPU stack a community of users beyond the browser itself. Firefox first shipped WebGPU enabled by default in Firefox 141 (July 2025).
 
 ---
 

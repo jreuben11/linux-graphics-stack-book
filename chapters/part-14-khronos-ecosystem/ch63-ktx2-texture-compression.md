@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Overview](#overview)
+   - [1.1 What is GPU Texture Compression?](#11-what-is-gpu-texture-compression)
+   - [1.2 What is Basis Universal?](#12-what-is-basis-universal)
+   - [1.3 What is KTX2?](#13-what-is-ktx2)
 2. [Why GPU Texture Compression](#why-gpu-texture-compression)
 3. [Block Compression Format Families](#block-compression-format-families)
    - [BC1–BC7: Desktop S3TC/RGTC/BPTC](#bc1bc7-desktop-s3tcrgtcbptc)
@@ -118,6 +121,30 @@ graph TD
     ASTC --> VKUP
     VKUP --> TMU
 ```
+
+### 1.1 What is GPU Texture Compression?
+
+GPU texture compression refers to a class of fixed-ratio lossy encoding schemes designed specifically for the constraints of GPU texture sampling hardware. Unlike general-purpose codecs such as JPEG or PNG, which require sequential decompression from a header, GPU block formats divide a texture into small, independently decodable units called blocks — typically 4×4 texels. Each block stores a compact approximation (endpoint colours, quantised weights, or codebook indices) that the Texture Mapping Unit (TMU) decodes to full precision in a fixed number of clock cycles, with no per-texel branching and no global decompressor state.
+
+The fundamental motivation is bandwidth and VRAM: an RGBA8 texture at 4K resolution occupies 33.5 MiB, while the equivalent BC7-compressed form occupies 8 MiB. Because the TMU decodes on-chip, no additional buffer allocation is needed — the driver binds the compressed `VkImage` directly, and Vulkan exposes the block formats through the `VkFormat` enum (for example, `VK_FORMAT_BC7_UNORM_BLOCK`, `VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK`, `VK_FORMAT_ASTC_4x4_UNORM_BLOCK`). Random access within a compressed image is guaranteed: any 4×4 block is decodable in isolation, enabling sparse residency (`VK_IMAGE_USAGE_SPARSE_BINDING_BIT`) and virtual texturing without decompressing neighbouring regions.
+
+On Linux, hardware decode support depends on the GPU vendor and Mesa driver. Desktop GPUs expose the BC1–BC7 family via `radv`, `anv`, and `nvk`. Mobile and embedded SoCs expose ETC2/EAC and ASTC instead, through `panfrost` (ARM Mali) and `freedreno` (Qualcomm Adreno). Section 3 of this chapter surveys all three format families and their Mesa driver support matrices in detail.
+
+### 1.2 What is Basis Universal?
+
+Basis Universal is a supercompression system for GPU textures that solves the portability problem inherent in hardware block compression. Because BC, ETC2, and ASTC are hardware-specific format families, a naive asset pipeline would need to store one compressed image per target GPU family — multiplying disk and delivery costs. Basis Universal introduces an intermediate compressed representation that is stored once and transcoded at load time into whichever native block format the current GPU supports.
+
+The system defines two principal intermediate codecs. ETC1S applies global Vector Quantisation (VQ) across all mip levels, array layers, and cubemap faces of a texture set, building shared endpoint and selector codebooks stored in a supercompression global data block. This yields high compression ratios (0.3–3 bpp) suitable for diffuse atlases and low-frequency colour textures. UASTC LDR 4×4 is a 19-mode subset of ASTC LDR 4×4 stored at 8 bpp per block, with per-block hint bits that enable rapid, near-lossless transcoding to BC7 and ASTC 4×4. UASTC HDR variants extend this to HDR content targeting `BC6H` and `VK_FORMAT_ASTC_4x4_HDR`. Combining either codec with Zstandard post-compression (`KTX2_SS_ZSTANDARD`) reduces file sizes further with fully lossless transcode.
+
+On Linux, the Basis Universal encoder and transcoder are distributed as a C++ library (`basisu_transcoder.cpp`) and the `basisu` command-line tool, available from the `KhronosGroup/KTX-Software` repository. At runtime the transcoder is invoked via `ktxTexture2_TranscodeBasis` in libktx, or directly through the `ktx2_transcoder` C++ class. Section 4 covers the full encoding pipeline, codec selection, and transcoder API in detail.
+
+### 1.3 What is KTX2?
+
+KTX2 (Khronos Texture Container version 2) is a binary container format standardised by the Khronos Group for storing GPU textures in a portable, feature-complete form. A KTX2 file wraps one or more mip levels, array layers, cubemap faces, or volumetric slices of a single texture asset, together with structured metadata and an optional supercompression payload. The format is specified in the Khronos Texture File Format Specification 2.0 and is the canonical delivery format for glTF 2.0 textures using the `KHR_texture_basisu` extension. [Source](https://github.com/KhronosGroup/KTX-Specification)
+
+At the byte level, a KTX2 file begins with a 12-byte magic identifier, followed by an 80-byte little-endian header. The header carries the `VkFormat` enum value (or zero for Basis-supercompressed data), the `supercompressionScheme` field selecting one of `KTX2_SS_NONE`, `KTX2_SS_BASISLZ`, `KTX2_SS_ZSTANDARD`, or `KTX2_SS_DEFLATE`, and offsets to the Data Format Descriptor (DFD), key-value metadata block, and supercompression global data. The level index table lists byte offsets and compressed lengths for each mip level, enabling random-access streaming without parsing the entire file into memory first.
+
+On Linux, KTX2 files are created and consumed via the libktx C library maintained at `github.com/KhronosGroup/KTX-Software`. The `ktxTexture2` struct is the central handle for all load, transcode, and upload operations; the `ktx` command-line tool provides `create`, `encode`, `validate`, and `info` subcommands. Sections 5 and 6 cover the on-disk format layout and the libktx API respectively.
 
 ---
 

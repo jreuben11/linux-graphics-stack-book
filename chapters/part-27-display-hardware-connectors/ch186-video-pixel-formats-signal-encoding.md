@@ -8,6 +8,9 @@
 
 - [Overview](#overview)
 - [1. Color Space Fundamentals — RGB vs YCbCr](#1-color-space-fundamentals--rgb-vs-ycbcr)
+  - [1.1 What is a Color Space?](#11-what-is-a-color-space)
+  - [1.2 What is a Pixel Format?](#12-what-is-a-pixel-format)
+  - [1.3 What is Display Signal Encoding?](#13-what-is-display-signal-encoding)
 - [2. Chroma Subsampling](#2-chroma-subsampling)
 - [3. Bit Depth](#3-bit-depth)
 - [4. Quantization Range — Full vs Limited Swing](#4-quantization-range--full-vs-limited-swing)
@@ -108,6 +111,26 @@ A complete color-space specification requires:
 4. **Color difference encoding** — the YCbCr matrix coefficients (if applicable).
 
 All four must be consistently signaled from source to display. Mismatches at any layer produce visible errors. The DRM `colorspace` connector property and HDMI AVI InfoFrame together encode items 1–4 in the display signal.
+
+### 1.1 What is a Color Space?
+
+A color space is a mathematical model that assigns numerical values to perceivable colors in a reproducible way. It is specified by three elements: the chromaticities of the reference primaries (the purest red, green, and blue the system can represent, expressed as CIE xy coordinates), a white point (the reference neutral, typically D65 at x=0.3127, y=0.3290 for consumer standards), and a transfer function that maps between linear scene light and the nonlinear code values stored in a file or transmitted over a display link. Without all three being agreed upon by every element in the pipeline, a given code value carries no unambiguous meaning.
+
+In the Linux graphics stack, color spaces are identified through ITU-R standards: BT.601 for standard-definition content, BT.709 for high-definition, and BT.2020 for ultra-high-definition and HDR. Each standard specifies its own primary chromaticities and, by extension, its own YCbCr matrix coefficients. The kernel DRM subsystem exposes the active color space through the `colorspace` connector property, declared in `include/uapi/drm/drm_mode.h`, which drivers program into the display controller and then signal to the receiving monitor via HDMI AVI InfoFrames or DisplayPort VSC SDP packets. Mismatches between the color space assumed by the source, compositor, and display produce visible errors — shifted hues, washed-out gradients, or crushed blacks — making correct tracking of the color space throughout the pipeline a hard requirement for accurate video reproduction.
+
+### 1.2 What is a Pixel Format?
+
+A pixel format defines exactly how a single pixel — or a group of pixels in subsampled representations — is arranged in memory: which color components are present (R, G, B; Y, Cb, Cr; or alpha), how many bits each component occupies, in what byte order they appear, and whether all components share a single plane or are distributed across multiple planes at potentially different resolutions. Every stage of the display pipeline — hardware video decoder, GPU composer, KMS plane, and display controller — must agree on the pixel format of each buffer before it can process the data correctly.
+
+In the Linux kernel, the authoritative registry of pixel formats is `include/uapi/linux/drm_fourcc.h`, which assigns each format a four-byte ASCII identifier (a fourcc code): for example, `NV12` for 8-bit 4:2:0 semi-planar YCbCr, `XR24` for 8-bit packed XRGB, and `P010` for 10-bit 4:2:0. The fourcc code uniquely identifies a memory layout so that drivers, compositors, and hardware display engines can negotiate a common representation without ambiguity. The V4L2 subsystem maintains a parallel but distinct registry of format codes used in the `v4l2_pix_format` and `v4l2_pix_format_mplane` structures to describe decoder output buffers. Understanding pixel formats is the prerequisite for every other topic in this chapter: chroma subsampling ratios (Section 2), bit depth variants (Section 3), quantization range conventions (Section 4), and DRM overlay plane negotiation (Sections 5 and 9) all describe properties of specific pixel format families.
+
+### 1.3 What is Display Signal Encoding?
+
+Display signal encoding refers to the conventions and metadata that a GPU or display controller embeds in an HDMI or DisplayPort link to tell the receiving monitor how to interpret the pixel data being clocked out. Pixel values on the wire carry no inherent meaning: a 10-bit code value of 512 could represent middle grey on a BT.709 panel, a considerably darker tone on a PQ-encoded BT.2020 HDR panel, or a clipped highlight if the monitor assumes the wrong quantization range. Display signal encoding resolves this ambiguity through two mechanisms that operate alongside the video data stream.
+
+The first is the **AVI InfoFrame** in HDMI (defined in HDMI Specification 2.1, Section 6.4) or the VSC SDP packet in DisplayPort, which declares the color space, quantization range (full or limited), and chroma subsampling ratio of the incoming stream. The second is the **HDR Static Metadata InfoFrame** in HDMI or the HDR DPCD register block in DisplayPort, which carries SMPTE ST 2086 mastering luminance and primary chromaticity data along with the MaxCLL and MaxFALL parameters required for HDR tone mapping.
+
+In the kernel, drivers such as `amdgpu` (`drivers/gpu/drm/amd/display/`) and `i915` (`drivers/gpu/drm/i915/display/`) construct and transmit these InfoFrames from state stored in the `drm_connector_state`. Userspace compositors write HDR mastering parameters into the `hdr_output_metadata` KMS blob property; the driver reads the blob and programs the appropriate InfoFrame registers before the next modeset or flip. Sections 7 and 8 cover the data structures and kernel paths in detail.
 
 ---
 

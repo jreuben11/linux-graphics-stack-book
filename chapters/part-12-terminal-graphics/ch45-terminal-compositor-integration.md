@@ -9,6 +9,10 @@
 ## Table of Contents
 
 1. [The Terminal as a Wayland Client](#1-the-terminal-as-a-wayland-client)
+   - [1.1 What is Wayland?](#11-what-is-wayland)
+   - [1.2 What is DMA-BUF?](#12-what-is-dma-buf)
+   - [1.3 What is GBM?](#13-what-is-gbm)
+   - [1.4 What is EGL?](#14-what-is-egl)
 2. [EGL Context Acquisition and GBM Buffer Allocation](#2-egl-context-acquisition-and-gbm-buffer-allocation)
 3. [DRM Format Modifier Negotiation](#3-drm-format-modifier-negotiation)
 4. [GPU Rendering and DMA-BUF Submission](#4-gpu-rendering-and-dma-buf-submission)
@@ -98,6 +102,38 @@ graph TD
 ```
 
 Terminals that support multiple windows — the kitty tabbed-window model and foot's server-daemon architecture — share a single Wayland connection and a single EGL display across all their windows. Each window gets its own `wl_surface` and its own `xdg_toplevel`, but the `EGLDisplay` obtained from `eglGetPlatformDisplayEXT(EGL_PLATFORM_WAYLAND_KHR, wl_display, ...)` is initialised once and reused. Per-window rendering state lives in individual `EGLContext` and `EGLSurface` objects, which are per-thread or multiplexed with `eglMakeCurrent`. This architecture reduces the overhead of DRM node enumeration and driver initialisation to a one-time cost at startup rather than paying it for every new tab.
+
+### 1.1 What is Wayland?
+
+Wayland is the display server protocol that replaces X11 as the primary window system on modern Linux desktops. It defines the wire protocol between clients (applications) and the compositor (the server process that manages windows and drives the display hardware). Unlike X11, where clients route drawing commands through a shared server, Wayland clients render their own content into GPU or CPU buffers and submit those buffers directly to the compositor via protocol requests. The compositor then composites all client surfaces into the final display image and submits it to the kernel modesetting (KMS) subsystem for scanout.
+
+The Wayland protocol itself is minimal: it covers surface creation, buffer attachment, input delivery, and output configuration. Richer functionality is provided through extension protocols negotiated at runtime via the Wayland object registry. The extensions most relevant to terminal integration are `xdg-shell` (window management), `zwp_linux_dmabuf_v1` (DMA-BUF buffer import), `wp_linux_drm_syncobj_manager_v1` (explicit GPU synchronisation), `wp_presentation` (presentation feedback timing), `wp_fractional_scale_v1` (sub-pixel HiDPI scaling), and `wl_shm` (shared memory buffers for CPU-rendered clients).
+
+For a terminal emulator, Wayland provides what was previously handled by the X11 window system: the terminal registers a `wl_surface`, attaches rendered buffers, and receives input and resize events through the compositor. The specification and extension protocols are maintained at [gitlab.freedesktop.org/wayland/wayland-protocols](https://gitlab.freedesktop.org/wayland/wayland-protocols).
+
+### 1.2 What is DMA-BUF?
+
+DMA-BUF is a Linux kernel subsystem that allows GPU-allocated memory buffers to be shared between different kernel drivers and between the kernel and userspace without copying. A DMA-BUF handle is a file descriptor representing a region of device memory — most commonly a GPU framebuffer — that multiple drivers can map or access concurrently. The producer driver (the GPU rendering driver) exports the buffer as a file descriptor via `dma_buf_fd()`; the consumer driver (for example, a display engine driver or the compositor's KMS backend) imports it with `dma_buf_get()` and obtains a reference to the same physical memory pages.
+
+The subsystem is defined in `drivers/dma-buf/dma-buf.c` in the Linux kernel source. In userspace, a DMA-BUF handle is an ordinary file descriptor that can be passed across process boundaries using Unix socket `SCM_RIGHTS` ancillary messages — which is exactly how a Wayland client delivers its rendered GPU buffer to the compositor without any copy. The compositor imports the terminal's file descriptor, validates format and tiling modifier compatibility, and either promotes the buffer to a KMS display plane or samples it as a texture during its own compositing pass.
+
+For terminal–compositor integration, DMA-BUF is the mechanism that enables zero-copy buffer delivery from the terminal's GPU to the display engine. The `zwp_linux_dmabuf_v1` Wayland protocol extension wraps DMA-BUF file descriptors with format and modifier metadata so that the compositor can validate layout compatibility before importing [Source](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml).
+
+### 1.3 What is GBM?
+
+GBM (Generic Buffer Manager) is a Mesa library that provides an API for allocating GPU-native buffer objects (BOs) suitable for rendering and scanout. It abstracts the device-specific buffer allocation details exposed by the kernel DRM driver, allowing applications and compositors to request buffers with specific pixel formats, dimensions, and tiling modifiers without encoding hardware-specific knowledge directly in application code.
+
+The GBM API is defined in `include/gbm.h` within the Mesa source tree and is implemented by each Mesa driver through a backend loaded from the DRM driver's GBM backend shared library. A caller opens a DRM render node (`/dev/dri/renderDN`), creates a GBM device with `gbm_create_device(fd)`, and allocates buffer objects with `gbm_bo_create()` or render-target surfaces with `gbm_surface_create_with_modifiers2()`. The resulting `gbm_bo` objects carry tiling modifier metadata and can be exported as DMA-BUF file descriptors via `gbm_bo_get_fd()`, making them directly importable by the Wayland compositor.
+
+For GPU-accelerated terminals, GBM is the layer that produces the GPU-native framebuffers that EGL renders into. The terminal, or Mesa's EGL Wayland platform code acting on the terminal's behalf, allocates a `gbm_surface` whose modifiers are derived from the compositor's `zwp_linux_dmabuf_v1` feedback, ensuring that the resulting buffers use a memory layout that the compositor's KMS backend can assign directly to a display plane without an intermediate blit. GBM is maintained as part of the Mesa project at [gitlab.freedesktop.org/mesa/mesa](https://gitlab.freedesktop.org/mesa/mesa).
+
+### 1.4 What is EGL?
+
+EGL is the Khronos-specified API that connects OpenGL, OpenGL ES, or Vulkan rendering contexts to the native window system. It is responsible for selecting pixel format configurations, creating rendering surfaces that correspond to native window handles, and managing the binding between rendering contexts and their display targets. On Linux, EGL is implemented by Mesa and acts as the bridge between an application's rendering calls and the underlying GPU driver stack.
+
+For Wayland clients, Mesa provides the `EGL_PLATFORM_WAYLAND_KHR` platform, allowing a terminal to initialise an EGL display from a `wl_display` connection using `eglGetPlatformDisplayEXT`. Mesa's Wayland EGL platform internally allocates a GBM device and GBM surface corresponding to the compositor's preferred DRM device, hiding that machinery behind the standard EGL surface API. The terminal then creates an `EGLContext` for its rendering API, creates a window surface backed by the terminal's `wl_surface` via `wl_egl_window_create`, and calls `eglMakeCurrent` to activate the context before issuing rendering commands.
+
+Buffer submission to the compositor also flows through EGL: `eglSwapBuffers` instructs Mesa to dequeue a completed GBM buffer object, wrap it as a `wl_buffer` using the `zwp_linux_dmabuf_v1` protocol, attach it to the terminal's `wl_surface`, and commit — all within the swap call. Mesa's EGL Wayland implementation lives in `src/egl/drivers/dri2/platform_wayland.c` [Source](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/egl/drivers/dri2/platform_wayland.c).
 
 ---
 

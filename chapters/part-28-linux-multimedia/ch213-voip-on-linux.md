@@ -6,6 +6,9 @@
 ## Table of Contents
 
 - [1. SIP Protocol Fundamentals](#1-sip-protocol-fundamentals)
+  - [1.1 What is VoIP?](#11-what-is-voip)
+  - [1.2 What is SIP?](#12-what-is-sip)
+  - [1.3 What is RTP?](#13-what-is-rtp)
 - [2. PJSIP Stack](#2-pjsip-stack)
 - [3. liblinphone](#3-liblinphone)
 - [4. Jami: Fully Decentralised P2P Calls](#4-jami-fully-decentralised-p2p-calls)
@@ -71,6 +74,30 @@ a=rtpmap:32 MPV/90000
 The 200 OK body is the **answer** — it restricts each `m=` line to the subset of codecs the answerer supports, selecting a single codec per stream. If a media type cannot be accepted, the answerer sets the port to 0.
 
 PJMEDIA enforces a five-state negotiator for offer/answer: `NULL → LOCAL_OFFER → REMOTE_OFFER → WAIT_NEGO → DONE`, exposed through [`pjmedia_sdp_neg_create_w_local_offer()`](https://docs.pjsip.org/en/latest/api/generated/pjmedia/group/group__PJMEDIA__SDP__NEG.html), `pjmedia_sdp_neg_negotiate()`, and `pjmedia_sdp_neg_get_active_local/remote()`.
+
+### 1.1 What is VoIP?
+
+Voice over Internet Protocol (VoIP) is the family of technologies that digitise audio (and, by extension, video) and deliver it as packets over an IP network rather than over a dedicated circuit-switched connection. A VoIP system must solve three distinct problems: signaling (negotiating who calls whom, on what terms, and how the session ends), media transport (moving compressed audio/video samples across the network with low latency), and quality control (compensating for packet loss, jitter, and reordering).
+
+On Linux these responsibilities map to distinct layers of the software stack. Signaling is handled by protocol libraries such as PJSIP or liblinphone, which implement SIP or proprietary protocols. Media transport relies on RTP running over UDP, with RTCP carrying statistics. Quality is maintained through jitter buffers, adaptive codecs, and echo cancellation integrated into media engines like PJMEDIA or Mediastreamer2. PipeWire provides the kernel-adjacent audio capture and playback plumbing that feeds these engines, replacing the earlier PulseAudio and ALSA direct-access approaches.
+
+A complete Linux VoIP deployment therefore spans user-space libraries (PJSIP, liblinphone, libwebrtc), system audio services (PipeWire, WirePlumber), kernel audio drivers (ALSA HDA, USB Audio), and network subsystems (netfilter for NAT, tc for QoS shaping). This chapter traces those layers from SIP signaling through to real-time scheduling and codec selection.
+
+### 1.2 What is SIP?
+
+SIP (Session Initiation Protocol, RFC 3261) is a text-based application-layer protocol for establishing, modifying, and terminating multimedia sessions. It borrows its syntax and request/response model from HTTP and its addressing scheme from SMTP, using SIP URIs of the form `sip:user@domain` to identify endpoints. SIP itself carries no media; its sole purpose is signaling — it locates the remote party, negotiates session parameters via an embedded SDP body, and tears the session down with a BYE request when the call ends.
+
+The protocol operates over UDP port 5060 (or TCP/TLS for reliability and encryption). Registration, the mechanism by which a SIP phone announces its current IP address to a registrar, uses the REGISTER method. Presence and instant messaging extensions (RFC 3856, RFC 3428) layer on the same core via SUBSCRIBE, NOTIFY, and MESSAGE methods.
+
+On Linux, every major VoIP library — PJSIP, liblinphone, Twinkle, and Asterisk — builds its signaling core on RFC 3261 transaction and dialog state machines. The SDP negotiated inside SIP messages specifies the RTP port numbers, codecs, and SRTP keying material that the media layer then uses independently of SIP. Understanding SIP's separation of signaling from media is essential for diagnosing VoIP failures, because a call can succeed at the SIP level while the audio path fails entirely due to NAT, firewall, or codec mismatch.
+
+### 1.3 What is RTP?
+
+RTP (Real-time Transport Protocol, RFC 3550) is the standard transport for audio and video in VoIP and multimedia streaming. Unlike TCP, it makes no delivery guarantees; it runs over UDP and accepts that some packets will arrive late or not at all. RTP compensates through sequence numbers (allowing reordering detection), timestamps (driving playout scheduling in the jitter buffer), and SSRC identifiers (distinguishing multiple media streams within a session). RTCP, the companion control protocol, carries per-sender and per-receiver statistics — packet loss fraction, interarrival jitter, and round-trip time — that codecs and congestion controllers use to adapt their behaviour.
+
+Each SDP `m=` line negotiates a separate RTP session. An audio-video call typically runs two RTP sessions on distinct UDP port pairs, each with a corresponding RTCP port at `RTP_port + 1` by convention (or via `a=rtcp:` attribute). Payload type numbers in the RTP header map to codec descriptions registered in the SDP `a=rtpmap:` lines.
+
+On Linux, RTP is implemented entirely in user space. PJMEDIA's RTP session (`pjmedia_rtp_session`), Mediastreamer2's `RtpSession`, and libwebrtc's `RtpTransport` all manage RTP framing, RTCP scheduling, and jitter buffer interaction. Encryption is handled via SRTP (RFC 3711), which wraps RTP with AES-CM or AES-GCM authenticated encryption using keys exchanged either through SDP `a=crypto:` lines (SDES) or through DTLS-SRTP handshake as required by WebRTC.
 
 ---
 

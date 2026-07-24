@@ -8,6 +8,9 @@
 
 - [Overview](#overview)
 - [1. Introduction: UE5 Linux Support and the Steam Deck](#1-introduction-ue5-linux-support-and-the-steam-deck)
+  - [1.1 What is the RHI?](#11-what-is-the-rhi)
+  - [1.2 What is Nanite?](#12-what-is-nanite)
+  - [1.3 What is Lumen?](#13-what-is-lumen)
 - [2. RHI: The Rendering Hardware Interface](#2-rhi-the-rendering-hardware-interface)
 - [3. Vulkan RHI Backend](#3-vulkan-rhi-backend)
 - [4. Nanite Virtualized Geometry](#4-nanite-virtualized-geometry)
@@ -69,6 +72,24 @@ As of UE5.7–5.8, UE5 on Linux uses SDL for window management. UE5.7 migrated f
 ### SteamOS 3 and the Steam Runtime
 
 SteamOS 3 uses the Arch Linux package ecosystem for its read-only base layer, combined with Valve's Steam Runtime 3 "Sniper" container for game execution. When shipping a native Linux game on Steam, the Steam Runtime provides a consistent set of libraries (glibc, libvulkan, SDL3, OpenAL, etc.) regardless of the user's host distribution. UE5 native Linux builds should target the Steam Runtime rather than assuming any specific host library versions. [Source](https://partner.steamgames.com/doc/steamframe/engines/unreal)
+
+### 1.1 What is the RHI?
+
+The Rendering Hardware Interface (RHI) is UE5's cross-platform graphics API abstraction layer. The problem it solves is fundamental to a large engine: systems like Nanite, Lumen, and Niagara record GPU work using a single set of C++ types and command semantics — `FRHICommandList`, `FRHIBuffer`, `FRHITexture` — without any knowledge of whether the underlying API is Vulkan, D3D12, or Metal. Backend implementations translate those abstract commands into API-specific calls at submission time. On Linux, the Vulkan RHI backend is the only supported path; OpenGL support was deprecated in UE5.
+
+The RHI operates across three cooperating threads: the game thread drives scene updates, the render thread records commands into `FRHICommandList` objects one frame ahead, and a dedicated RHI thread consumes those lists and issues actual Vulkan calls (`vkCmdDraw`, `vkCmdDispatch`, `vkQueueSubmit`). This three-stage pipeline decouples the cost of Vulkan submission from the render thread's frame budget and is the reason UE5 can sustain high throughput even when PSO compilation occurs in the background. Section 2 covers the RHI architecture in detail, and Section 3 covers the Vulkan backend that implements it on Linux.
+
+### 1.2 What is Nanite?
+
+Nanite is UE5's virtualized geometry system. Traditional real-time rendering requires artists to author multiple level-of-detail (LOD) meshes for each asset and embed hand-tuned distance thresholds; the process is expensive, error-prone, and imposes hard polygon budgets on scene complexity. Nanite removes this constraint entirely. Geometry is stored in a compressed hierarchical cluster tree inside `.uasset` files, where each cluster contains approximately 128 triangles and parent nodes represent progressively coarser approximations of the same surface.
+
+At runtime, a GPU-driven culling pass selects the finest cluster level whose screen-space projected error falls below a configurable pixel threshold, computing this decision per-cluster across the entire visible scene in a single compute dispatch. Nanite also streams clusters from disk on demand through `FNaniteStreamingManager`, so assets containing hundreds of millions of source triangles load only the detail currently visible. On Linux, the entire Nanite pipeline runs as compute and rasterization shaders on the Vulkan backend; hardware ray tracing is not required. Section 4 covers Nanite's cluster hierarchy, culling passes, and software rasterizer in depth.
+
+### 1.3 What is Lumen?
+
+Lumen is UE5's dynamic global illumination and reflection system. Global illumination — computing how light bounces between surfaces to produce indirect lighting, color bleeding, and environmental reflections — has historically required either offline pre-computation via lightmaps or costly real-time approximations with limited dynamic range. Lumen provides fully dynamic global illumination that responds to moving emissive meshes, changing sky light, and arbitrary geometry modifications without any pre-baking step.
+
+Lumen uses a hybrid tracing approach built on two complementary representations. The default path traces rays against Mesh Distance Fields (MDFs), signed-distance-field volumes derived from each static mesh, and consults a Screen Space Radiance Cache for nearby surface detail. This software ray tracing path runs on any Vulkan 1.1-capable GPU, including the Steam Deck's RDNA2 APU. On hardware that exposes `VK_KHR_ray_tracing_pipeline` — NVIDIA RTX 2000-series and AMD RDNA2 discrete GPUs — Lumen can optionally trace rays against the hardware BVH for higher-quality reflections and indirect shadows. Section 5 covers Lumen's distance field construction, radiance caching, and integration with the Vulkan RHI.
 
 ---
 

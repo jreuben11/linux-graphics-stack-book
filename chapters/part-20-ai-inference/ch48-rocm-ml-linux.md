@@ -5,6 +5,9 @@ This chapter targets **systems and driver developers** who need to understand ho
 ## Table of Contents
 
 - [ROCm Stack Overview](#rocm-stack-overview)
+  - [1.1 What is ROCm?](#11-what-is-rocm)
+  - [1.2 What is HIP?](#12-what-is-hip)
+  - [1.3 What is the KFD (Kernel Fusion Driver)?](#13-what-is-the-kfd-kernel-fusion-driver)
 - [KFD: The Kernel Fusion Driver](#kfd-the-kernel-fusion-driver)
 - [HSA Memory Model](#hsa-memory-model)
 - [ROCm Hardware Support Matrix](#rocm-hardware-support-matrix)
@@ -148,6 +151,18 @@ graph TD
     HSAKMT --> amdkfd
     amdkfd --> amdgpu
 ```
+
+### 1.1 What is ROCm?
+
+ROCm (Radeon Open Compute) is AMD's open-source software platform for GPU-accelerated compute on Linux. It provides a vertically integrated stack from the Linux kernel's `amdkfd` module up through runtime libraries, math primitives, and ML framework integrations, enabling researchers and engineers to run HPC and machine learning workloads on AMD Radeon and Instinct GPUs without proprietary drivers. Unlike CUDA, which bundles its kernel-mode components as binary blobs, ROCm's kernel interface is upstream in the Linux kernel tree as the `amdkfd` sub-driver of `amdgpu`, and the user-space libraries are licensed under MIT or Apache 2.0 and hosted at [github.com/ROCm](https://github.com/ROCm). Within the Linux graphics stack, ROCm sits orthogonal to the display path: it uses `amdgpu` for hardware initialization and VRAM management but bypasses the compositor entirely, submitting compute work through the `/dev/kfd` character device and mapping GPU memory through `/dev/dri/renderD*`. The stack spans kernel drivers, the HIP and HSA runtimes, hardware-specific math libraries such as rocBLAS and MIOpen, and integrations with PyTorch, TensorFlow, and JAX. This chapter tracks ROCm from version 5.x through 7.x, focusing on interfaces stable enough for production ML deployment.
+
+### 1.2 What is HIP?
+
+HIP (Heterogeneous-compute Interface for Portability) is the GPU programming model at the center of the ROCm user-space stack. Its API mirrors the CUDA runtime closely enough that most CUDA C++ code can be mechanically translated using the `hipify-perl` or `hipify-clang` tools, making HIP the primary porting path for CUDA workloads targeting AMD hardware. On AMD GPUs, HIP calls route through `libamdhip64.so` to the ROCr/HSA runtime and ultimately to `amdkfd` queue submission; on NVIDIA hardware, the same HIP source compiles against CUDA directly, producing a single portable codebase. The compiler driver is `amdclang++`, a Clang/LLVM wrapper that compiles HIP C++ through the LLVM AMDGPU backend into GCN, RDNA, or CDNA ISA and packages the result as an ELF fat binary via `clang-offload-bundler`. Within ML framework integration, HIP is the mechanism by which PyTorch's CUDA backend is remapped to AMD hardware: the framework's `at::cuda` namespace is aliased to `at::hip` at build time, so framework-level operators invoke HIP kernels transparently. Familiarity with HIP's kernel launch syntax, asynchronous memory copy API, and stream and event model is essential for reading the ML framework and math library sections of this chapter.
+
+### 1.3 What is the KFD (Kernel Fusion Driver)?
+
+The Kernel Fusion Driver is the Linux kernel subsystem through which user-space ROCm software submits compute work directly to AMD GPUs. It lives inside the `amdgpu` DRM driver tree at `drivers/gpu/drm/amd/amdkfd/` and exposes a single character device, `/dev/kfd`, shared across all AMD GPUs present on the system. The "fusion" in the name reflects its HSA lineage: the driver was designed to enable CPU and GPU to share a coherent virtual address space and a unified queue model, treating them as peers in a heterogeneous compute fabric rather than as host and peripheral. User space accesses the KFD exclusively through the `ioctl` interface defined in `include/uapi/linux/kfd_ioctl.h`; the HSAKMT library (`libhsakmt.so`) wraps these ioctls and implements the HSA standard API on top. The KFD manages four primary resources: compute queues submitted via AQL packets in user-mapped ring buffers, GPU memory allocations spanning VRAM and GTT, hardware event signaling objects, and GPU topology discovery exposed through a `sysfs` hierarchy that HSAKMT reads at startup. Because `amdkfd` is a sub-driver of `amdgpu`, graphics and compute contexts coexist on the same physical device, sharing VRAM management and firmware control while remaining isolated within their respective queue schedulers. [Source: drivers/gpu/drm/amd/amdkfd/](https://github.com/torvalds/linux/tree/master/drivers/gpu/drm/amd/amdkfd)
 
 ---
 

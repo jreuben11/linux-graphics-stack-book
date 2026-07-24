@@ -10,6 +10,9 @@
 ## Table of Contents
 
 1. [Why WebRTC Needs Server Infrastructure](#why-webrtc-needs-server-infrastructure)
+   - [1.1 What is a TURN Relay?](#11-what-is-a-turn-relay)
+   - [1.2 What is an SFU (Selective Forwarding Unit)?](#12-what-is-an-sfu-selective-forwarding-unit)
+   - [1.3 What is WHIP/WHEP?](#13-what-is-whipwhep)
 2. [coturn: STUN/TURN Server](#coturn-stunturn-server)
 3. [Janus WebRTC Gateway](#janus-webrtc-gateway)
 4. [mediasoup: Node.js SFU with C++ Worker](#mediasoup-nodejs-sfu-with-c-worker)
@@ -45,6 +48,24 @@ TURN servers operate exclusively on the media plane — they relay UDP packets w
 ### Choosing a Topology
 
 The choice between SFU and MCU in practice comes down to the tradeoff between server compute cost and client device constraints. An SFU scales well on commodity server hardware but places the full decoding load on each client — a subscriber in a 10-person call must decode 9 simultaneous video streams. An MCU centralises that decode cost but requires GPU-accelerated encoding infrastructure (typically NVENC or VA-API) to keep the server-side re-encoding latency below 100 ms. Cascaded SFU topologies are used by platforms with global CDN presence: regional SFU clusters receive publisher streams and relay them to regional subscriber clusters via high-bandwidth, low-latency inter-datacenter links, while each regional cluster runs a flat SFU for local subscribers.
+
+### 1.1 What is a TURN Relay?
+
+TURN (Traversal Using Relays around NAT) is a protocol defined in RFC 5766 that provides a relay service for UDP and optionally TCP traffic when direct peer-to-peer NAT traversal fails. WebRTC's ICE framework first attempts STUN-based connectivity — gathering server-reflexive and peer-reflexive candidates — to punch through NATs. When those direct paths are blocked by symmetric NATs, enterprise firewalls, or carrier-grade NAT deployments, ICE falls back to TURN relay candidates. A TURN server allocates a public IP and port on behalf of the requesting client and forwards all media packets between the two endpoints through that relay address, effectively providing a reachable public endpoint for both parties.
+
+In WebRTC production deployments, TURN infrastructure is not optional: a consistent fraction of connection attempts — commonly 15–25% in enterprise and mobile network environments — require relay to succeed. The TURN server operates strictly on the media plane, forwarding opaque UDP payloads without decoding them. Authentication is handled by STUN's long-term credential mechanism or by time-limited HMAC-SHA1 tokens (the TURN REST API pattern defined in RFC 8155), preventing open relay abuse. TURN relay does impose latency and bandwidth costs — all media transits the relay server's network interface — making geographic placement relative to participants a key deployment consideration. The open-source coturn server covered in Section 2 is the reference Linux implementation, supporting the full RFC 5766 allocation lifecycle including channel binding, permission installation, and Prometheus-compatible metrics export.
+
+### 1.2 What is an SFU (Selective Forwarding Unit)?
+
+A Selective Forwarding Unit is a media server that routes RTP streams from publishers to subscribers without decoding or re-encoding the compressed video or audio payload. Each publisher sends its encoded streams once to the SFU; the SFU maintains a routing table of active subscriptions and forwards the appropriate RTP packets to each subscriber. The qualifier "selective" refers to the server's ability to choose which temporal or spatial layer of a scalable codec encoding to forward to each individual subscriber — a subscriber on a constrained connection receives a lower-resolution spatial layer while a subscriber on broadband receives the full-resolution layer, without the publisher transmitting separate per-subscriber streams.
+
+SFUs terminate ICE and DTLS-SRTP on behalf of each connected endpoint. They receive encrypted SRTP packets, decrypt them to inspect RTP headers for SSRC-based routing, sequence number rewriting, and timing normalization, then re-encrypt and forward. The server therefore holds short-lived SRTP keying material but never decodes or stores media content. Decoding load falls on client devices rather than servers, making SFU deployments horizontally scalable on commodity Linux server hardware without GPU infrastructure — a key advantage over the MCU model. On Linux, the dominant open-source SFU implementations — mediasoup with its C++ worker process (Section 4), LiveKit built in Go (Section 5), and Pion as a Go library for custom SFU construction (Section 6) — all share this fundamental architecture while differing in their signalling API surface, simulcast routing strategies, and operational tooling.
+
+### 1.3 What is WHIP/WHEP?
+
+WHIP (WebRTC-HTTP Ingest Protocol) and WHEP (WebRTC-HTTP Egress Protocol) are IETF-standardised protocols that use HTTP to carry the SDP exchange required to establish a WebRTC media session, eliminating the need for application-specific WebSocket signalling channels. WHIP defines a single HTTP POST from an encoder or publisher to an ingest URL carrying an SDP offer body; the server responds with status 201 and an SDP answer, plus a `Location` header pointing to a session resource URL for subsequent lifecycle operations such as ICE restart or session teardown. WHEP mirrors this pattern for the egress direction, allowing a playback client to subscribe to a stream through a single HTTP POST without implementing any SFU-specific signalling protocol.
+
+The primary motivation for WHIP and WHEP is interoperability at the ingest boundary. Hardware video encoders, software broadcast tools such as OBS Studio and GStreamer's `whipsink` element, and CDN ingest endpoints can implement a single HTTP-based protocol and connect to any WHIP-compliant SFU rather than maintaining separate integrations for each vendor's WebSocket API. WHIP and WHEP standardise only the SDP transport mechanism; the underlying media plane remains standard WebRTC — ICE, DTLS-SRTP, RTP/RTCP — negotiated through the exchanged SDP. On the Linux stack, GStreamer pipelines using `whipsrc` and `whipsink` are the primary tool for building broadcast-to-WebRTC ingest workflows that terminate at SFU infrastructure. Section 7 covers the WHIP and WHEP specifications and their Linux integration in depth.
 
 ---
 

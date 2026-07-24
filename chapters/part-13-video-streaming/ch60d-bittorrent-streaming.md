@@ -5,6 +5,9 @@
 ## Table of Contents
 
 1. [The Streaming Seam](#1-the-streaming-seam)
+   - [1.1 What is BitTorrent?](#11-what-is-bittorrent)
+   - [1.2 What is libtorrent-rasterbar?](#12-what-is-libtorrent-rasterbar)
+   - [1.3 What is WebTorrent?](#13-what-is-webtorrent)
 2. [BitTorrent Protocol Fundamentals](#2-bittorrent-protocol-fundamentals)
    - 2.1 [Bencoding and the .torrent Metainfo File (BEP 3)](#21-bencoding-and-the-torrent-metainfo-file-bep-3)
    - 2.2 [The Peer Wire Protocol (BEP 3)](#22-the-peer-wire-protocol-bep-3)
@@ -75,6 +78,28 @@ Two distinct paths connect torrent delivery to that seam:
 2. **Native plugin integration** — `vlc-bittorrent` implements a VLC access module that calls the libtorrent API directly, bypassing HTTP entirely.
 
 A third, forward-looking path concerns kernel infrastructure: Linux 6.12 introduced Device Memory TCP, which can receive TCP payloads directly into GPU-mapped memory without a CPU copy. No BitTorrent client implements this today, but the underlying kernel plumbing is the same mechanism that makes all zero-copy network-to-GPU ingest possible. §12 covers this path explicitly.
+
+### 1.1 What is BitTorrent?
+
+BitTorrent is a peer-to-peer file distribution protocol designed to distribute large files efficiently across many participants without relying on a central server for data transfer. Rather than downloading from a single origin, a BitTorrent client splits a file into fixed-size pieces and downloads pieces simultaneously from many peers who already hold them, while simultaneously uploading pieces to others. This mutual exchange — governed by the tit-for-tat choking algorithm — lets aggregate download bandwidth scale with the number of participants rather than with the capacity of any one server.
+
+In the context of this chapter, BitTorrent serves as the network delivery layer for media content. The protocol itself is indifferent to file type: it treats video files as sequences of equal-sized pieces identified by cryptographic hashes. The challenge for adaptive streaming is that standard BitTorrent downloads pieces in whatever order maximizes throughput, while video playback requires pieces in sequential order — or at least in decode-order proximity. Bridging this mismatch is the central engineering problem addressed here.
+
+The protocol specification lives in BEP 3, with subsequent BEPs extending it for DHT peer discovery, peer exchange, version 2 merkle-based hashing, and the uTP UDP transport. The relevant Linux kernel involvement appears only downstream of the protocol: once the client has assembled pieces into a decodable bitstream, the VA-API and DMA-BUF subsystems take over. [Source: BEP 3](https://www.bittorrent.org/beps/bep_0003.html)
+
+### 1.2 What is libtorrent-rasterbar?
+
+libtorrent-rasterbar (commonly called libtorrent) is a C++ library implementing the BitTorrent client protocol. It provides session management, peer connection handling, piece scheduling, disk I/O, DHT, and extension protocol machinery that most Linux BitTorrent applications are built on. The library exposes a C++ API centered on `lt::session`, `lt::torrent_handle`, and an alert-based event system through which applications receive notifications about piece availability, peer connections, and download progress.
+
+From a streaming standpoint, libtorrent-rasterbar's most important facility is the piece deadline API (`set_piece_deadline`), which lets an application assign a deadline in milliseconds to individual pieces. The scheduler prioritizes deadline-constrained pieces over the standard bandwidth-maximizing order, enabling video players to request imminent playback pieces first. Combined with the sequential download flag, this gives the HTTP bridge and native plugin patterns described in this chapter their ability to present an in-progress download as a seekable byte stream.
+
+The library is available in most Linux distributions as `libtorrent-rasterbar-dev`. Version 2.x introduced significant API changes and improved DHT v2 and BEP 52 (v2 torrent) support. Source is at [https://github.com/arvidn/libtorrent](https://github.com/arvidn/libtorrent); upstream API documentation is at [https://libtorrent.org/reference.html](https://libtorrent.org/reference.html).
+
+### 1.3 What is WebTorrent?
+
+WebTorrent is a JavaScript implementation of the BitTorrent protocol that runs in both Node.js and web browsers. Its defining characteristic is the use of WebRTC data channels as the transport layer when running in browser contexts, because browsers cannot open raw TCP or UDP sockets. WebTorrent clients in browsers communicate with other WebTorrent browser clients via WebRTC, using a WebSocket-based tracker for the initial WebRTC signaling. When running in Node.js, WebTorrent falls back to standard TCP and UDP transports and can interoperate with the broader BitTorrent swarm.
+
+For Linux graphics stack purposes, WebTorrent's primary contribution is the `createServer()` method, which launches a local HTTP server that exposes a torrent's files as HTTP endpoints supporting Range requests. Any media pipeline that can consume an HTTP byte stream — MPV, VLC, GStreamer's `souphttpsrc`, or a Chromium-based player — can point at this server and receive a progressively delivered video stream without knowing it is backed by BitTorrent. This HTTP bridge pattern is the simplest integration path and requires no BitTorrent-specific code in the media pipeline itself. Source is at [https://github.com/webtorrent/webtorrent](https://github.com/webtorrent/webtorrent).
 
 ---
 

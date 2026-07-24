@@ -11,6 +11,9 @@
 ## Table of Contents
 
 1. [Overview](#1-overview)
+   - [1.1 What is FFmpeg?](#11-what-is-ffmpeg)
+   - [1.2 What is Hardware Video Acceleration?](#12-what-is-hardware-video-acceleration)
+   - [1.3 What is the lavfi Filter Graph?](#13-what-is-the-lavfi-filter-graph)
 2. [Library Architecture](#2-library-architecture)
    - [The Seven Libraries](#21-the-seven-libraries)
    - [Versioning and API Stability](#22-versioning-and-api-stability)
@@ -136,6 +139,30 @@ Part XIII covers three multimedia frameworks that together span virtually every 
 | **FFmpeg** | Library + CLI (procedural; lavf/lavc/lavfi pipeline) | VA-API, VDPAU, NVDEC/NVENC, V4L2, VideoToolbox, QSV | C (libav\*); bindings in Python (ffmpeg-python), Go, Rust | HLS, DASH, RTMP, RTP/RTSP, SRT, RIST | Limited (scale\_cuda filter; ONNX via DNN module) | LGPL 2.1 / GPL 2 (some parts) | Swiss-army tool; transcoding; single-file scripts; CI/CD |
 | **GStreamer** | Element pipeline graph; caps negotiation; GLib/GObject | gst-vaapi, nvcodec (NVDEC/NVENC), v4l2codecs, qsvh264enc | C (GLib/GObject); Python (gi), Rust (gstreamer-rs), Java | HLS, DASH, RTP/RTSP, WebRTC (webrtcbin), SRT | gst-inference (OpenVINO/TF); onnxruntime plugin | LGPL 2.1 | Daemon/service pipelines; WebRTC; complex multi-source graphs |
 | **NVIDIA DeepStream 7.x** | GStreamer-based analytics pipeline; NvDsBuffer metadata | NVDEC (primary), CUDA, TensorRT | C/C++ (plugin API); Python (pyds); GStreamer native | RTSP, Kafka, MQTT, HTTP | First-class TensorRT integration; Triton inference server | Proprietary (free download) | NVIDIA-only video analytics; smart cities; industrial AI |
+
+### 1.1 What is FFmpeg?
+
+FFmpeg is an open-source multimedia framework consisting of a set of C libraries and a command-line tool that together handle virtually every aspect of digital media processing: reading and writing container formats, encoding and decoding compressed bitstreams, scaling and converting pixel formats, resampling audio, and applying signal-processing filters. On Linux, it is the de-facto standard library for video and audio pipeline construction, found inside media players (mpv, VLC), streaming servers (SRS, mediamtx), transcoding services, and graphics-stack integration layers that bridge GPU hardware acceleration APIs to application-level video processing.
+
+The framework's design philosophy separates concerns into orthogonal layers: container I/O through libavformat, bitstream encoding and decoding through libavcodec, filter processing through libavfilter, and pixel and sample conversion through libswscale and libswresample. Application code interacts with these layers through a shared type system defined in libavutil — the AVFormatContext, AVCodecContext, AVFrame, and AVPacket structures that appear throughout this chapter.
+
+Within the Linux graphics stack, FFmpeg occupies the middleware tier directly above hardware acceleration APIs such as VA-API, Vulkan Video, and V4L2 stateful codecs, and below application-level pipeline frameworks such as GStreamer (Chapter 58) and NVIDIA DeepStream. The hwaccel subsystem maps GPU vendor decode and encode engines onto the generic AVCodecContext interface, enabling applications to switch between software and hardware code paths by adjusting a handful of AVHWDeviceContext parameters without altering the surrounding pipeline logic.
+
+FFmpeg 7.x and 8.x — the versions covered in this chapter — enforce C11 compilation, mandate the AVChannelLayout API for audio channel handling, introduce the Scheduler-based CLI architecture (FFmpeg 7.0), and add Vulkan compute codecs capable of running on any Vulkan 1.3 implementation (FFmpeg 8.0). [Source: FFmpeg release notes](https://ffmpeg.org/index.html#news)
+
+### 1.2 What is Hardware Video Acceleration?
+
+Hardware video acceleration refers to the delegation of computationally intensive video decode and encode operations from general-purpose CPU cores to dedicated silicon blocks present on the GPU or SoC. On Linux, this silicon is exposed through several competing APIs: VA-API (Video Acceleration API) for Intel and AMD GPUs via open-source Mesa drivers, Vulkan Video extensions (VK_KHR_video_decode_h264 and related KHR extensions) for vendor-agnostic GPU decode and encode using the Vulkan driver stack, V4L2 stateful codec interfaces for SoC media engines on ARM platforms, VDPAU (Video Decode and Presentation API for Unix) as the legacy NVIDIA decode path, and the proprietary NVDEC/NVENC SDK for low-latency NVIDIA pipelines. Each API addresses the same underlying problem — moving compressed bitstream parsing and reconstruction off the CPU — but exposes different memory models, synchronisation primitives, and profile constraints.
+
+FFmpeg unifies these disparate APIs beneath the AVHWDeviceContext abstraction. A single AVHWDeviceContext represents an open handle to a hardware device — a VA-API display connection, a Vulkan logical device, or a CUDA context — and carries the per-API state needed to allocate hardware-resident frame buffers. An associated AVHWFramesContext describes the memory layout and pixel format of a pool of GPU surface buffers shared across the pipeline. When a hardware decoder produces GPU-resident frames, the output AVFrame carries an hw_frames_ctx reference rather than a CPU-accessible data pointer, enabling zero-copy frame sharing between the decoder, a GPU filter chain, and a hardware encoder through DMA-BUF or Vulkan external memory mechanisms. This zero-copy path is the primary performance motivation for using hardware acceleration in FFmpeg pipelines, and its configuration sequence is covered in full in §5.
+
+### 1.3 What is the lavfi Filter Graph?
+
+The lavfi subsystem (libavfilter) implements a directed acyclic graph of signal-processing nodes through which video frames and audio samples flow between a decoder output and an encoder input. Each node in the graph is an AVFilterContext — a live instance of a stateless AVFilter descriptor that declares its input and output pad types, negotiates compatible pixel formats with adjacent nodes through a query_formats callback, and drives its own execution through an activate callback invoked by the graph scheduler. This pull-and-push model allows the graph engine to route frames through heterogeneous processing stages without requiring the application to manage intermediate buffers explicitly.
+
+Edges between nodes are AVFilterLink structures carrying the negotiated format, frame rate, sample rate, and time base for that connection. Source filters (buffersrc) inject externally produced frames into the graph; sink filters (buffersink) extract processed frames for further use. Between them, transform filters perform operations such as scaling (scale), color space conversion (format), compositing a second video stream (overlay), burning in text (drawtext), and applying GPU-accelerated operations through CUDA, VA-API, or Vulkan compute back ends. Hardware-resident filter chains keep frames on GPU memory throughout a multi-step pipeline; the hwupload and hwdownload filters manage the CPU-to-GPU and GPU-to-CPU surface transfers at the boundaries of such chains.
+
+The filter graph model is the canonical mechanism for composing multi-step video processing pipelines in FFmpeg. Understanding format negotiation, the distinction between slice-threaded CPU filters and asynchronous GPU compute filters, and the graph execution lifecycle is prerequisite knowledge for both the programmatic API in §6 and the -vf and -filter_complex command-line syntax in §13, as well as for writing custom AVFilter implementations in §10.
 
 ---
 

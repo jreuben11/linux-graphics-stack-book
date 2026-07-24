@@ -7,6 +7,8 @@
 ## Table of Contents
 
 1. [Android Vulkan Requirements and History](#1-android-vulkan-requirements-and-history)
+    - [1.1 What is Vulkan?](#11-what-is-vulkan)
+    - [1.2 What is an Android Vulkan Profile?](#12-what-is-an-android-vulkan-profile)
 2. [The Android Vulkan Loader](#2-the-android-vulkan-loader)
 3. [GPU Vendor Drivers on Android](#3-gpu-vendor-drivers-on-android)
 4. [Mesa on Android — Turnip and freedreno](#4-mesa-on-android--turnip-and-freedreno)
@@ -91,6 +93,18 @@ Khronos and Google maintain *Android Vulkan Profiles* (AVP, previously called An
 | AVP 2025 | 80.1 % | — | `VK_KHR_external_memory_fd`, `VK_KHR_vulkan_memory_model`, extended pixel formats |
 
 [Source: Android Vulkan Profiles documentation](https://developer.android.com/ndk/guides/graphics/android-vulkan-profile)
+
+### 1.1 What is Vulkan?
+
+Vulkan is a low-overhead, cross-platform graphics and compute API standardised by the Khronos Group. Unlike its predecessor OpenGL, Vulkan exposes the GPU at a level of abstraction closer to the hardware: the application takes explicit responsibility for memory allocation, synchronisation, render pass structuring, and pipeline state management, in exchange for more predictable performance and lower CPU overhead. Vulkan targets a wide range of GPU architectures — from high-end discrete desktop GPUs through the tile-based mobile GPUs that dominate Android hardware — through a single API surface, with a mandatory SPIR-V intermediate representation for shaders.
+
+On Android, Vulkan arrived as an optional feature in Android 7.0 Nougat and became a mandatory requirement on 64-bit non-low-memory devices with Android 10. The Android Vulkan implementation follows the same Khronos specification as the desktop version but adds Android-specific extensions for surface creation (`VK_KHR_android_surface`), shared-memory buffer interop (`VK_ANDROID_external_memory_android_hardware_buffer`), and display timing (`VK_GOOGLE_display_timing`). The platform loader, ICD discovery mechanism, and layer injection model all differ from the desktop Linux Vulkan stack; understanding those differences is the central purpose of this chapter. The Vulkan API is accessed on Android through the NDK headers in `<vulkan/vulkan.h>` and the loader library `/system/lib64/libvulkan.so`. [Source: Vulkan specification](https://registry.khronos.org/vulkan/specs/latest/) [Source: Android Implement Vulkan](https://source.android.com/docs/core/graphics/implement-vulkan)
+
+### 1.2 What is an Android Vulkan Profile?
+
+An Android Vulkan Profile (AVP) is a Khronos-standardised JSON specification that defines a guaranteed set of Vulkan features, extensions, and property limits that any device claiming profile compliance must expose to applications. Profiles address a fragmentation problem unique to the Android ecosystem: because Vulkan devices span many silicon generations and vendor ICD implementations, querying individual capabilities at runtime would force every application to enumerate dozens of feature flags before rendering a single frame.
+
+A profile declares a Vulkan version floor together with mandatory extensions — for example `VK_ANDROID_external_memory_android_hardware_buffer` and `shaderInt16` in AVP 2022 — and required feature bits and format support. Developers select the minimum profile their application targets and can rely on those capabilities without per-device runtime queries. Profile compliance is enforced by the Android Compatibility Definition Document (CDD) and verified by the Khronos Conformance Test Suite. The profiles are versioned annually (AVP 2021, AVP 2022, AVP 2025) with published coverage statistics describing the percentage of the installed base that satisfies each profile. The `VkProfiles` library in the Vulkan SDK provides a portable C API for querying profile support at runtime on both Android and desktop targets, and the `vpGetPhysicalDeviceProfileSupport()` function can be used to verify compliance programmatically before relying on profile-guaranteed features. [Source: Android Vulkan Profiles documentation](https://developer.android.com/ndk/guides/graphics/android-vulkan-profile) [Source: Khronos Vulkan Profiles](https://github.com/KhronosGroup/Vulkan-Profiles)
 
 ---
 

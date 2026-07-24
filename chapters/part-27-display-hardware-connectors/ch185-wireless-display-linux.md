@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Wireless Display Paradigms and Technical Trade-offs](#wireless-display-paradigms)
+   - [1.1 What is Miracast (Wi-Fi Display)?](#11-what-is-miracast-wi-fi-display)
+   - [1.2 What is Wi-Fi Direct?](#12-what-is-wi-fi-direct)
+   - [1.3 What is WiGig (IEEE 802.11ad/802.11ay)?](#13-what-is-wigig-ieee-80211ad80211ay)
 2. [Miracast / Wi-Fi Display Standard](#miracast-wifi-display)
    - [Wi-Fi Direct P2P Group Formation](#wifi-direct-p2p)
    - [RTSP Control Plane: M1–M16 Message Exchange](#rtsp-control-plane)
@@ -64,6 +67,30 @@ Wireless display on Linux divides into three structurally distinct paradigms, ea
 | WebRTC (PipeWire) | 50–150 ms | Variable | Unlimited | Growing (GStreamer webrtcbin) |
 
 Power consumption is an additional dimension: Miracast activates the 2.4/5 GHz radio continuously under P2P group ownership, WiGig 60 GHz chips are power-hungry during beamforming training, and network streaming delegates power cost to existing infrastructure radios.
+
+### 1.1 What is Miracast (Wi-Fi Display)?
+
+Miracast is the Wi-Fi Alliance's certification program and brand name for the Wi-Fi Display (WFD) standard, which enables a source device — such as a laptop or smartphone — to mirror or extend its screen to a sink device — such as a smart TV or wireless display adapter — without requiring an existing Wi-Fi access point. The Wi-Fi Display Technical Specification (currently version 2.1) defines both the radio connection method and the application-level streaming protocol.
+
+At the protocol level, Miracast combines two distinct layers. The radio link is provided by Wi-Fi Direct (IEEE 802.11 P2P), which creates a peer-to-peer 802.11 network directly between source and sink. The application layer uses RTSP for session control (a handshake sequence of M1–M16 messages that negotiates codecs, resolutions, and transport parameters) and RTP over UDP for media delivery. The source encodes the display framebuffer as H.264 video multiplexed in an MPEG-TS container, streamed to the sink for decode and render. Mandatory support covers H.264 Baseline, Main, and High Profile at up to 1920×1080p60 and LPCM audio; AAC and Dolby Digital are optional extensions.
+
+On Linux, Miracast has no native desktop integration comparable to Windows or Android. Support is provided by userspace projects: MiracleCast drives wpa_supplicant for the P2P radio layer and constructs GStreamer pipelines for encode and decode, while GNOME Network Displays provides a higher-level UI. A practical constraint is that a Miracast implementation must take exclusive control of the wireless interface, conflicting with NetworkManager's own wpa_supplicant instance. This chapter covers both the protocol mechanics and the Linux-specific software stack in detail.
+
+### 1.2 What is Wi-Fi Direct?
+
+Wi-Fi Direct is an IEEE 802.11 extension that allows two Wi-Fi devices to form a direct peer-to-peer connection without a traditional infrastructure access point. One device takes the Group Owner (GO) role and operates a software-defined access point; the other joins as a P2P client. Both devices use standard 802.11 frame formats, so no proprietary hardware is required beyond driver support for the GO state machine and the P2P management frame exchange.
+
+Connection setup proceeds in three phases: device discovery (probe requests and responses on social channels 1, 6, and 11 to locate P2P-capable peers), GO negotiation (an exchange of intent values from 0 to 15 that determines which device becomes the GO, with a random tie-break bit), and WPS provisioning (PBC push-button or PIN-based credential exchange to authenticate the client). After provisioning, the GO runs a DHCP server on the `192.168.49.0/24` subnet and assigns the client an address. Miracast mandates that the WFD source act as or negotiate toward the GO role so that it controls the group channel.
+
+Linux kernel support for Wi-Fi Direct is implemented in the `cfg80211` subsystem and exposed through `nl80211` netlink messages. Drivers must implement the P2P-relevant `cfg80211_ops` callbacks — including `start_p2p_device`, `remain_on_channel`, and `mgmt_frame_tx` — to participate in P2P management frame exchange. The wpa_supplicant daemon manages the P2P state machine and exposes control through the D-Bus interface `fi.w1.wpa_supplicant1.Interface.P2PDevice`. MiracleCast and GNOME Network Displays both drive wpa_supplicant through this interface to form and tear down Wi-Fi Direct groups.
+
+### 1.3 What is WiGig (IEEE 802.11ad/802.11ay)?
+
+WiGig is a family of IEEE 802.11 standards that operate in the 60 GHz millimeter-wave band, providing extremely high throughput at short range. IEEE 802.11ad (standardized in 2012) achieves up to approximately 7 Gbps physical-layer data rates using 2.16 GHz-wide channels in the 57–66 GHz band and a single spatial stream with OFDM and SC-PHY modulation modes. Its successor, IEEE 802.11ay, extends throughput beyond 40 Gbps through channel bonding (up to four 2.16 GHz channels aggregated) and MIMO, targeting uncompressed 4K and 8K display streaming.
+
+The 60 GHz band has two properties critical to wireless display use. High available bandwidth enables uncompressed or near-lossless video transmission, eliminating the encode and decode latency that limits Miracast to roughly 50–100 ms end-to-end. The short propagation range (approximately 10 metres line-of-sight) and inability to penetrate walls confine signal to a docking or presentation area. These same characteristics impose a mandatory constraint: the high free-space path loss at 60 GHz requires beamforming, where transmitter and receiver electronically steer antenna arrays toward each other. Beam training and tracking must run continuously to maintain link quality as devices move.
+
+In the Linux kernel, WiGig hardware is supported through the `wil6210` driver located at `drivers/net/wireless/ath/wil6210/`, which covers Qualcomm Atheros ath10k 60 GHz chipsets. The driver integrates with `cfg80211` and exposes the interface through `nl80211`. However, the WiGig Display Extension (WDE) application-layer software — analogous to MiracleCast in the Miracast ecosystem — is absent from mainline Linux distributions, leaving WiGig display as a hardware-capable but software-incomplete feature on Linux.
 
 ---
 

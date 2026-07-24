@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Display Power Problem Space](#1-display-power-problem-space)
+   - [1.1 What is DPMS?](#11-what-is-dpms)
+   - [1.2 What is Panel Self-Refresh (PSR)?](#12-what-is-panel-self-refresh-psr)
+   - [1.3 What is a Display C-State (DC State)?](#13-what-is-a-display-c-state-dc-state)
 2. [VESA DPMS Legacy Standard](#2-vesa-dpms-legacy-standard)
 3. [KMS CRTC Active — Modern Blank/Unblank](#3-kms-crtc-active--modern-blankunblank)
 4. [Intel Display C-States](#4-intel-display-c-states)
@@ -48,6 +51,18 @@ The kernel and compositor cooperate to apply power reductions in a graduated seq
 5. **Panel off (CRTC disabled)**: The display pipeline is shut down entirely — panel goes dark, GPU display engine is powered off. The user must unlock the screen to resume. Saves the full display power budget.
 
 This chapter addresses all five levels as an integrated system: who drives each step, the kernel interfaces that implement each transition, and how compositors, power daemons, and ACPI interact to coordinate the full idle sequence.
+
+### 1.1 What is DPMS?
+
+DPMS stands for Display Power Management Signaling, a standard defined by VESA in 1993 that establishes four power states for video output devices: On, Standby, Suspend, and Off. The standard encodes these states in the presence or absence of horizontal and vertical synchronisation pulses on the analogue video interface, allowing a GPU to signal a monitor to enter progressively deeper sleep modes without any digital sideband channel. The Linux kernel carries DPMS as a KMS connector property, represented by the integer constants `DRM_MODE_DPMS_ON` through `DRM_MODE_DPMS_OFF` defined in `include/uapi/drm/drm_mode.h`. Although DPMS originated for CRT monitors, the property persists in DRM for backward compatibility with X11-era userspace tools such as `xset` and `xrandr`. On modern atomic KMS drivers the DPMS property is a thin shim: setting it to any non-ON value triggers an atomic commit that sets the CRTC `active` flag to false, powering down the display pipeline through the same code path used by Wayland compositors. This chapter covers how DPMS is implemented in the DRM connector layer, why it is obsolescent for digital interfaces, and how it coexists with the atomic modesetting model.
+
+### 1.2 What is Panel Self-Refresh (PSR)?
+
+Panel Self-Refresh is a power-saving feature of the embedded DisplayPort (eDP) specification that allows the display panel to buffer the last transmitted frame internally and stop requesting new pixel data from the host GPU while the screen content is static. When PSR is active, the eDP link can be placed in a low-power state and the display controller's scanout engine can gate its clocks, reducing system power by roughly 0.3–0.8 W on a typical laptop. The panel's timing controller takes over the refresh cycle autonomously, re-reading from its own frame store rather than from main memory via the GPU. The Linux kernel implements PSR support in the Intel i915 display driver under `drivers/gpu/drm/i915/display/intel_psr.c` and in the AMD driver under `drivers/gpu/drm/amd/display/`. Two PSR generations are in common use: PSR1, which transmits the full frame before entering self-refresh, and PSR2 (Selective Update), which transmits only the changed rectangular regions of the frame, enabling self-refresh entry even during moderate UI animation. PSR is a precondition for the deeper Intel Display C-states (DC5 and DC6) described in Section 4, and its interaction with those states is a central theme of this chapter.
+
+### 1.3 What is a Display C-State (DC State)?
+
+A Display C-state, abbreviated DC state, is a power domain gate applied to the GPU's display engine subsystem, analogous to the CPU C-states that progressively clock-gate or power-gate processor cores. On Intel hardware, DC states are managed by the DMC (Display MicroController) — a firmware-controlled processor embedded in the GPU die that monitors which display power domains are active and autonomously transitions the display engine into deeper sleep levels when preconditions are satisfied. The hierarchy runs from DC0 (fully active) through DC5 (display clocks gated, DRAM active), DC6 (clocks gated, DRAM in self-refresh), and DC9 (display power domain fully removed). DC states compound the savings from PSR: PSR stops pixel data transfers over the eDP link, and DC5 or DC6 then gate the hardware that would have been performing those transfers, yielding an additional 0.3–1 W reduction. AMD has an equivalent facility in its Display Core Next (DCN) power management architecture, described in Section 5. This chapter covers how the kernel driver manages DC state transitions, which conditions block entry, and how DC states interact with compositors, PSR, and the ACPI S0ix modern standby path.
 
 ---
 

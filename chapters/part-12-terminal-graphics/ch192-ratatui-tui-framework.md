@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Why Ratatui](#1-why-ratatui)
+   - [1.1 What is a Terminal User Interface (TUI)?](#11-what-is-a-terminal-user-interface-tui)
+   - [1.2 What is Ratatui?](#12-what-is-ratatui)
+   - [1.3 What is Immediate-Mode Rendering?](#13-what-is-immediate-mode-rendering)
 2. [Core Architecture: Terminal, Backend, Buffer, Frame](#2-core-architecture-terminal-backend-buffer-frame)
 3. [The Cell Model and Diff-Based Rendering](#3-the-cell-model-and-diff-based-rendering)
 4. [The Widget System: Widget and StatefulWidget](#4-the-widget-system-widget-and-statefulwidget)
@@ -30,6 +33,24 @@ Terminal user interfaces occupy a peculiar design space. On one hand, they must 
 **Ratatui** ([github.com/ratatui/ratatui](https://github.com/ratatui/ratatui), [docs.rs/ratatui](https://docs.rs/ratatui)) is the community-maintained fork of `tui-rs` (forked 2023 when `tui-rs` went unmaintained). It is written entirely in Rust, compiles to no-std environments, and supports multiple backends through a trait abstraction that — as this chapter explores — extends well beyond traditional terminal emulators to embedded display hardware and WebAssembly browser targets. The crate's 2026 workspace structure splits compilation into sub-crates to reduce build times and stabilise the API surface, while the public API surface available at `ratatui::prelude::*` remains stable across minor versions.
 
 The key insight that makes Ratatui practical is its **immediate-mode, diff-based rendering model**: applications describe what the screen should look like on every frame; the framework computes the delta against the previous frame and emits only the changed cells as VT sequences. This avoids the overheads of a retained-mode scene graph while still keeping terminal output proportional to change rate rather than absolute frame content.
+
+### 1.1 What is a Terminal User Interface (TUI)?
+
+A Terminal User Interface (TUI) is an interactive application that runs inside a terminal emulator and renders its UI entirely through character-cell output — rows and columns of styled Unicode text — rather than through a native windowing system or a bitmap display. TUIs communicate with the terminal emulator via VT escape sequences: control strings that position the cursor, set foreground and background colors, apply text attributes (bold, italic, underline), and manipulate the alternate screen buffer. The terminal emulator interprets these sequences and maps them onto GPU-accelerated glyph rendering, Wayland surface composition, or — on embedded targets — direct framebuffer writes.
+
+TUIs sit above the terminal emulator in the Linux graphics stack: the application writes to a pseudoterminal (PTY) master, the kernel's PTY layer connects it to a terminal emulator process (kitty, Ghostty, foot, or an xterm derivative), and that emulator handles escape-sequence parsing and final pixel rendering. This architecture means a single TUI application binary can run identically in a local Wayland terminal, over an SSH connection, or on a UART-attached serial console — portability that native GUI frameworks cannot match without significant additional work. The downside is that the character-cell grid imposes strict layout constraints: widgets snap to integer cell boundaries, font metrics are fixed by the terminal's glyph atlas, and pixel-accurate graphics require out-of-band protocols such as Sixel or the Kitty Graphics Protocol.
+
+### 1.2 What is Ratatui?
+
+Ratatui is an open-source Rust crate that provides a widget-based abstraction layer over terminal escape-sequence output. Its primary role in the Linux graphics stack is to translate application-level widget descriptions (paragraphs, lists, tables, charts, progress bars) into a compact grid of styled Unicode cells, and from there into VT escape sequences emitted to a terminal backend. Ratatui originated as a community fork of the `tui-rs` crate when that project went unmaintained in 2023 and is now the canonical Rust TUI framework maintained at `github.com/ratatui/ratatui` with an active release cadence.
+
+The crate targets `no_std` environments (with `alloc`), enabling deployment on microcontrollers and embedded displays, as well as WebAssembly targets via the Ratzilla companion crate. Its workspace separates `ratatui-core` (the `Buffer`, `Widget`, and `Layout` machinery) from backend implementations and optional widget sets, reducing compilation costs for downstream crates that embed only the framework core. The public API is exported through `ratatui::prelude::*` and is stable across minor versions. Ratatui integrates with the broader terminal ecosystem through the `crossterm` backend (the default, cross-platform choice) and optional backends for `termion`, the WezTerm terminal library `termwiz`, and the `TestBackend` used in unit tests. [Source: ratatui/ratatui/src/backend/mod.rs](https://github.com/ratatui/ratatui/blob/main/ratatui/src/backend/mod.rs)
+
+### 1.3 What is Immediate-Mode Rendering?
+
+Immediate-mode rendering is a UI architecture in which the application re-describes the entire desired screen state on every frame rather than maintaining a persistent tree of widget objects that are updated incrementally. In a retained-mode GUI (GTK, Qt, or a browser DOM), widgets are long-lived objects; the application mutates their properties and the framework schedules repaints selectively. In immediate-mode, every draw cycle creates widget values from scratch, passes them to the renderer, and discards them — there is no widget lifecycle, no object identity, and no explicit invalidation.
+
+Ratatui adopts immediate-mode rendering at the `Widget` trait level: the `render(self, area, buf)` signature consumes the widget value, making it illegal to retain a widget across frames. The framework's efficiency comes not from skipping work on unchanged widgets but from the diff step that follows rendering: after all widgets have written their cells into the new `Buffer`, the framework compares it against the previous frame's buffer and emits VT sequences only for changed cells. This combination — full redraw into an in-memory buffer followed by diff-based terminal output — gives the simplicity of immediate-mode with output volume proportional to actual change, a property that matters on SSH sessions and low-bandwidth connections where terminal byte counts are constrained.
 
 ---
 

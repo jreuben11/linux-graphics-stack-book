@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Overview](#overview)
+   - [1.1 What is glTF 2.0?](#11-what-is-gltf-20)
+   - [1.2 What is Physically-Based Rendering (PBR)?](#12-what-is-physically-based-rendering-pbr)
+   - [1.3 What is the glTF Extension Mechanism?](#13-what-is-the-gltf-extension-mechanism)
 2. [The glTF 2.0 File Formats: JSON Manifest and GLB Envelope](#2-the-gltf-20-file-formats-json-manifest-and-glb-envelope)
 3. [The JSON→GPU Memory Hierarchy: Core Schema Objects](#3-the-jsongpu-memory-hierarchy-core-schema-objects)
    - 3.0 [The Top-Level `asset` Object](#30-the-top-level-asset-object)
@@ -73,6 +76,28 @@ Readers of this chapter will learn:
 - The **Vulkan** upload path: staging buffers, vertex and index **`VkBuffer`** creation with **`vkCmdCopyBuffer`**, **`VkVertexInputAttributeDescription`** / **`VkVertexInputBindingDescription`** mapping, pipeline specialisation for **OPAQUE**/**MASK**/**BLEND** alpha modes, and the modern bindless approach using **buffer device addresses** and **`VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT`**.
 - How **Bevy**'s **`GltfAssetPlugin`** (**bevy_gltf** crate), **Godot**'s **`GLTFDocument`** API, and **Blender**'s **`io_scene_gltf2`** addon (**Principled BSDF** ↔ **PBR** metallic-roughness) consume **glTF** natively, and how **`gltf-transform`** pre-processes assets in a **CI** pipeline.
 - The **glTF 3.0** roadmap as of mid-2026, including planned **MaterialX** integration, **KHR_audio_emitter**, **EXT_mesh_gpu_instancing**, and promotion of **EXT_meshopt_compression** to a **KHR** extension.
+
+### 1.1 What is glTF 2.0?
+
+glTF 2.0 (GL Transmission Format, version 2) is an open specification from the Khronos Group that defines a runtime-efficient format for delivering and exchanging 3D assets between tools, engines, and rendering systems. Unlike digital content creation formats such as FBX or OBJ, which are optimized for artist workflows and tool interoperability, glTF is explicitly designed around the GPU upload path: its binary data layout maps directly to OpenGL ES, WebGL, and Vulkan buffer objects, eliminating the per-vertex conversion and remapping steps that traditional formats require at load time.
+
+The specification defines two concrete file forms: a UTF-8 JSON manifest (`.gltf`) that may reference external binary files, and a self-contained binary container (`.glb`) that packs JSON, geometry data, and optional embedded images into a single file. The JSON schema describes a complete scene graph — nodes, meshes, materials, textures, cameras, animations, and skins — while the binary payloads carry vertex attributes, index buffers, and animation keyframes at their raw GPU-ready byte layout.
+
+glTF 2.0 was finalized in June 2017 and is standardized as ISO/IEC 12113:2022. The specification and all schema files are maintained by the Khronos Group at the glTF registry ([Source](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html)). This chapter covers the complete glTF 2.0 data model, its official extension family, and the C and C++ loaders used in production Linux pipelines.
+
+### 1.2 What is Physically-Based Rendering (PBR)?
+
+Physically-Based Rendering (PBR) is a shading methodology that models light-surface interaction using equations derived from measured optical properties of real materials. The central insight is that surfaces can be described by a small set of perceptually meaningful parameters — base color, metallic factor, and roughness — that drive a bidirectional reflectance distribution function (BRDF) producing consistent, predictable results under varied lighting conditions.
+
+glTF 2.0's material system is built around the metallic-roughness PBR model. The metallic factor separates conductors (metals) from insulators (dielectrics): metals have no diffuse component and their specular color is tinted by base color, while dielectrics have a diffuse albedo and achromatic specular. The roughness parameter controls the width of the specular highlight via the GGX normal distribution function. The Cook-Torrance microfacet BRDF, combined with the Schlick Fresnel approximation, is the reference algorithm mandated by the glTF specification.
+
+On the GPU, PBR parameters arrive via texture channels: base color (RGBA), metallic and roughness packed into the B and G channels of a single texture, a tangent-space normal map, an ambient occlusion map, and an emissive map. Each texture channel maps to a specific Vulkan descriptor binding or OpenGL ES uniform sampler. The material model is defined precisely enough that a conformant renderer can produce pixel-consistent output comparable to the reference Khronos glTF-Sample-Viewer implementation ([Source](https://github.com/KhronosGroup/glTF-Sample-Viewer)).
+
+### 1.3 What is the glTF Extension Mechanism?
+
+The glTF extension mechanism allows the base specification to be augmented with additional data and semantics without breaking loaders that do not implement the extension. Any JSON object in a glTF file may carry an `extensions` field containing a dictionary keyed by extension name. If a loader encounters an extension name it does not recognize, it ignores the field and processes the containing object using its base-specification fields. An extension that a loader must understand in order to render the asset correctly is listed in the top-level `extensionsRequired` array; an extension present but not required is listed in `extensionsUsed`.
+
+Khronos-ratified extensions carry the `KHR_` prefix and are normatively defined in the glTF specification repository ([Source](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos)). Vendor extensions use a vendor-specific prefix such as `EXT_`, `MSFT_`, or `CESIUM_`. This chapter covers the most widely deployed Khronos extensions: `KHR_draco_mesh_compression` for entropy-coded geometry, `KHR_mesh_quantization` for reduced-precision vertex attributes, `KHR_texture_transform` for UV animation, the `KHR_materials_*` family for extended PBR effects, and `EXT_meshopt_compression` for lossless buffer compression using the meshoptimizer library.
 
 ---
 

@@ -11,6 +11,9 @@
 ## Table of Contents
 
 1. [Architecture Overview](#1-architecture-overview)
+   - [1.1 What is Jupyter?](#11-what-is-jupyter)
+   - [1.2 What is ZeroMQ (ZMQ)?](#12-what-is-zeromq-zmq)
+   - [1.3 What is IPython?](#13-what-is-ipython)
 2. [The ZMQ Kernel Protocol](#2-the-zmq-kernel-protocol)
 3. [IPython and Python Kernel Internals](#3-ipython-and-python-kernel-internals)
 4. [Multi-Kernel Support](#4-multi-kernel-support)
@@ -94,6 +97,28 @@ shellSocket.connect(`tcp://127.0.0.1:${connectionInfo.shell_port}`);
 **VS Code Jupyter extension** follows the same direct-ZMQ pattern on Linux when the "local" kernel mode is used: the extension host (Node.js) spawns the kernel subprocess and communicates over ZMQ via the `vscode-jupyter-ipywidgets` and `@vscode/jupyter-extension` packages, bypassing `jupyter_server` entirely. When connecting to a remote Jupyter server, VS Code switches to the WebSocket-over-HTTP path, identical to JupyterLab.
 
 **Current status.** Active development of the nteract desktop application slowed after 2021 as VS Code's Jupyter extension matured. The `@nteract/` npm packages — particularly `@nteract/core`, `@nteract/messaging`, and `@nteract/outputs` — remain in use as building blocks in other projects. GitHub historically used nteract components to render `.ipynb` files; they have since moved to a custom renderer. The nteract SDK is still the cleanest reference implementation of a Jupyter frontend that speaks ZMQ directly without a server intermediary.
+
+### 1.1 What is Jupyter?
+
+Jupyter is an open-source interactive computing environment in which code, formatted prose, mathematical notation, and rich output (images, plots, tables, HTML) coexist in a single structured document called a notebook. The notebook format stores an ordered list of cells as a JSON document with the extension `.ipynb`; each cell holds either executable source code or Markdown text, and code cell outputs are persisted alongside the source. Jupyter originated from the IPython project and grew into a language-agnostic platform through a key architectural decision: strict separation of the *frontend* — any application that displays and edits cells — from the *kernel* — the process that executes code and returns results.
+
+This separation is enforced by the Jupyter Messaging Protocol, a well-specified wire protocol transported over ZeroMQ sockets. Any frontend that speaks the protocol can drive any kernel that implements it, without either side knowing the other's implementation details. On Linux, the server-side anchor is `jupyter_server`, a Tornado HTTP and WebSocket server that manages kernel process lifecycle via `KernelManager`, exposes REST endpoints for the frontend, and proxies ZMQ socket traffic over a single WebSocket. JupyterLab is the primary browser-based frontend; nteract and VS Code are desktop frontends that can bypass the server and speak ZMQ directly. JupyterHub adds multi-user orchestration on top, spawning per-user `jupyter_server` processes or containers through a configurable `Spawner` interface.
+
+This chapter examines the protocol, process model, Python kernel internals, widget system, GPU compute integration, and Linux-specific deployment patterns that together constitute Jupyter's implementation.
+
+### 1.2 What is ZeroMQ (ZMQ)?
+
+ZeroMQ (also written ØMQ or ZMQ) is an asynchronous messaging library that provides socket-like primitives carrying built-in framing, queuing, and connection-management semantics. Unlike raw POSIX sockets, ZMQ sockets have a *pattern type* — ROUTER, DEALER, PUB, SUB, REQ, REP — that encodes a specific communication topology. A ROUTER socket tracks an identity for each connected peer and routes reply frames back to the originating peer by identity; a PUB socket broadcasts each message to all connected SUB subscribers atomically; a DEALER socket sends outgoing frames in a round-robin fashion and queues messages if no peer is connected. Messages are delivered as multipart frames: all parts of a single message arrive atomically at the receiver. The library handles reconnection transparently and buffers outgoing messages up to a configurable high-water mark.
+
+On Linux, the core library is `libzmq` ([source](https://github.com/zeromq/libzmq)); Python bindings are provided by `pyzmq` ([source](https://github.com/zeromq/pyzmq)). Jupyter uses ZMQ as the sole transport between `jupyter_server` (or a desktop frontend) and each kernel process. Five ZMQ socket pairs carry distinct traffic types: the shell channel (code execution requests and synchronous replies), the iopub channel (broadcast output such as stdout, rich display data, and kernel status), the stdin channel (interactive `input()` prompts), the control channel (interrupt and shutdown signals, plus Debug Adapter Protocol messages for the integrated debugger), and a heartbeat channel for liveness detection. The kernel process listens on five TCP ports described in a JSON connection file written at kernel startup. Understanding ZMQ socket types is essential for reading the messaging protocol described in §2.
+
+### 1.3 What is IPython?
+
+IPython (Interactive Python) is an enhanced Python read-eval-print loop that extends the standard interpreter with tab completion, object introspection, a magic command system (`%line_magic`, `%%cell_magic`), input history, and a rich display framework. It predates Jupyter by several years and remains an independent project; the Jupyter Python kernel, ipykernel ([source](https://github.com/ipython/ipykernel)), is built by wrapping IPython's `InteractiveShell` class with ZMQ messaging.
+
+`InteractiveShell` is the stateful core of every Python kernel session. It maintains the user namespace (`user_ns`) in which cell code is compiled and executed, applies a pipeline of input transformations (magic expansion, continuation handling, AST transformation via registered `ast_transformers`) before calling `compile()` and `exec()`, and routes display output through a priority-ordered registry of MIME formatters. When a Python object is the result of a cell expression, `InteractiveShell` queries the registry for the richest representation available — `_repr_mimebundle_()`, `_repr_html_()`, `_repr_png_()`, plain text — and packages the result as a `display_data` or `execute_result` message published on the iopub ZMQ socket.
+
+IPython also provides the `traitlets` library ([source](https://github.com/ipython/traitlets)), a typed observable attribute system used throughout Jupyter for configuration, and serves as the foundation for `ipywidgets`, the bidirectional widget framework covered in §7. Understanding IPython's `InteractiveShell` architecture is prerequisite to understanding how code execution, output display, magic commands, and debugger integration are implemented in §3.
 
 ---
 

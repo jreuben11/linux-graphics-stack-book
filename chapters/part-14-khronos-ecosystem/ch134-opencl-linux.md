@@ -22,6 +22,9 @@ It covers the full OpenCL ecosystem on Linux:
 ## Table of Contents
 
 1. [Introduction](#1-introduction)
+   - [1.1 What is OpenCL?](#11-what-is-opencl)
+   - [1.2 What is the ICD (Installable Client Driver) Model?](#12-what-is-the-icd-installable-client-driver-model)
+   - [1.3 What is SPIR-V in the OpenCL Context?](#13-what-is-spir-v-in-the-opencl-context)
 2. [OpenCL Architecture and the ICD Loader](#2-opencl-architecture-and-the-icd-loader)
 3. [Mesa rusticl — OpenCL 3.0 via Gallium](#3-mesa-rusticl--opencl-30-via-gallium)
    - [3.1 Legacy: Clover](#31-legacy-clover--mesas-pre-rusticl-opencl)
@@ -57,6 +60,24 @@ OpenCL matters in practice for several Linux-native workloads:
 - **LibreOffice Calc**: Experimental GPU acceleration for spreadsheet computation targets OpenCL.
 
 OpenCL 3.0, the current specification (published 2020, updated continuously), restructured the standard by making OpenCL 1.2 features mandatory and moving everything from OpenCL 2.x (SVM, pipes, device-side enqueue) into an optional-feature tier. This reduced the conformance burden for new implementations while preserving the extended feature set for platforms that support it. As of 2025–2026, three open-source Linux implementations have achieved official OpenCL 3.0 Khronos conformance: Intel NEO, Mesa rusticl, and pocl.
+
+### 1.1 What is OpenCL?
+
+OpenCL (Open Computing Language) is a Khronos Group open standard that defines a portable programming model and runtime API for executing parallel workloads across heterogeneous compute devices — GPUs, CPUs, FPGAs, and digital signal processors — using a single application interface. The specification defines a platform model, a memory model, an execution model, and a programming model, all expressed through a C API and the OpenCL C kernel language. Applications submit compute kernels, written in OpenCL C or provided as SPIR-V intermediate representation, to command queues associated with specific devices; the runtime manages data transfer, kernel compilation, and execution scheduling without requiring application code to be GPU vendor-specific.
+
+On Linux, OpenCL is one of three major heterogeneous compute interfaces alongside CUDA (NVIDIA-only) and ROCm HIP (AMD-primarily). Its defining characteristic is vendor neutrality: a single OpenCL application can target an AMD RDNA GPU via Mesa rusticl or ROCm CLR, an Intel Xe GPU via the NEO compute runtime, or any CPU via pocl — without source changes. This portability makes it the preferred interface for applications that must run on arbitrary Linux hardware. OpenCL 3.0, the current specification, designates OpenCL 1.2 features as mandatory and moves the OpenCL 2.x features (shared virtual memory, device-side enqueue, pipes) into an optional extension tier, lowering the barrier to conformant implementations while preserving the extended feature set for platforms that support it. [Source: Khronos OpenCL 3.0 specification](https://www.khronos.org/opencl/)
+
+### 1.2 What is the ICD (Installable Client Driver) Model?
+
+The Installable Client Driver (ICD) model is the mechanism OpenCL uses on Linux to allow multiple vendor-specific OpenCL implementations to coexist and be selected at runtime without recompiling applications. Applications link against `libOpenCL.so`, which is the ICD loader — a thin dispatch library, not an OpenCL implementation itself. At startup, the loader reads `.icd` files from `/etc/OpenCL/vendors/`, each of which names the shared library for one platform (Mesa rusticl, Intel NEO, AMD ROCm, pocl, and so on). The loader `dlopen`-loads each library, retrieves its dispatch table, and associates it with the platform's `cl_platform_id` handle.
+
+Every OpenCL opaque object begins with a pointer to its platform's dispatch table as its first member. When an application calls any `clXxx()` function, the ICD loader dereferences this pointer and tail-calls through the appropriate function pointer — a single indirect call with no hash lookup or lock, making ICD dispatch essentially zero-cost relative to GPU submission latency. The two ICD loaders in common use on Linux are `ocl-icd` (the de facto distribution-packaged loader) and the Khronos reference `OpenCL-ICD-Loader`, both wire-compatible. The environment variable `OCL_ICD_VENDORS` overrides the vendor directory, enabling developers to test local builds without system-wide installation. [Source: ocl-icd](https://github.com/OCL-dev/ocl-icd)
+
+### 1.3 What is SPIR-V in the OpenCL Context?
+
+SPIR-V (Standard Portable Intermediate Representation — V) is a binary intermediate language defined by Khronos that serves as the exchange format between shading language compilers and GPU drivers. In the OpenCL context, SPIR-V replaces the earlier SPIR format (which was based on LLVM IR) and provides a portable, version-independent way to submit pre-compiled kernels to a conformant OpenCL implementation. Instead of passing OpenCL C source text to `clCreateProgramWithSource` at runtime — which requires the device driver to embed a full Clang compilation stack — applications can compile OpenCL C offline using standard tools and submit the resulting SPIR-V binary via `clCreateProgramWithIL`. SPIR-V ingestion is mandatory for all OpenCL 3.0 conformant implementations.
+
+In the Mesa rusticl compilation pipeline, OpenCL C source is compiled via Clang to SPIR-V, then consumed by `spirv_to_nir()` to produce Mesa's internal NIR representation, which the Gallium driver then lowers to device ISA. AMD ROCm CLR and Intel NEO have equivalent SPIR-V ingestion paths. SPIR-V also bridges OpenCL and Vulkan compute: a Vulkan `VkShaderModule` and an OpenCL `cl_program` can both be created from the same SPIR-V binary when the appropriate extensions are present, enabling algorithmic reuse across APIs without duplicating kernel source. The SPIR-V specification is maintained at [khronos.org/spir](https://www.khronos.org/spir/).
 
 ---
 

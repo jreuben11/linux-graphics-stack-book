@@ -13,6 +13,9 @@ The chapter is long because Qt is large; it is organised so that a reader can ju
 ## Table of Contents
 
 - [1. Architecture and Module Structure](#1-architecture-and-module-structure)
+  - [1.5 What is Qt6?](#15-what-is-qt6)
+  - [1.6 What is QML and Qt Quick?](#16-what-is-qml-and-qt-quick)
+  - [1.7 What is QRhi?](#17-what-is-qrhi)
 - [2. The Meta-Object System](#2-the-meta-object-system)
 - [3. Signals and Slots](#3-signals-and-slots)
 - [4. The Property and Binding System](#4-the-property-and-binding-system)
@@ -99,6 +102,18 @@ For the graphics developer, three architectural shifts define the Qt5 → Qt6 tr
 3. **`QProperty<T>` bindable properties.** Qt6 adds a C++ reactive property system that brings QML-style bindings to plain C++ objects, independent of the `Q_PROPERTY`/`NOTIFY` signal machinery (§4). [Source](https://doc.qt.io/qt-6/qproperty.html)
 
 Beyond graphics, Qt6 raised the minimum language standard to **C++17** (with optional C++20 features such as `operator<=>()` support, §11.6), removed a number of long-deprecated classes (`QRegExp`, `QLinkedList`, the `QStringRef`/`QVariant::Type` idioms — §26), reworked the container classes (§7), and moved several Qt5 features into an opt-in **`qt5compat`** module for gradual migration. [Source](https://doc.qt.io/qt-6/portingguide.html)
+
+### 1.5 What is Qt6?
+
+Qt6 is the sixth major release of the Qt cross-platform application framework, a C++ library suite covering windowing, painting, networking, multimedia, databases, declarative UI, Vulkan and OpenGL rendering, Bluetooth, positioning, and more. On Linux, Qt sits between the application and the platform services exposed by the kernel, Mesa, PipeWire, and the Wayland compositor. When a Qt application opens a window, the Qt Platform Abstraction (QPA) layer translates that request into either a Wayland client connection (via the `wayland` QPA plugin) or, for embedded targets, a direct KMS/DRM surface; both paths eventually drive a DRM page flip in the kernel's Direct Rendering Manager. Qt6 requires C++17, uses CMake as its primary build system, and publishes all modules under LGPL v3 as its open-source tier alongside a parallel commercial licence. Every object that participates in signals, properties, or runtime introspection descends from `QObject`, making that class the universal foundation of the entire framework. The module set is divided into `qtbase` (core, GUI, widgets, network, test), `qtdeclarative` (QML, Qt Quick, V4 JavaScript), `qtwayland`, `qtshadertools`, `qtmultimedia`, and a large collection of add-on modules, each a real CMake linking boundary.
+
+### 1.6 What is QML and Qt Quick?
+
+QML (Qt Modelling Language) is a declarative, JavaScript-extended language for describing user interfaces as a tree of typed objects whose properties can be bound to reactive expressions. Qt Quick is the C++ runtime that evaluates a QML document: it instantiates the object graph, resolves and tracks property bindings using Qt's reactive property engine, and drives visual output through a retained-mode scene graph. Each `Item` in a QML document corresponds to a `QQuickItem` in C++; the scene graph renderer — built on top of `QRhi` — traverses the `QSGNode` tree each frame and emits GPU draw calls. The QML engine also embeds the V4 JavaScript engine (part of `qtdeclarative`) to evaluate inline expressions and script blocks. Qt Quick Controls provides a set of platform-styled UI controls (buttons, text fields, sliders, dialogs) implemented in QML and C++, removing the need for a native widget toolkit in applications targeting both desktop and embedded Linux platforms. On embedded and automotive targets, QML-based applications can achieve GPU-accelerated UI without linking to `QtWidgets`, making the QML/Qt Quick stack the preferred rendering path for resource-constrained Linux devices.
+
+### 1.7 What is QRhi?
+
+The Qt Rendering Hardware Interface (`QRhi`) is a portable, low-level GPU abstraction that allows Qt's rendering code — the Qt Quick scene graph, Qt Quick 3D, and application-level custom rendering — to run unchanged on top of Vulkan, OpenGL ES, OpenGL, Metal, and Direct3D 11/12. On Linux, the two active backends are Vulkan (`QRhiVulkan`) and OpenGL/OpenGL ES (`QRhiGles2`). `QRhi` exposes a unified set of resource types — render targets, pipelines, vertex and index buffers, uniform buffers, textures, samplers, and render passes — mapped to each backend's native objects at runtime. Shaders are pre-compiled offline by the `qsb` tool (from `qtshadertools`) into a `QShader` bundle that carries SPIR-V (Vulkan), GLSL (OpenGL), MSL (Metal), and HLSL (D3D11) variants; the runtime therefore never invokes a driver-side shader compiler on the hot path. Applications can access `QRhi` directly through `QQuickWindow::rendererInterface()` and `QRhiSwapChain` to perform custom GPU work that integrates with the Qt Quick scene graph, sharing the same device and command queue. The `QRhi` implementation lives in `qtbase/src/gui/rhi`. [Source](https://www.qt.io/blog/graphics-in-qt-6.0-qrhi-qt-quick-qt-quick-3d)
 
 ---
 

@@ -12,6 +12,9 @@
 ## Table of Contents
 
 1. [CEC Protocol Fundamentals](#1-cec-protocol-fundamentals)
+   - [1.7 What is HDMI CEC?](#17-what-is-hdmi-cec)
+   - [1.8 What is the Linux CEC Subsystem?](#18-what-is-the-linux-cec-subsystem)
+   - [1.9 What is libcec?](#19-what-is-libcec)
 2. [Key CEC Message Categories](#2-key-cec-message-categories)
 3. [Linux Kernel CEC Subsystem Architecture](#3-linux-kernel-cec-subsystem-architecture)
 4. [Hardware CEC Driver Implementations](#4-hardware-cec-driver-implementations)
@@ -106,6 +109,36 @@ The **logical address** is a 4-bit value (0–15) identifying the device type an
 **CEC 2.0** (introduced with HDMI 2.0, 2013) extends the protocol with dynamic auto lip-sync, audio return channel coordination, and an expanded range of device control commands. It increases the maximum data block count and introduces enhanced device discovery. Linux's CEC subsystem supports the full CEC 2.0 command set while remaining backward-compatible with 1.3a devices.
 
 [Source: HDMI 2.0 specification overview, electronics-notes.com](https://www.electronics-notes.com/articles/audio-video/hdmi/hdmi-versions.php)
+
+### 1.7 What is HDMI CEC?
+
+HDMI Consumer Electronics Control (CEC) is a single-wire serial protocol embedded within the HDMI specification that enables interconnected devices to exchange control commands over a dedicated wire without requiring separate control cables or application-layer network stacks. The protocol occupies pin 13 of every Type A, Type C, and Type E HDMI connector and operates at approximately 400 baud over an open-drain bus shared by all devices in the HDMI tree.
+
+The key value of CEC is plug-and-play device control across an entire home theater topology. When a media player sends an `Active Source` broadcast command, the television can wake from standby, switch its active input, and begin displaying video without any user configuration. A `Standby` broadcast simultaneously turns off every CEC-capable device on the bus. Because devices derive their positions in the HDMI tree from the EDID of the upstream display — encoded as a physical address — CEC is inherently topology-aware: routing changes propagate correctly through HDMI switches without manual configuration.
+
+The protocol was standardized as part of HDMI 1.0 and draws on earlier work in European SCART-based control buses. CEC 1.3a defines the widely-deployed baseline command set covering one-touch play, standby, routing control, remote control pass-through, and OSD naming. CEC 2.0, introduced with HDMI 2.0 in 2013, extended the protocol with dynamic auto lip-sync, audio return channel coordination, and expanded device discovery. Both versions are covered in this chapter.
+
+[Source: Linux kernel CEC documentation](https://docs.kernel.org/admin-guide/media/cec.html)
+
+### 1.8 What is the Linux CEC Subsystem?
+
+The Linux CEC subsystem is the kernel framework that exposes HDMI CEC hardware to userspace through character devices at `/dev/cec0`, `/dev/cec1`, and so on. It resides in `drivers/media/cec/` and reached the mainline kernel in Linux 4.8 (2016). Following the layered design philosophy used throughout the Linux media subsystem, it separates hardware-specific CEC signalling from common framework services: logical address allocation, message queuing, retransmission, the character device API, and an optional software bit-bang path for hardware that lacks a dedicated CEC block.
+
+The central abstraction is `struct cec_adapter`, representing one CEC-capable HDMI output. A hardware driver allocates an adapter, supplies a small set of callback operations for transmitting and receiving frames, and registers with the framework. The framework then drives the state machine for all higher-level protocol behaviour. The `capabilities` field in `struct cec_adapter` communicates which operations the driver handles in hardware and which the core should perform in software — for example, hardware-assisted logical address allocation versus software-polling fallback.
+
+Userspace communicates with `/dev/cecN` through `ioctl` calls defined in `linux/cec.h`, enabling applications to configure logical addresses, transmit CEC frames, and receive incoming messages and events. The `cec-ctl` utility in `v4l-utils` provides command-line access to this API. Higher-level media applications typically use `libcec`, a userspace library that abstracts adapter differences and translates high-level commands into the underlying kernel API.
+
+[Source: Linux kernel CEC source tree](https://github.com/torvalds/linux/tree/master/drivers/media/cec)
+
+### 1.9 What is libcec?
+
+`libcec` is a cross-platform userspace library that provides a unified programming interface for HDMI CEC control, insulating application code from adapter differences across operating systems and hardware platforms. On Linux it communicates with the kernel CEC subsystem through `/dev/cecN`, handling file descriptor management, `ioctl` encoding, and event multiplexing. This eliminates the need for each CEC-aware application to reimplement the raw character device protocol.
+
+The library exposes a C++ API with optional C and Python bindings. Its primary abstraction is the `CEC::ICECAdapter` interface, through which applications open a named adapter, configure a logical address and OSD name, send high-level control commands, and register callbacks for incoming key events and device status changes. The library's platform detection layer automatically selects the appropriate backend — `/dev/cecN` on Linux, platform-specific interfaces on other operating systems — so the same application code works across environments without conditional compilation.
+
+`libcec` is the standard integration point for media center software on Linux. Kodi ships with a CEC plugin built on `libcec` that translates incoming remote-control pass-through key events into Kodi input events, enabling a standard television remote to control media playback without additional peripheral hardware or configuration. Understanding `libcec`'s command set and callback model is therefore relevant to any developer building home theater applications on Linux systems with HDMI output.
+
+[Source: libcec repository](https://github.com/Pulse-Eight/libcec)
 
 ---
 

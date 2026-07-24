@@ -28,6 +28,9 @@ covers the foundational data structures and operations beneath those training lo
    - [1.6 Surface Reconstruction: Poisson](#16-surface-reconstruction-poisson)
    - [1.7 Open3D-ML: Point Cloud Segmentation and Detection](#17-open3d-ml-point-cloud-segmentation-and-detection)
    - [1.8 Visualization and Headless Rendering](#18-visualization-and-headless-rendering)
+   - [1.9 What is Open3D?](#19-what-is-open3d)
+   - [1.10 What is a Point Cloud?](#110-what-is-a-point-cloud)
+   - [1.11 What is ICP Registration?](#111-what-is-icp-registration)
 2. [PyTorch3D: Differentiable 3D Deep Learning](#2-pytorch3d-differentiable-3d-deep-learning)
    - [2.1 Data Structures: Meshes, Pointclouds, Volumes](#21-data-structures-meshes-pointclouds-volumes)
    - [2.2 Differentiable Mesh Rendering](#22-differentiable-mesh-rendering)
@@ -407,6 +410,27 @@ The alternative — OSMesa software rendering — requires building Open3D from 
 `-DENABLE_HEADLESS_RENDERING=ON` and supports only the legacy `Visualizer`, not the
 Filament-based GUI.
 [Source: open3d.org/docs/release/tutorial/visualization/headless_rendering.html](https://www.open3d.org/docs/release/tutorial/visualization/headless_rendering.html)
+
+### 1.9 What is Open3D?
+
+Open3D is an open-source library (Apache 2.0) for 3D data processing, reconstruction, and machine learning inference on point clouds and meshes. Its C++ core implements geometry algorithms, spatial data structures, and rendering pipelines; Python bindings expose a nearly identical API. The library occupies the layer between raw sensor input — depth cameras, LiDAR scanners, photogrammetry pipelines — and application-level perception and reconstruction systems. On the Linux graphics stack, Open3D targets CUDA-capable NVIDIA GPUs through its Tensor API, falling back to CPU paths when no GPU is available, and uses the Filament rendering engine for real-time visualization.
+
+Open3D's principal abstractions are the `PointCloud` (an unordered set of 3D points with optional color, normal, and label attributes), the `TriangleMesh` (indexed triangle geometry), the `VoxelGrid`, and the `Image`/`RGBDImage` pair for depth-integrated sensor data. Its pipelines implement the full photogrammetric reconstruction chain: point cloud preprocessing and downsampling, feature-based global registration, ICP fine registration, TSDF volume integration, and surface reconstruction via Poisson solving. The library maintains two parallel namespaces — the original `open3d.geometry` Legacy API (CPU-only, stable) and the newer `open3d.t.geometry` Tensor API (GPU-capable via `.cuda(device_id)`) — so that algorithms run automatically on the device of their input tensors. Open3D-ML extends the library with PyTorch and TensorFlow backends for semantic segmentation and 3D object detection trained on point cloud data.
+[Source: open3d.org/docs/release/introduction.html](https://www.open3d.org/docs/release/introduction.html)
+
+### 1.10 What is a Point Cloud?
+
+A point cloud is an unordered collection of 3D Cartesian coordinate samples, typically produced by a depth camera (structured-light or time-of-flight sensor) or a LiDAR scanner. Each point encodes at minimum an (x, y, z) position in a reference frame; practical point clouds also carry per-point color (r, g, b from an aligned RGB image), surface normals estimated from local neighborhood geometry, reflectance intensity from LiDAR return amplitude, and semantic labels assigned by a segmentation network.
+
+Unlike a triangle mesh, a point cloud carries no explicit connectivity — there are no edges or faces, only spatial proximity relationships that algorithms compute on demand through k-nearest-neighbor or radius searches implemented in structures such as KD-trees or octrees. This makes point clouds the natural output format for range sensors: they require no assumption about the surface topology of the scene. The core operations on point clouds are downsampling (voxel averaging reduces density while preserving spatial coverage), normal estimation (PCA over local neighborhoods recovers surface orientation needed for point-to-plane ICP and Poisson reconstruction), registration (alignment of two partially overlapping clouds), and segmentation (labeling each point by semantic class or object instance). On the Linux stack, point clouds arrive from depth cameras through the librealsense or OpenNI2 SDK, are exchanged in ROS 2 as `sensor_msgs/PointCloud2`, stored as PLY or PCD files, and consumed by Open3D, PyTorch3D, or Kaolin for downstream ML inference.
+
+### 1.11 What is ICP Registration?
+
+Iterative Closest Point (ICP) is the standard algorithm for fine-aligning two partially overlapping 3D point clouds given an approximate initial transformation. ICP alternates two steps until convergence: for each point in the source cloud, find its nearest neighbor in the target cloud (the correspondence step); then solve for the rigid transformation — rotation R and translation t — that minimizes the sum of squared distances between corresponding pairs (the minimization step). The loop repeats until the change in transformation between iterations falls below a convergence threshold.
+
+Two formulations dominate in practice. Point-to-point ICP minimizes the Euclidean distance between source points and their target correspondences, with a closed-form solution via singular value decomposition. Point-to-plane ICP minimizes the distance from each source point to the tangent plane at its target correspondence, requiring normals on the target; it converges in fewer iterations on smooth surfaces and is the preferred mode for depth-camera data. Robust variants weight correspondences by a Huber or Tukey function to suppress the influence of outliers from dynamic objects or sensor noise.
+
+Because ICP is a local optimizer, it requires a sufficiently accurate initial alignment to converge to the correct solution. For large-scale misalignments, a global registration step — typically FPFH feature matching with RANSAC, or Fast Global Registration — provides the coarse transformation that ICP then refines. Open3D implements both point-to-point and point-to-plane ICP in its Legacy API (`registration_icp`) and in the GPU-capable Tensor API (`t.pipelines.registration.icp`), the latter supporting multi-scale voxel scheduling to escape shallow local minima.
 
 ---
 

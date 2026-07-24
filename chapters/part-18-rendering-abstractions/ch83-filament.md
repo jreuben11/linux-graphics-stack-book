@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Filament's Place in the Ecosystem](#1-filaments-place-in-the-ecosystem)
+   - [1.3 What is Physically Based Rendering (PBR)?](#13-what-is-physically-based-rendering-pbr)
+   - [1.4 What is FILAMAT?](#14-what-is-filamat)
+   - [1.5 What is a FrameGraph?](#15-what-is-a-framegraph)
 2. [Architecture Overview](#2-architecture-overview)
 3. [Engine Initialisation and the Vulkan Backend](#3-engine-initialisation-and-the-vulkan-backend)
 4. [The Entity-Component System](#4-the-entity-component-system)
@@ -130,6 +133,30 @@ target_link_libraries(myapp PRIVATE filament backend bluevk utils math filabridg
 ```
 
 **Vulkan** must be present on the system; on Ubuntu: `apt install vulkan-tools libvulkan-dev`. AMD users need **radv** (**Mesa**), NVIDIA users need the proprietary driver or **nvk** (Ch 5), Intel users need **anv** (Ch 18).
+
+### 1.3 What is Physically Based Rendering (PBR)?
+
+Physically Based Rendering (PBR) is a family of shading techniques that model the interaction of light with surfaces using physically derived mathematical approximations of the rendering equation. Rather than hand-tuning specular highlights and diffuse colour independently, PBR expresses surface appearance through physically meaningful parameters: base colour (albedo), metallic factor, roughness, and ambient occlusion. These parameters feed into a bidirectional reflectance distribution function (BRDF) that governs how light scatters at the micro-geometry level of a surface.
+
+The rendering equation expresses the radiance leaving a surface point as the integral of incoming radiance multiplied by the BRDF and the cosine of the incident angle over the hemisphere above that point. In real-time rendering this integral is approximated by separating it into two terms: direct illumination from discrete light sources, evaluated analytically, and indirect illumination from environment lighting, pre-integrated using image-based lighting (IBL) techniques.
+
+Filament implements the Cook-Torrance specular BRDF with the GGX (Trowbridge-Reitz) normal distribution function, the height-correlated Smith visibility function, and the Schlick Fresnel approximation. The diffuse term uses a Lambertian BRDF. Energy compensation for multiple-scattering at high roughness values is handled via a pre-baked DFG lookup texture evaluated using the split-sum approximation. This formulation aligns with the principled BRDF conventions used across the industry, enabling consistent material interchange between Filament, glTF 2.0 assets, and offline rendering tools.
+
+### 1.4 What is FILAMAT?
+
+FILAMAT (FILAment MATerial) is Filament's binary material package format. A `.filamat` file is a chunked binary container that bundles all compiled shader variants for a single material across every supported GPU backend: SPIR-V for Vulkan, MSL for Metal, GLSL for OpenGL/ES, and WGSL for WebGPU. Alongside the shader bytecode, the container stores material metadata: the shading model identifier, material property declarations and default values, sampler bindings, blend state, and raster state configuration.
+
+Surface shaders are authored in a domain-specific `.mat` text format that extends GLSL with Filament-specific directives. The `shadingModel` directive selects the shading model — `lit` for Cook-Torrance PBR, `specularGlossiness`, `subsurface`, `cloth`, or `unlit`. The offline `matc` compiler processes a `.mat` file through `glslang` for GLSL-to-SPIR-V translation, `spirv-opt` for shader optimisation, and `spirv-cross` for cross-compilation to each target language, then packs all variants into the FILAMAT container.
+
+At runtime the Filament engine never compiles shaders from source text. A `Material` object is created by parsing a `.filamat` package and selecting the variant appropriate for the active backend and feature set. Lightweight `MaterialInstance` objects are stamped from a `Material`, sharing the underlying shader program while carrying independent per-object parameter values. This design eliminates driver-side shader compilation stalls at draw time, makes material shader content fully auditable offline, and keeps the runtime library free of a GLSL compiler dependency.
+
+### 1.5 What is a FrameGraph?
+
+A FrameGraph (also called a render graph) is a directed acyclic graph (DAG) that represents an entire frame's rendering work as a collection of declarative pass nodes connected by virtual resource edges. Each pass node declares the resources it reads and the resources it writes; those resources are virtual named handles rather than physical GPU allocations at declaration time.
+
+Before any GPU commands are issued, a FrameGraph compiler performs three classes of optimisation. It culls passes whose outputs are never consumed by a downstream pass, analogous to dead-code elimination in a compiler. It aliases physical GPU memory across virtual resources whose lifetimes do not overlap, reducing peak GPU memory without manual effort. It inserts explicit GPU synchronisation barriers — `VkImageMemoryBarrier` on Vulkan — at the precise points where each resource transitions between producer and consumer passes, replacing error-prone manual barrier management.
+
+On mobile GPUs with tile-based deferred rendering (TBDR) architectures such as Adreno and Mali, the FrameGraph additionally identifies adjacent passes that are compatible for on-chip tile merging via Vulkan render pass subpasses or input attachments, avoiding round-trips through main memory between passes. Filament's FrameGraph implementation lives under the `fg/` subdirectory of the `filament` library source tree. Application developers do not write FrameGraph passes directly; `PostProcessManager` and `ShadowMapManager` author all frame-graph passes internally, making the graph an architectural detail that benefits correctness and performance without becoming part of the public API surface.
 
 ---
 

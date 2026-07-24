@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Why OCCT Matters for the Linux Graphics Stack](#1-why-occt-matters-for-the-linux-graphics-stack)
+   - [1.1 What is OpenCASCADE Technology (OCCT)?](#11-what-is-opencascade-technology-occt)
+   - [1.2 What is Boundary Representation (BRep)?](#12-what-is-boundary-representation-brep)
+   - [1.3 What is NURBS and B-Spline Geometry?](#13-what-is-nurbs-and-b-spline-geometry)
 2. [Architecture: Six Modules](#2-architecture-six-modules)
 3. [Topology and Geometry: The BRep Model](#3-topology-and-geometry-the-brep-model)
    - 3.1 [Topology vs. Geometry — The Core Distinction](#31-topology-vs-geometry--the-core-distinction)
@@ -57,6 +60,28 @@ OCCT is not a game engine. Its design goals differ sharply from Vulkan-oriented 
 The current stable release is **OCCT 8.0.0p1** (released 17 June 2026), which moved from C++11/14 to a mandatory **C++17** baseline and reorganised the source tree into six clearly delimited module directories. [Source: [OCCT 8.0.0 Release](https://github.com/Open-Cascade-SAS/OCCT/releases/tag/V8_0_0); `adm/cmake/version.cmake` sets `OCC_VERSION_MAJOR=8`]
 
 The rendering backend remains **OpenGL 3.2+ core profile** (`TKOpenGl`). A Vulkan prototype exists (tracker issue #30631) but has not merged into mainline as of 8.0.0p1.
+
+### 1.1 What is OpenCASCADE Technology (OCCT)?
+
+OpenCASCADE Technology (OCCT) is an open-source C++ library providing a complete framework for 3D geometric modeling, visualization, and data exchange. Unlike game-engine renderers that operate on triangle meshes, OCCT represents shapes using exact mathematical geometry — B-spline curves, NURBS surfaces, and boundary representation solids. This distinction makes OCCT the preferred foundation for engineering CAD and CAE applications where dimensional accuracy, manufacturing tolerances, and format fidelity to standards such as STEP and IGES are non-negotiable.
+
+On Linux, OCCT integrates with the graphics stack through its `TKOpenGl` visualization driver, which targets an OpenGL 3.2+ core profile and supports both X11/GLX and EGL/Wayland window systems. Its CMake build system produces a set of modular toolkit libraries (`TK*`) that applications link selectively. Those toolkits are organized into six functional areas — Foundation Classes, Modeling Data, Modeling Algorithms, Visualization, Data Exchange, and Application Framework — each corresponding to a source directory in OCCT 8.0.0's C++17-based tree. Applications including FreeCAD, Salome, and Code_Aster use OCCT as their geometric kernel, operating on exact solid models that are triangulated only at render time or for export.
+
+### 1.2 What is Boundary Representation (BRep)?
+
+Boundary Representation (BRep) is a solid modeling paradigm that defines a 3D shape by its enclosing boundary — the set of faces, edges, and vertices that bound a volume — together with their topological connectivity and orientations. Rather than storing a filled volume or a pre-triangulated mesh, a BRep solid stores the directed graph of its bounding faces and the way those faces meet at edges and vertices.
+
+In OCCT, the BRep layer bridges two rigorously separated concerns. Topology records how shapes connect — which face belongs to which shell, which wire bounds which face, which edge terminates at which vertex — without storing any coordinate data. Geometry then attaches mathematical objects to those topological entities: a `Geom_Surface` to a face, a `Geom_Curve` to an edge, a `gp_Pnt` to a vertex. Tolerances in millimetres accompany each geometric entity and obey a strict hierarchy: vertex tolerance must be greater than or equal to edge tolerance, which must be greater than or equal to face tolerance.
+
+This design allows boolean operations — union, intersection, cut — to work on the exact boundary graph rather than on triangle approximations, preserving sub-millimetre accuracy through complex sequences of modeling operations. BRep data serializes faithfully into STEP or IGES format without lossy triangulation, which is why CAD interchange formats are built around BRep rather than mesh representations.
+
+### 1.3 What is NURBS and B-Spline Geometry?
+
+NURBS (Non-Uniform Rational B-Splines) and B-spline curves and surfaces are the mathematical primitives OCCT uses to represent geometry exactly. A B-spline curve is defined by a sequence of control points, a knot vector, and a polynomial degree; the curve traces a smooth path through space influenced by those control points without necessarily interpolating them. NURBS extends B-splines with a rational (weighted) formulation that allows exact representation of conic sections — circles, ellipses, hyperbolas — that polynomial splines can only approximate.
+
+In the Geom package (`TKG3d`), OCCT provides `Geom_BSplineCurve`, `Geom_BSplineSurface`, `Geom_BezierCurve`, and `Geom_BezierSurface`. Analytical primitives — lines, circles, planes, cylinders, cones, toruses, spheres — appear as separate classes (`Geom_Line`, `Geom_Circle`, `Geom_Plane`, and so on) and can be converted to B-spline form when downstream algorithms require a uniform representation.
+
+NURBS surfaces are the standard geometric primitive in STEP and IGES files. When OCCT reads a STEP file it reconstructs `Geom_BSplineSurface` objects from the encoded control points and knot vectors, then attaches those surfaces to `TopoDS_Face` topology. At render or export time, `BRepMesh_IncrementalMesh` discretizes the parametric surfaces into triangle approximations with a user-specified chord deviation, bridging the exact BRep world and the rasterization pipeline.
 
 ---
 

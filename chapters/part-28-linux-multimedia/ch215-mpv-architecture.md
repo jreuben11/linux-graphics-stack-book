@@ -11,6 +11,9 @@ mpv is the dominant GPU-accelerated video player on the Linux desktop, distingui
 ## Table of Contents
 
 - [1. MPV Project Overview](#1-mpv-project-overview)
+  - [1.1 What is mpv?](#11-what-is-mpv)
+  - [1.2 What is libmpv?](#12-what-is-libmpv)
+  - [1.3 What is libplacebo?](#13-what-is-libplacebo)
 - [2. libmpv API](#2-libmpv-api)
 - [3. Demuxer Layer](#3-demuxer-layer)
 - [4. Decoder Pipeline and Zero-Copy DMA-buf](#4-decoder-pipeline-and-zero-copy-dma-buf)
@@ -39,6 +42,26 @@ mpv descends from MPlayer via a two-step fork. The first fork, mplayer2 (2011), 
 - *libplacebo for all GPU rendering.* Since mpv 0.35.0 the primary VO (`gpu-next`) delegates all shader work to libplacebo, which is independently maintained and adopted by VLC and FFmpeg.
 
 **LGPL vs GPL build flags.** mpv's core is dual-licensed. With `--Dgpl=false` the build produces an LGPL-only binary (fewer features — no postprocessing, no ytdl hook by default). Most distribution packages build with GPL enabled. The libmpv public headers (`include/mpv/`) are ISC-licensed regardless of build flags. [Source](https://github.com/mpv-player/mpv/blob/master/Copyright)
+
+### 1.1 What is mpv?
+
+mpv is a GPU-accelerated, open-source media player that runs on Linux, macOS, and Windows. It descends from MPlayer via the mplayer2 fork, but diverged sharply from both predecessors by replacing the monolithic option and video-output systems with a composable architecture built around a clean C library API. On Linux, mpv integrates with the kernel's DRM, V4L2, and VAAPI subsystems for hardware-accelerated decode, uses DMA-buf file descriptors to transfer decoded surfaces between the hardware decoder and the GPU compositor without CPU involvement, and drives display output through Vulkan, OpenGL, or EGL depending on the available backend.
+
+The player is intentionally headless by design: it ships no widget toolkit and no mandatory GUI. The default on-screen controller is implemented as a Lua script that can be replaced or removed. This separation between playback engine and interface is what makes mpv useful both as a standalone command-line player and as an embeddable engine via libmpv. The architecture covered in this chapter — event-driven property API, pluggable Video Output layer, zero-copy hardware decode path, and libplacebo rendering pipeline — is a direct consequence of those design goals. The mpv source is maintained at `https://github.com/mpv-player/mpv`.
+
+### 1.2 What is libmpv?
+
+libmpv is the shared-library interface that exposes mpv's playback engine to embedding applications without requiring those applications to manage a window or take ownership of the display connection. The public API is distributed as three headers under `include/mpv/` in the mpv repository: `client.h` for property access, command dispatch, and event handling; `render.h` for GPU-backed frame delivery; and `stream_cb.h` for registering custom stream sources. All three headers carry the ISC licence regardless of whether the binary was built with GPL-gated features enabled.
+
+The API model is handle-based: a caller creates an `mpv_handle` via `mpv_create()`, sets options before calling `mpv_initialize()`, and then interacts with the player through typed property reads and writes, command arrays, and a lock-free event queue. Video output is decoupled from playback control through an `mpv_render_context`: the embedding application drives rendering from its own GPU thread, binding decoded frames to whichever OpenGL, Vulkan, or software framebuffer it manages. This design allows libmpv to be embedded inside Qt or GTK applications, game engines, media center frontends, and browser-based UIs without the library imposing any windowing policy. The ABI is versioned; the current version is exposed as `MPV_CLIENT_API_VERSION` in `client.h`.
+
+### 1.3 What is libplacebo?
+
+libplacebo is an independent C library for GPU-based video processing and display. It grew out of the shader infrastructure originally written for mpv's `gpu-next` video output driver and was extracted into a standalone project so that other applications — including VLC 4.0 and certain FFmpeg filter graph configurations — could reuse the same high-quality video rendering chain without embedding mpv itself.
+
+The library provides a composable set of GPU shader passes covering color space conversion, tone mapping (including dynamic HDR metadata handling), debanding, upscaling algorithms ranging from bilinear to learned-weight neural-network filters (such as FSRCNNX), and temporal frame interpolation. These passes are assembled into a renderer pipeline (`pl_renderer`) that targets Vulkan, OpenGL, or OpenGL ES through a backend abstraction layer. A lower-level shader dispatch API (`pl_shader`) is also available for applications that want to compose individual passes without the full renderer.
+
+Within mpv, the `vo/gpu-next` video output driver creates a `pl_renderer`, maps each decoded video frame — including DMA-buf-backed hardware surfaces via `pl_upload_plane` — into a libplacebo `pl_frame` structure, applies the configured shader chain, and submits the result to the display. Since mpv 0.35.0, `gpu-next` is the primary and recommended VO on all platforms. The libplacebo source is maintained at `https://code.videolan.org/videolan/libplacebo`.
 
 ---
 

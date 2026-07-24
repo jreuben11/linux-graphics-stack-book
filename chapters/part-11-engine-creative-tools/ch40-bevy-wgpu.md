@@ -8,6 +8,8 @@
 
 - [Overview](#overview)
 - [1. Bevy Rendering Architecture: ECS, Render World, Render Graph](#1-bevy-rendering-architecture-ecs-render-world-render-graph)
+  - [1.1 What is Bevy?](#11-what-is-bevy)
+  - [1.2 What is the Entity-Component-System (ECS) Pattern?](#12-what-is-the-entity-component-system-ecs-pattern)
 - [2. wgpu: The GPU Abstraction Layer](#2-wgpu-the-gpu-abstraction-layer)
 - [3. Shader Pipeline: WGSL → naga → SPIR-V → Mesa NIR](#3-shader-pipeline-wgsl--naga--spir-v--mesa-nir)
 - [4. Linux Window Integration: winit, Wayland, and EGL](#4-linux-window-integration-winit-wayland-and-egl)
@@ -205,6 +207,20 @@ The `RenderQueue` is a thin wrapper around `wgpu::Queue`. The submit call is the
 ### What This Architecture Achieves
 
 The architectural payoff is that rendering is a pure data transformation: the ECS world feeds in, GPU commands come out. There is no hidden state in renderer objects, no callbacks into game logic during GPU recording, and no aliasing between simulation state and GPU resources during a frame. This maps directly onto wgpu's stateless command recording model, which also records into an encoder with no persistent draw-call state. The ECS and the WebGPU-subset API share the same compositional philosophy.
+
+### 1.1 What is Bevy?
+
+Bevy is an open-source game engine written entirely in Rust, designed around a data-oriented Entity-Component-System architecture. Unlike traditional engines that expose a scene graph of stateful objects, Bevy treats all application state as data: entities are opaque numeric identifiers, components are plain Rust structs, and systems are ordinary functions that query and transform that data. The engine is assembled from plugins — every feature, including the renderer, the asset system, and the audio subsystem, is a Bevy plugin that can be added, replaced, or removed at startup.
+
+On Linux, Bevy uses wgpu as its GPU abstraction layer, which selects the Vulkan backend by default and drives Mesa drivers such as RADV, ANV, and NVK. This makes Bevy a first-class Vulkan client on Linux. It enters the Mesa stack via `vkCreateDevice`, allocates GEM buffer objects for vertex data and textures, and submits SPIR-V shaders compiled from WGSL through the naga translator. From the kernel's perspective, Bevy is indistinguishable from any other Vulkan application: it opens a DRM device node, records commands into a `VkCommandBuffer`, and submits them through `vkQueueSubmit` with timeline semaphore signaling. The remainder of this section traces those interactions from the Bevy Rust API downward through the rendering architecture described in the subsections that follow. [Source](https://bevyengine.org/) [Source](https://github.com/bevyengine/bevy)
+
+### 1.2 What is the Entity-Component-System (ECS) Pattern?
+
+The Entity-Component-System (ECS) pattern is a data-oriented architectural design in which application state is decomposed into three orthogonal concepts. An entity is a globally unique numeric identifier with no behaviour of its own. A component is a typed data record attached to an entity — examples include a world-space transform, a mesh asset handle, a camera projection matrix, or a directional light colour. A system is a function that declares a query over a set of component types and transforms the matching entities; the engine schedules systems in dependency order and can run independent systems in parallel across CPU threads.
+
+ECS contrasts with the object-oriented approach in which a shared base class carries both the data and the method that produces draw calls. In ECS, data and behaviour are separated: component storage is laid out contiguously in memory so that iterating over all entities that share a given component set is a sequential array scan rather than a pointer chase through a heap of heterogeneous objects. Bevy uses archetype storage, where entities that share exactly the same component types are stored together in a tightly packed table, making component iteration predictable for the CPU prefetcher.
+
+In Bevy's rendering context, ECS underpins both the simulation layer and the GPU command recording layer. Render proxies and their GPU resources are ECS entities, and the systems that extract, prepare, queue, and submit them are ordinary Bevy systems scheduled inside the render app. Understanding ECS is a prerequisite for reading the dual-world and render schedule subsections that follow. [Source](https://bevyengine.org/learn/quick-start/getting-started/ecs/)
 
 ---
 

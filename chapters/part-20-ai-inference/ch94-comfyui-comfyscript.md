@@ -10,6 +10,8 @@
 ## Table of Contents
 
 1. [What ComfyUI Is (and What It Is Not)](#1-what-comfyui-is-and-what-it-is-not)
+   - [1.6 What is ComfyScript?](#16-what-is-comfyscript)
+   - [1.7 What is a Latent Diffusion Model?](#17-what-is-a-latent-diffusion-model)
 2. [The Node Graph Execution Model](#2-the-node-graph-execution-model)
 3. [Core Built-In Nodes](#3-core-built-in-nodes)
 4. [The Sampler and Scheduler System](#4-the-sampler-and-scheduler-system)
@@ -209,6 +211,20 @@ pip install torch torchvision torchaudio \
 
 Place checkpoint files (`.safetensors` or `.ckpt`) in `models/checkpoints/`, **LoRA** files in
 `models/loras/`, **VAE** files in `models/vae/`.
+
+### 1.6 What is ComfyScript?
+
+ComfyScript is a typed Python API for authoring ComfyUI workflows programmatically. Where the browser frontend lets users connect nodes visually, ComfyScript lets developers write the same workflow as ordinary Python code that can run in a notebook, a CI pipeline, or a production automation script. It works by querying the running ComfyUI server's `GET /object_info` endpoint, which returns the complete schema of every registered node — input names, types, and constraints. From that schema it generates a `nodes.pyi` stub file, giving IDEs full autocompletion and static type-checking for node inputs and outputs.
+
+At runtime, ComfyScript wraps each node invocation in a lazy `NodeOutput` reference. Rather than executing immediately, calls to node functions accumulate inside a `Workflow` context manager. When the `with Workflow()` block exits, the accumulated graph is serialised to the same prompt JSON format the browser frontend uses and submitted to the server via `POST /prompt`. Results are retrieved as `PIL.Image` objects through the `util.get_images()` helper. This architecture means any workflow that can be built in the browser canvas can also be expressed as version-controlled Python code, enabling reproducible experiments and automated batch generation. ComfyScript requires a running ComfyUI server as its backend; it is a client library, not a standalone inference engine.
+[Source: ComfyScript repository](https://github.com/Chaoses-Ib/ComfyScript)
+
+### 1.7 What is a Latent Diffusion Model?
+
+A latent diffusion model (LDM) is a class of generative neural network that learns to synthesise images by iteratively denoising random noise in a compressed latent space rather than directly in pixel space. The process has three components: a variational autoencoder (VAE) that compresses images to a lower-dimensional latent tensor and reconstructs them back to pixels; a denoising network — traditionally a UNet, more recently a diffusion transformer (DiT) — that operates entirely in latent space; and a noise schedule that defines how Gaussian noise is added during training and removed during inference. At generation time the VAE encoder is bypassed: the pipeline starts from a pure noise tensor, runs a fixed number of denoising steps through the UNet or DiT guided by text or image conditioning, then decodes the resulting latent to a full-resolution image with the VAE decoder.
+
+ComfyUI exposes each component of this pipeline as distinct node types. `CheckpointLoaderSimple` loads the full model bundle, `CLIPTextEncode` produces the conditioning embeddings, `EmptyLatentImage` initialises the noise tensor, `KSampler` runs the iterative denoising loop, and `VAEDecode` converts the final latent to pixels. Understanding this encode-denoise-decode decomposition is the prerequisite for reading any ComfyUI workflow — every graph, however complex, follows the same three-stage structure, and the node categories in §3 and §4 map directly onto it.
+[Source: Latent Diffusion Models (Rombach et al., arXiv:2112.10752)](https://arxiv.org/abs/2112.10752)
 
 ---
 

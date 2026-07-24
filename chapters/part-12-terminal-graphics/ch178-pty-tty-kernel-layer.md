@@ -9,6 +9,9 @@
 - [178.1 The TTY Subsystem: An Architectural Overview](#1781-the-tty-subsystem-an-architectural-overview)
 - [178.1a TTY Device Types: A Field Guide](#1781a-tty-device-types-a-field-guide)
 - [178.1b Using TTY Devices from Bash](#1781b-using-tty-devices-from-bash)
+- [178.1c What is a TTY?](#1781c-what-is-a-tty)
+- [178.1d What is a Pseudo-Terminal (PTY)?](#1781d-what-is-a-pseudo-terminal-pty)
+- [178.1e What is a Line Discipline?](#1781e-what-is-a-line-discipline)
 - [178.2 `tty_struct`, `tty_driver`, and `tty_operations`](#1782-tty_struct-tty_driver-and-tty_operations)
 - [178.3 PTY Architecture: Master, Slave, and `/dev/ptmx`](#1783-pty-architecture-master-slave-and-devptmx)
 - [178.4 The `devpts` Filesystem and PTY Lifecycle](#1784-the-devpts-filesystem-and-pty-lifecycle)
@@ -352,6 +355,32 @@ SUBSYSTEM=="tty", ATTRS{idVendor}=="2341", ATTRS{idProduct}=="0043", \
 ```
 
 After `udevadm control --reload && udevadm trigger`, the device appears at both `/dev/ttyUSB0` and `/dev/arduino`, with `arduino` being stable across replugs.
+
+---
+
+## 178.1c What is a TTY?
+
+A TTY (from *teletypewriter*) in modern Linux is a character device abstraction that provides a POSIX-compliant bidirectional byte stream between a user-space process and a terminal, backed by one of several hardware or virtual devices. The TTY subsystem, implemented in `drivers/tty/tty_io.c` and its subdirectories, presents device nodes under `/dev` — `/dev/ttyS*` for UART serial ports, `/dev/ttyUSB*` for USB serial adapters, `/dev/pts/N` for pseudo-terminal slaves — all sharing a common interface: `read()`, `write()`, and a rich set of `ioctl()` calls. From a process's perspective, writing to `/dev/pts/3` inside a terminal emulator window and writing to `/dev/ttyS0` on an embedded board are identical system calls; the TTY layer mediates both.
+
+Beyond byte transport, the TTY subsystem handles input processing, signal generation (`^C` delivers `SIGINT` to the foreground process group), terminal size propagation (`SIGWINCH`), and flow control. The configurable settings governing this processing are exposed through the `termios` API (§178.6). Every shell, SSH daemon, terminal multiplexer, and interactive command-line tool depends on the TTY layer for its connection to a human operator — or, in the case of pseudo-terminals, to a terminal emulator process acting as the operator's proxy. The subsystem's age is visible in its design: interfaces standardized decades ago on physical hardware now underpin every terminal window and remote login session on the modern Linux desktop.
+
+---
+
+## 178.1d What is a Pseudo-Terminal (PTY)?
+
+A pseudo-terminal (PTY) is a kernel-synthesized TTY pair with no physical hardware. It consists of two linked kernel objects: a *master* side and a *slave* side. The master is opened by a terminal emulator (kitty, foot, Ghostty), an SSH daemon (`sshd`), or a terminal multiplexer (`tmux`, `screen`). The slave is passed to a shell or application as its `stdin`/`stdout`/`stderr` and its controlling terminal — from the process's viewpoint it is an ordinary POSIX terminal, indistinguishable from a physical UART at the system-call level.
+
+Data flows bidirectionally through the line discipline: bytes the shell writes to the slave emerge from the master's `read()` for the terminal emulator to render; bytes the user types are written to the master, processed by N_TTY (echo, signal generation, canonical buffering), and delivered to the shell via the slave's `read()`. The line discipline sits on the slave side of the pair.
+
+PTY pairs are allocated through `/dev/ptmx` (the PTY master multiplexor): opening it creates a new master/slave pair atomically, with the slave appearing under the `devpts` virtual filesystem at `/dev/pts/N`. The PTY mechanism is the reason POSIX applications written for 1970s physical terminals work unmodified inside a GPU-accelerated compositor window decades later. Every terminal emulator window, SSH session, `tmux` pane, and `script(1)` session recording relies on exactly one PTY pair. Full allocation details and data-flow diagrams are in §178.3 and §178.4.
+
+---
+
+## 178.1e What is a Line Discipline?
+
+A line discipline is a pluggable kernel module that sits between a TTY driver and the user-space process, intercepting and transforming the byte stream in both input and output directions. The default and most commonly encountered discipline is `N_TTY` (discipline number 0), implemented in `drivers/tty/n_tty.c`. In *canonical mode* (the default), N_TTY buffers input line by line, echoes typed characters back to the output stream, translates `^C` to `SIGINT`, `^\` to `SIGQUIT`, and `^Z` to `SIGTSTP` for the foreground process group, and implements the `INTR`, `ERASE`, `KILL`, and `EOF` control characters defined by POSIX. In *raw mode* (enabled by clearing `ICANON` in `termios.c_lflag`), N_TTY passes bytes to the application with minimal processing — the mode required by full-screen editors, pagers, and TUI applications that need per-keystroke input.
+
+Alternative line disciplines serve entirely different transport purposes. `N_HCI` (15) reframes the byte stream as Bluetooth HCI packets for the kernel Bluetooth stack; `N_PPP` frames data for PPP network links; `N_MOUSE` decodes PS/2 mouse input. The active line discipline is selected at runtime with `ioctl(fd, TIOCSETD, &disc)` and stored in `tty_struct->ldisc`. Because the discipline is swappable while the TTY device node remains open, the same UART can serve as a serial console one moment and a Bluetooth HCI transport the next, without any modification to the underlying driver. N_TTY internals — its read buffer, write path, and signal generation — are covered in depth in §178.5.
 
 ---
 

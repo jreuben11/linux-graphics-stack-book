@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Overview](#1-overview)
+   - [1.1 What is Slang?](#11-what-is-slang)
+   - [1.2 What is Automatic Differentiation?](#12-what-is-automatic-differentiation)
+   - [1.3 What is Differentiable Rendering?](#13-what-is-differentiable-rendering)
 2. [Language Foundations: Slang as HLSL Superset](#2-language-foundations-slang-as-hlsl-superset)
    - 2.1 [Generics and Interfaces](#21-generics-and-interfaces)
    - 2.2 [Associated Types](#22-associated-types)
@@ -92,6 +95,30 @@ All of these use the same forward-rendering shaders that already exist in a prod
 - **SPIR-V** (Chapter 24)
 - **Vulkan pipeline objects** (Chapters 24–25)
 - **CUDA streams** (Chapter 66)
+
+### 1.1 What is Slang?
+
+Slang is an open-source shading language and optimising compiler that extends HLSL with a real generic and interface type system, a module system for separate compilation, and first-class automatic differentiation. It targets multiple GPU and CPU backends from a single source: SPIR-V for Vulkan, DXIL for Direct3D 12, CUDA/PTX for NVIDIA GPUs, and a C++ host target for CPU-side execution and debugging. The compiler is maintained at `github.com/shader-slang/slang` under an Apache 2.0 licence and since November 2024 governed by the Khronos Slang Initiative.
+
+On Linux, Slang integrates into Vulkan rendering pipelines as a front-end that replaces `glslang` or `shaderc` for HLSL-based workflows. The `slangc` command-line compiler and the programmatic `slang.h` C API both emit SPIR-V that is consumed by the standard Vulkan driver stack. A companion runtime abstraction layer, `slang-rhi`, provides a thin hardware abstraction over Vulkan, CUDA, and CPU targets, allowing the same Slang shader module to run on different backends without source changes.
+
+Slang distinguishes itself from GLSL, WGSL, and plain HLSL primarily through its type system: generics are checked at the IR level before code generation, so type errors surface at the definition site rather than at instantiation. This makes large shader codebases — such as the Falcor research renderer — maintainable in a way that preprocessor-based HLSL templating does not support.
+
+### 1.2 What is Automatic Differentiation?
+
+Automatic differentiation (AD) is a compiler technique for transforming a function `f(x)` into a new function that computes the derivative `∂f/∂x` alongside or instead of the original value. Unlike symbolic differentiation, which manipulates algebraic expressions, or numerical differentiation, which approximates derivatives by finite differences, AD works at the level of program operations: each elementary operation in the computation graph carries a known derivative rule, and the compiler chains these rules through the function body via the chain rule of calculus.
+
+Two modes exist. Forward mode propagates derivative information in the same direction as the original computation and is efficient when the number of inputs is small. Reverse mode (backpropagation) accumulates gradients from outputs back to inputs and is efficient when the number of outputs is small — which is the common case in rendering and machine learning, where the loss is a scalar. Slang implements both modes, exposed as `fwd_diff()` and `bwd_diff()` builtins that the compiler expands into augmented GPU kernels at compile time.
+
+On the GPU, AD enables a rendering pipeline to compute how a rendered pixel value changes with respect to scene parameters — texture values, material roughness, light positions — without requiring a hand-written backward-pass kernel. The compiler generates the backward pass automatically from the annotated forward shader, producing a SPIR-V kernel that accumulates parameter gradients in output buffers.
+
+### 1.3 What is Differentiable Rendering?
+
+Differentiable rendering is a rendering pipeline architecture in which the gradient of the rendered image with respect to scene parameters is computable. This gradient makes it possible to phrase scene reconstruction, texture compression, and material estimation as optimisation problems: given a target image and a differentiable renderer, gradient descent adjusts the scene parameters until the rendered output matches the target.
+
+Classical rasterisation and ray-tracing pipelines are not differentiable: visibility decisions — which triangle covers a pixel, which surface a ray hits first — introduce discontinuities that have zero or undefined gradient almost everywhere. Differentiable rendering frameworks handle these discontinuities by smoothing visibility at silhouette edges, using Monte Carlo gradient estimators, or restricting differentiation to the shading computation while treating visibility as a fixed black box. Slang's autodiff system targets the shading computation: BRDF evaluation, texture sampling, and light integration are all differentiable, while BVH traversal or rasterisation is treated as a non-differentiable primitive.
+
+On Linux, a differentiable Slang shader compiles to one SPIR-V module for the forward pass and an augmented SPIR-V kernel for the backward pass, both running on the same Vulkan device. The gradient outputs flow into a PyTorch optimiser via the SlangPy Python binding (§13), completing the training loop on the GPU without a CPU round-trip for intermediate values.
 
 ---
 

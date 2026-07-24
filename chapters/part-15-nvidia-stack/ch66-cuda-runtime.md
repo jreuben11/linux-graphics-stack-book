@@ -10,6 +10,9 @@
 
 1. [Overview](#overview)
 2. [CUDA Library Layering: Driver API vs. Runtime API](#1-cuda-library-layering-driver-api-vs-runtime-api)
+   - [1.6 What is CUDA?](#16-what-is-cuda)
+   - [1.7 What is PTX?](#17-what-is-ptx)
+   - [1.8 What is SASS?](#18-what-is-sass)
 3. [CUDA Streams: Ordered GPU Work Queues](#2-cuda-streams-ordered-gpu-work-queues)
 4. [CUDA Events: Asynchronous Timing and Synchronization](#3-cuda-events-asynchronous-timing-and-synchronization)
 5. [Memory Model: Device, Pinned, Unified, and Stream-Ordered](#4-memory-model-device-pinned-unified-and-stream-ordered)
@@ -280,6 +283,24 @@ ptxas encapsulates NVIDIA's occupancy-critical register allocator and instructio
 
 [Source: CUDA Toolkit Documentation — ptxas options](https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html#ptxas-options)
 [Source: cuobjdump documentation](https://docs.nvidia.com/cuda/cuda-binary-utilities/index.html)
+
+### 1.6 What is CUDA?
+
+CUDA (Compute Unified Device Architecture) is NVIDIA's proprietary parallel computing platform and programming model for general-purpose computation on NVIDIA GPUs. It exposes the GPU as a massively parallel processor organized into Streaming Multiprocessors (SMs), each containing scalar arithmetic units, tensor cores (Volta and later), and fast on-chip shared memory. Programs written against the CUDA programming model execute kernel functions across a grid of thread blocks, where each block runs on a single SM and threads within a block can cooperate via shared memory and barrier synchronization.
+
+On Linux, CUDA is delivered as a layered software stack: the `nvidia.ko` kernel module provides device access via ioctls; `nvidia-uvm.ko` manages unified virtual memory; `libcuda.so` (Driver API) and `libcudart.so` (Runtime API) expose C and C++ programming interfaces in userspace; and a collection of compute libraries (cuBLAS, cuDNN, cuFFT, NCCL, and others) provide optimized higher-level primitives. The CUDA Toolkit version (nvcc compiler, libraries, headers) and the installed driver version are independently versioned, and the compatibility rules between them — backward compatibility with older applications, forward compatibility with newer drivers within a major release — govern which combinations are valid on a given Linux installation. This chapter maps that layering precisely, with emphasis on the version constraints and Linux-specific behaviors that affect production deployments.
+
+### 1.7 What is PTX?
+
+PTX (Parallel Thread eXecution) is NVIDIA's virtual intermediate representation for GPU programs. It occupies the same architectural position as LLVM IR or Java bytecode: a stable, architecture-independent instruction set that abstracts away the machine-specific details of concrete GPU generations. Source code compiled with nvcc or NVRTC is lowered first to PTX; PTX is then compiled to SASS — native GPU machine code — either offline by the ptxas assembler or at runtime by the JIT compiler embedded in the CUDA driver.
+
+PTX is a typed RISC ISA with explicit register allocation, predicate registers for conditional execution, memory space qualifiers (`.global`, `.shared`, `.local`, `.const`), and cooperative operation instructions including warp-level `bar.sync`, CTA-level `membar`, and Hopper-era warp-group matrix multiply-accumulate via `wgmma.mma_async`. Each PTX file declares a target ISA version (for example `.version 8.0`) and a target architecture (for example `.target sm_90a`); the driver's JIT refuses to compile PTX that references instructions beyond what the installed driver understands, producing `CUDA_ERROR_INVALID_PTX`. Shipping both PTX and a pre-compiled CUBIN inside the same fatbinary allows an application to use the pre-compiled code path when the architecture matches and fall back to JIT compilation when a newer GPU generation is encountered at runtime.
+
+### 1.8 What is SASS?
+
+SASS (Shader ASSembly) is NVIDIA's native GPU machine code — the actual instruction set executed by the hardware. It is architecture-specific: each GPU generation (Ampere sm_80, Hopper sm_90a, Blackwell sm_100) has its own SASS encoding that is not binary-compatible across generations. Where PTX provides portability across GPU generations via JIT compilation, SASS provides maximum performance by expressing the final scheduled, register-allocated, and packed binary instruction stream without any further translation layer.
+
+SASS is produced from PTX by ptxas, either offline during the build process or at runtime by the JIT path embedded in the CUDA driver. The driver stores compiled SASS in a per-user cache (`~/.nv/ComputeCache`) so that subsequent process launches skip JIT recompilation for the same PTX input on the same driver version. SASS can be inspected with `cuobjdump --dump-sass kernel.cubin` or `nvdisasm`, which are useful for diagnosing unexpected register pressure, identifying inefficient instruction sequences, or verifying that tensor-core instructions (`HMMA`, `WGMMA`) were actually selected by the compiler. Reading SASS directly is a last-resort optimization technique; for most purposes the ptxas `--verbose` flag provides sufficient per-kernel register and shared memory accounting without requiring manual SASS disassembly.
 
 ---
 

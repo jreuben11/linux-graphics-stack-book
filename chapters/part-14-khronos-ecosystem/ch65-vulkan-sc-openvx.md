@@ -14,6 +14,9 @@
    - 1.2 [Version Variant Encoding and Naming Conventions](#12-version-variant-encoding-and-naming-conventions)
    - 1.3 [Three Design Pillars: Streamlined, Deterministic, Robust](#13-three-design-pillars-streamlined-deterministic-robust)
    - 1.4 [Safety Certification Targets](#14-safety-certification-targets)
+   - [1.5 What is Vulkan SC?](#15-what-is-vulkan-sc)
+   - [1.6 What is OpenVX?](#16-what-is-openvx)
+   - [1.7 What is ANARI?](#17-what-is-anari)
 3. [Key Vulkan SC Restrictions and Static Resource Model](#2-key-vulkan-sc-restrictions-and-static-resource-model)
    - 2.1 [VkDeviceObjectReservationCreateInfo — Pre-Declared Resource Counts](#21-vkdeviceobjectreservationcreateinfo--pre-declared-resource-counts)
    - 2.2 [VkPipelinePoolSize and Pipeline Memory Budgets](#22-vkpipelinepoolsize-and-pipeline-memory-budgets)
@@ -170,6 +173,24 @@ The ICD loader uses the variant field to verify that a Vulkan SC application doe
 | IEC 62304 | Medical device software | Class C |
 
 Vulkan SC itself is not certified — only complete systems (application + driver + hardware + safety manual) can receive certification. The specification enables certification by removing the barriers listed in Section 1.1. Vendors publish **safety manuals** that document where input validation occurs in the stack, what fault categories are detected, and which usage restrictions the application must observe. The AUTOSAR–Khronos memorandum of understanding (April 2022) extended collaboration to automotive software architecture standards. [Source](https://www.khronos.org/news/press/khronos-releases-vulkan-safety-critical-1.0-specification-to-deliver-safety-critical-graphics-compute)
+
+### 1.5 What is Vulkan SC?
+
+Vulkan SC (Safety Critical) is a Khronos specification derived from Vulkan 1.2 that reformulates the standard Vulkan GPU API to satisfy the requirements of functional safety certification. Where standard Vulkan is designed for maximum flexibility — permitting runtime shader compilation, dynamic memory growth, and undefined behaviour on invalid API usage — Vulkan SC mandates a fully static execution model: all shaders are compiled offline into a vendor pipeline cache binary before deployment, all memory pools are pre-declared at device creation time, and every previously undefined error condition instead produces a deterministic error return or fault notification.
+
+The specification occupies a distinct position in the Linux graphics stack. It does not sit on top of the DRM kernel subsystem the way Mesa and the standard Vulkan loader do; instead it uses a separate ICD loader (VulkanSC-Loader) that enforces the variant=1 version-field encoding and selects only conformant safety-critical ICDs, refusing to load standard Vulkan drivers. On platforms without a hardware SC ICD, the VulkanSC-Emulation library (libvksconvk.so) translates Vulkan SC calls to standard Vulkan 1.2 at the cost of sacrificing the certified guarantees, enabling desktop Linux development and testing against the full VkSC-CTS conformance suite. Target domains include automotive cockpit displays (ISO 26262 ASIL D), airborne flight-deck instruments (DO-178C DAL A), industrial safety controllers (IEC 61508 SIL 3), and medical imaging workstations (IEC 62304 Class C).
+
+### 1.6 What is OpenVX?
+
+OpenVX is a Khronos standard graph-based API for accelerating classical computer vision workloads on heterogeneous hardware — CPUs, GPUs, DSPs, and dedicated vision accelerators — without requiring the application developer to write GPU command buffers, manage memory objects manually, or understand vendor-specific compute dispatch interfaces. Applications construct a directed acyclic graph of named vision kernel nodes (Sobel gradient, Gaussian pyramid, Harris corners, Lucas-Kanade optical flow) connected by virtual data objects, then call vxVerifyGraph once to allow the implementation to schedule, fuse, and size the pipeline. Subsequent calls to vxProcessGraph or vxScheduleGraph execute the optimised graph without reanalysis, enabling embedded real-time use cases where pipeline reconfiguration is forbidden after verification.
+
+OpenVX 1.3 occupies a different layer of the Linux graphics stack than Vulkan or OpenGL. It does not rely on DRM or EGL directly; implementations choose their own acceleration path. On AMD hardware, MIVisionX routes execution through HIP and OpenCL compute dispatches into the ROCm stack. On Texas Instruments SoCs, TIOVX maps graph nodes to heterogeneous targets including C7x DSPs with matrix-multiply accelerators and dedicated VPAC image signal processors. The Neural Network Extension (vx_khr_nn 1.3) adds tensor-based layer nodes — convolution, pooling, fully connected, activation, softmax — enabling mixed classical and deep-learning inference pipelines within a single vx_graph without switching to a separate inference framework.
+
+### 1.7 What is ANARI?
+
+ANARI (Analytic Rendering Interface) is a Khronos standard scene-description rendering API designed for scientific visualisation applications. Rather than exposing a programmable GPU pipeline, ANARI presents a high-level object hierarchy — worlds, instances, groups, surfaces, volumes, lights, cameras, and renderers — that applications populate through a uniform anariSetParameter/anariCommitParameters interface. The application describes what to render; the backend determines how to render it physically. This decoupling allows a single application linked against the ANARI SDK to switch between CPU path tracers, GPU ray tracers, and distributed multi-GPU renderers by changing the ANARI_LIBRARY environment variable, without recompilation or API changes.
+
+ANARI targets the scientific computing domain where tools such as VTK and ParaView need physically based rendering — subsurface scattering, participating media, global illumination — without requiring application engineers to write GLSL or WGSL shaders. Geometry types include triangles, quads, spheres, cylinders, and curves; volume support covers AMR scalar fields and NanoVDB grids. On Linux, ANARI backends interact with the underlying graphics stack in different ways: the helide reference backend uses Intel Embree for CPU ray traversal without any GPU involvement, the visrtx backend uses NVIDIA OptiX over CUDA, and the barney backend targets distributed multi-GPU configurations. The ANARI SDK ships the hdAnari Hydra render delegate, enabling any conformant ANARI backend to be driven from OpenUSD-based tools including UsdView, Houdini, and the ParaView vtkAnariRenderingPlugin.
 
 ---
 

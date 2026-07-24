@@ -8,6 +8,9 @@
 
 - [Overview](#overview)
 - [1. The `<img>` Decode Pipeline in Chrome](#1-the-img-decode-pipeline-in-chrome)
+  - [1.6 What is SkBitmap?](#16-what-is-skbitmap)
+  - [1.7 What is SkCodec?](#17-what-is-skcodec)
+  - [1.8 What is gpu::SharedImage?](#18-what-is-gpusharedimage)
 - [2. Format Negotiation: Accept Headers and `<picture>`](#2-format-negotiation-accept-headers-and-picture)
 - [3. JPEG: DCT, Quantisation, and libjpeg-turbo](#3-jpeg-dct-quantisation-and-libjpeg-turbo)
 - [4. PNG: DEFLATE Compression and libpng](#4-png-deflate-compression-and-libpng)
@@ -105,6 +108,30 @@ SkBitmap (CPU RGBA8 / F16 pixel data)
 ```
 
 The upload uses a staging buffer (`VkBuffer` with `VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT`) into which the CPU pixel data is written, then a `vkCmdCopyBufferToImage` transfers it to a device-local `VkImage`. This is the standard Vulkan texture upload path.
+
+### 1.6 What is SkBitmap?
+
+`SkBitmap` is Skia's primary CPU-side pixel buffer type, defined in `include/core/SkBitmap.h`. It represents a rectangular array of pixels in a specified colour type (`SkColorType`) and alpha type (`SkAlphaType`), backed by a reference-counted `SkPixelRef` that owns the underlying memory allocation. In the Chrome image decode pipeline, `SkBitmap` is the canonical intermediate representation between the compressed byte stream arriving from the network and the GPU texture consumed by the compositor.
+
+When a codec decodes an image, it writes pixel data into an `SkBitmap` with a target colour type determined by the source format: standard 8-bit images use `kN32_SkColorType` (BGRA8888 on little-endian platforms, matching the native GPU upload format), while HDR images from AVIF or JPEG XL use `kRGBA_F16_SkColorType` (16-bit half-float per channel, preserving the extended dynamic range). The `SkBitmap` carries an associated `SkColorSpace` describing the colour gamut and transfer function of the decoded pixel data; this metadata propagates through the pipeline and informs subsequent colour management decisions.
+
+Once decoded, the `SkBitmap` exists in renderer-process memory. It is transferred to the GPU by copying its pixel data into a host-visible staging buffer and issuing a Vulkan transfer command. At that point the `SkBitmap` is typically released; the decoded pixels live only in GPU memory, referenced by a `gpu::SharedImage` mailbox that the compositor resolves at composite time. Understanding `SkBitmap` is therefore prerequisite to following both the decode path (§1.3) and the GPU upload path (§1.5 and §11).
+
+### 1.7 What is SkCodec?
+
+`SkCodec` is Skia's abstract base class for image decoders, defined in `include/codec/SkCodec.h`. It provides a unified decode interface over format-specific libraries — libjpeg-turbo for JPEG, libpng for PNG, libwebp for WebP, libavif for AVIF, and libjxl for JPEG XL — so that Chrome's image infrastructure interacts with a single API regardless of the underlying codec library in use. The format is identified either from the HTTP `Content-Type` response header or by sniffing the first bytes of the compressed file, and the matching `SkCodec` subclass is instantiated and returned to Blink's image loading machinery.
+
+The core API has two primary decode modes. `SkCodec::getPixels()` performs a complete synchronous decode into a caller-supplied buffer described by an `SkImageInfo` (dimensions, colour type, colour space). `SkCodec::startIncrementalDecode()` combined with repeated calls to `SkCodec::incrementalDecode()` supports streaming decode, allowing partial images to be rendered as compressed data arrives over the network — this is the path used for progressive JPEG and interlaced PNG. Each `SkCodec` subclass is also responsible for extracting embedded colour metadata: it reads ICC profiles from JPEG APP2 segments, AVIF `colr` boxes, PNG `iCCP` and `cICP` chunks, and exposes them as an `SkColorSpace` associated with the decoded output.
+
+All `SkCodec` subclasses live under `src/codec/` in the Skia source tree. Chrome bundles Skia under `third_party/skia/`. [Source: https://skia.googlesource.com/skia/+/refs/heads/main/include/codec/SkCodec.h]
+
+### 1.8 What is gpu::SharedImage?
+
+`gpu::SharedImage` is Chrome's mechanism for sharing GPU texture resources across the renderer and GPU process boundary. In Chrome's multi-process architecture, image decode runs in the renderer process but GPU memory is owned by the GPU process; `SharedImage` provides the cross-process handle that ties them together. A `SharedImage` is identified by a `gpu::Mailbox` — a 128-bit opaque token passed over Mojo IPC — that lets different processes reference the same underlying `VkImage` (or `GLTexture` when the GL backend is active) without duplicating the pixel data.
+
+When a decoded `SkBitmap` is ready for composite, the renderer calls `gpu::ClientSharedImageInterface::CreateSharedImage()` over Mojo to the GPU process. The GPU process allocates a `VkImage` in the appropriate format (`VK_FORMAT_R8G8B8A8_UNORM` for SDR, `VK_FORMAT_R16G16B16A16_SFLOAT` for HDR), performs the staging-buffer upload via `vkCmdCopyBufferToImage`, and returns a `gpu::Mailbox` to the renderer. The renderer embeds this mailbox in a `TextureDrawQuad` sent to the Viz compositor. The compositor resolves the mailbox back to the `VkImage` and samples from it during the compositing pass.
+
+`SharedImage` is also the token used for video frames (Ch147), WebGL textures, and canvas surfaces — it is the universal GPU resource handle in Chrome's multi-process graphics model. The client interface is in `gpu/command_buffer/client/shared_image_interface.h`; the GPU-process factory is in `gpu/ipc/service/shared_image_factory.h`.
 
 ---
 

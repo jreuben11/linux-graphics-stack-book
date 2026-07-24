@@ -7,6 +7,10 @@
 ## Table of Contents
 
 1. [Introduction](#1-introduction)
+   - [1.1 What is ROCm?](#11-what-is-rocm)
+   - [1.2 What is HIP?](#12-what-is-hip)
+   - [1.3 What is KFD?](#13-what-is-kfd)
+   - [1.4 What is HSA?](#14-what-is-hsa)
 2. [ROCm Architecture Overview](#2-rocm-architecture-overview)
 3. [KFD: Kernel Fusion Driver](#3-kfd-kernel-fusion-driver)
 4. [HIP Programming Model](#4-hip-programming-model)
@@ -37,6 +41,30 @@ The primary programming model is **HIP** (Heterogeneous-Compute Interface for Po
 [Source](https://rocm.docs.amd.com/en/docs-7.2.0/about/release-notes.html)
 
 The distinction between RDNA (consumer/workstation graphics) and CDNA (datacenter compute) architectures is fundamental: CDNA sacrifices display output and ray-tracing hardware for higher VRAM capacity, wider SIMD, matrix FMA units, and Infinity Fabric high-bandwidth interconnects. For ML training at scale, CDNA accelerators like the MI300X are the target; for single-GPU inference and hobbyist ML, RDNA3 and RDNA4 consumer GPUs are the pragmatic choice.
+
+### 1.1 What is ROCm?
+
+ROCm (Radeon Open Compute platform) is AMD's open-source GPU compute stack for Linux. Released in 2016 and now in its seventh major generation, ROCm provides the full software toolchain required to run general-purpose GPU workloads on AMD hardware: a kernel driver interface, a runtime library, a compiler toolchain based on LLVM/Clang, and a collection of high-performance math libraries covering BLAS, FFT, and deep learning primitives. Unlike NVIDIA's CUDA, which is proprietary, ROCm is composed almost entirely of open-source components licensed under MIT, Apache 2.0, and GPL-2.0.
+
+On Linux, ROCm interfaces with the kernel through two device nodes: `/dev/kfd` (the compute path, managed by the amdkfd module) and `/dev/dri/renderD*` (the DRM render node, shared with the graphics stack). Application frameworks such as PyTorch and JAX communicate with the GPU exclusively through the ROCm runtime layer rather than touching the kernel directly. This chapter covers the full vertical slice from the kernel KFD interface up through the compiler toolchain and ML library integrations.
+
+### 1.2 What is HIP?
+
+HIP (Heterogeneous-Compute Interface for Portability) is the C++ programming model at the heart of ROCm. It provides both a kernel language and a host-side runtime API for writing GPU-accelerated code. HIP's design is intentionally source-compatible with NVIDIA's CUDA: kernel functions use the `__global__` qualifier, grids are launched with chevron syntax (`<<<grid, block>>>`), and host API calls follow the pattern `hipMalloc`, `hipMemcpy`, and `hipLaunchKernelGGL`, mirroring the corresponding `cudaXxx` names.
+
+On AMD hardware, HIP kernels are compiled by the ROCm LLVM/Clang compiler to AMDGPU GCN or RDNA ISA and packaged as code objects (ELF binaries with a `.hsaco` extension). On NVIDIA hardware, the same HIP source can be compiled through the CUDA backend by routing through nvcc. This dual-backend design means that libraries and application code written in HIP can target either vendor's hardware from a single source tree, making HIP the primary path for organizations migrating CUDA codebases to AMD GPUs.
+
+### 1.3 What is KFD?
+
+The KFD (Kernel Fusion Driver) is the Linux kernel component that exposes GPU compute capabilities to userspace without involving the display subsystem. It is implemented within the `amdgpu.ko` kernel module under `drivers/gpu/drm/amd/amdkfd/` and exposes the `/dev/kfd` character device. Through this device node, the ROCm runtime creates and manages GPU compute queues, allocates GPU-visible memory, and establishes per-process isolation using hardware PASIDs (Process Address Space IDs).
+
+The term "Kernel Fusion" refers to the HSA specification goal of fusing CPU and GPU into a unified compute platform with shared virtual memory and cache-coherent access. KFD implements the HSA-mandated features on AMD hardware: AQL (Architected Queuing Language) ring buffers for zero-copy queue submission, SVM (Shared Virtual Memory) via Linux HMM for APUs, and doorbell register mapping so the CPU can signal the GPU command processor directly from userspace without a system call per dispatch.
+
+### 1.4 What is HSA?
+
+HSA (Heterogeneous System Architecture) is an industry specification that standardizes how CPU and GPU processors share memory, synchronize work, and communicate through a common queuing model. The HSA specification defines the AQL packet format for kernel dispatch, the signal API for inter-processor synchronization, the agent abstraction for enumerating compute and DMA engines, and the system topology description used during device initialization.
+
+Within the ROCm stack, the HSA specification is implemented by the ROCR-Runtime (`libhsa-runtime64.so`), which provides the `hsa_*` C API. The HIP runtime and OpenCL runtime both layer on top of the HSA runtime rather than speaking directly to the kernel. HSA's memory model distinguishes between coarse-grained memory (which requires explicit cache flush/invalidate on CPU-to-GPU transfers) and fine-grained memory (cache-coherent, suitable for atomic operations across processor boundaries) — a distinction that directly affects how ROCm manages host-visible buffers and unified memory on APUs.
 
 ---
 

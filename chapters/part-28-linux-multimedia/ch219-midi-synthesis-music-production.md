@@ -10,6 +10,9 @@
 
 - [Overview](#overview)
 - [1. MIDI Fundamentals: Byte-Level Protocol and MIDI 2.0](#1-midi-fundamentals-byte-level-protocol-and-midi-20)
+  - [1.3 What is MIDI?](#13-what-is-midi)
+  - [1.4 What is Software Synthesis?](#14-what-is-software-synthesis)
+  - [1.5 What is a Digital Audio Workstation (DAW)?](#15-what-is-a-digital-audio-workstation-daw)
 - [2. ALSA Sequencer: Client/Port Model and Routing](#2-alsa-sequencer-clientport-model-and-routing)
 - [3. PipeWire MIDI: Graph Routing and UMP Nodes](#3-pipewire-midi-graph-routing-and-ump-nodes)
 - [4. USB MIDI: Class-Compliant Driver and MIDI 2.0 UMP over USB](#4-usb-midi-class-compliant-driver-and-midi-20-ump-over-usb)
@@ -66,6 +69,24 @@ The MIDI 2.0 specification (published February 20, 2020) introduces the **Univer
 UMP organises addresses into 16 **Groups** × 16 channels = 256 addressable channels (vs. 16 in MIDI 1.0). **MIDI-CI** (Capability Inquiry) uses the legacy MIDI 1.0 transport as a negotiation handshake before switching to the MIDI 2.0 protocol, making it backward compatible.
 
 Linux kernel MIDI 2.0 support (initial UMP framework) merged in Linux 6.5 (2023) via `CONFIG_SND_UMP`. UMP rawmidi devices appear at `/dev/snd/umpC*D*`, distinct from legacy `/dev/snd/midiC*D*`. [Source](https://docs.kernel.org/sound/designs/midi-2.0.html)
+
+### 1.3 What is MIDI?
+
+MIDI (Musical Instrument Digital Interface) is a compact serial protocol that allows electronic musical instruments, computers, and audio software to communicate performance data. Rather than transmitting audio waveforms, MIDI encodes musical events — notes pressed and released, controller knob positions, pitch bend gestures, and program selections — as structured byte messages. The original 1983 specification runs at 31.25 kbaud over a 5-pin DIN electrical interface; modern implementations carry identical or extended messages over USB, Bluetooth, and network transports.
+
+On Linux, the MIDI ecosystem spans three kernel-level layers: the rawmidi interface (character device at `/dev/snd/midiC*D*` and `/dev/snd/umpC*D*` for MIDI 2.0) for direct byte access; the ALSA sequencer (`snd_seq`) for event-timed routing between clients; and PipeWire's media graph, which represents MIDI streams as first-class nodes alongside audio. This chapter covers all three layers and builds upward through synthesis engines and plugin standards that consume MIDI as their primary control input. Understanding MIDI at the byte level — its status/data byte structure, running status optimization, and SysEx framing — is prerequisite for every section that follows. MIDI 2.0, introduced by the MIDI Association in 2020, extends the protocol with the Universal MIDI Packet (UMP) wire format, 256-channel addressing, and 32-bit resolution for velocity and controller values, all with backward-compatible negotiation via MIDI-CI.
+
+### 1.4 What is Software Synthesis?
+
+Software synthesis is the real-time generation of audio waveforms by a CPU-executed program in response to MIDI or other control input, as opposed to dedicated hardware synthesis circuits. A software synthesizer receives MIDI note-on events, computes sample buffers using mathematical models of oscillators, filters, and envelopes, and delivers PCM audio to the system audio engine (ALSA or PipeWire) at callback boundaries determined by the buffer size and sample rate.
+
+On Linux, software synthesis takes several forms covered in this chapter: SoundFont synthesis (FluidSynth renders wavetable samples stored in `.sf2` files); plugin synthesis (LV2 and CLAP synthesizer plugins hosted inside a DAW or plugin host); and programmable synthesis environments (SuperCollider's `scsynth` engine and Csound's orchestra/score language). Each approach differs in its trade-off between latency, polyphony depth, CPU cost, and programmability. The common infrastructure across all forms is the audio callback model: the synthesis engine must produce exactly `buffer_frames` of audio within the period deadline imposed by the driver, a real-time constraint that governs thread scheduling, lock-free data structures, and memory allocation policies discussed in Section 16. Hybrid synthesizers such as Surge XT combine multiple synthesis paradigms — subtractive, wavetable, FM, and granular — within a single plugin, illustrating the breadth of what software synthesis encompasses on the Linux platform.
+
+### 1.5 What is a Digital Audio Workstation (DAW)?
+
+A Digital Audio Workstation (DAW) is an application that integrates audio recording, MIDI sequencing, plugin hosting, mixing, and timeline editing into a single production environment. On Linux, the primary open-source DAW is Ardour, which exposes an internal architecture of tracks, busses, and processors connected through a routing graph; it hosts LV2, LADSPA, and (via bridging infrastructure) VST3 plugins, and drives the audio engine through ALSA or PipeWire/JACK backends.
+
+In the context of this chapter, the DAW is the top-level consumer of all the infrastructure below it: it opens MIDI ports via the ALSA sequencer or PipeWire MIDI graph, routes events into synthesizer plugins, records audio through real-time-safe callbacks, and writes final output to disk. The internal track model, plugin chain execution order, and session serialization format used by Ardour are examined in Section 10. Plugin compatibility across DAWs is addressed by the LV2, CLAP, and plugin bridging standards covered in Sections 7–9 and 14. The term DAW also encompasses lighter-weight sequencers such as LMMS and Qtractor that target electronic music production and live performance respectively, each exposing the same ALSA and PipeWire substrate through different workflow models.
 
 ---
 

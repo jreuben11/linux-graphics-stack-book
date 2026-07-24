@@ -15,6 +15,9 @@
    - [Type System](#13-type-system)
    - [ID Namespace and Forward References](#14-id-namespace-and-forward-references)
    - [Logical Layout: Mandatory Section Ordering](#15-logical-layout-mandatory-section-ordering)
+   - [1.6 What is SPIR-V?](#16-what-is-spir-v)
+   - [1.7 What is SPIRV-Tools?](#17-what-is-spirv-tools)
+   - [1.8 What is SPIRV-Cross?](#18-what-is-spirv-cross)
 3. [Capabilities and the Extension Mechanism](#2-capabilities-and-the-extension-mechanism)
    - [OpCapability](#21-opcapability)
    - [OpExtension](#22-opextension)
@@ -337,6 +340,18 @@ A minimal valid compute shader skeleton:
 ```
 
 [Source: SPIR-V assembly syntax reference](https://android.googlesource.com/platform/external/shaderc/spirv-tools/+/HEAD/syntax.md)
+
+### 1.6 What is SPIR-V?
+
+SPIR-V (Standard Portable Intermediate Representation — Vulkan) is a binary intermediate language for parallel compute and graphics shading, standardized by the Khronos Group. The format was designed to be consumed directly by GPU drivers as the mandatory shader input for Vulkan, eliminating driver-side high-level language compilers and the correctness divergences that accompanied them. SPIR-V encodes a shader program as a flat stream of 32-bit words in Static Single Assignment (SSA) form with a rich static type system, explicit control flow, and a capability-gating mechanism that restricts which instructions a module may use. Every Vulkan implementation since Vulkan 1.0 (2016) must accept SPIR-V as its shader input; Vulkan 1.3 mandated SPIR-V 1.5, and Vulkan 1.4 mandates SPIR-V 1.6. The format also serves as the exchange representation between Mesa's language front ends and its internal NIR compiler IR: `spirv_to_nir()` in `src/compiler/spirv/` translates SPIR-V to NIR before backend-specific compilation by ACO or LLVM. Outside Vulkan, SPIR-V is the shader format for OpenCL 2.2 and later. The binary structure — a fixed five-word header followed by variably-sized instructions each prefixed with opcode and word count — is designed to be parseable and walkable with no external tables, enabling efficient in-driver preprocessing and patching. [Source: SPIR-V Specification](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html)
+
+### 1.7 What is SPIRV-Tools?
+
+SPIRV-Tools is the Khronos-hosted open-source reference implementation of the SPIR-V toolchain, providing validation, optimization, assembly, disassembly, linking, and reduction of SPIR-V modules. The library and command-line tools are maintained in the `KhronosGroup/SPIRV-Tools` repository and are a required dependency of Mesa, glslang, DXC, and most Vulkan SDKs. The core library exposes a C API through `libspirv.h` and a C++ API through `spirv-tools/optimizer.hpp`; both operate on SPIR-V binary represented as arrays of `uint32_t` and carry a target-environment context such as `SPV_ENV_VULKAN_1_3` that governs which capabilities and extensions are valid. The command-line suite includes `spirv-val` for validation, `spirv-as` and `spirv-dis` for round-tripping between binary and human-readable text assembly, `spirv-opt` for applying optimization and legalization passes, `spirv-link` for linking separately compiled modules, `spirv-cfg` for exporting control-flow graphs as GraphViz dot files, and `spirv-reduce` for minimizing failing test cases to minimal reproducers. In the Linux graphics stack, SPIRV-Tools validation is run at offline build time in CI pipelines for shader libraries and at validation layer time via the Khronos Vulkan validation layer; `spirv-opt` is invoked by offline pipeline compilation tools and shader compilation pipelines to reduce module size or improve specialization-constant folding before driver ingestion. Sections 4 and 5 of this chapter cover the C++ API and optimization passes in depth. [Source: KhronosGroup/SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools)
+
+### 1.8 What is SPIRV-Cross?
+
+SPIRV-Cross is an open-source library that parses SPIR-V modules and cross-compiles them to other shading languages: GLSL (desktop and ES), HLSL (shader model 5.0 through 6.6), and MSL (Metal Shading Language). Beyond cross-compilation, it provides a reflection API that extracts descriptor binding metadata, push constant layouts, and resource types from a SPIR-V module at runtime without requiring the original high-level source. The library is structured around a class hierarchy rooted at `spirv_cross::Compiler`, with derived classes `CompilerGLSL`, `CompilerHLSL`, `CompilerMSL`, and `CompilerReflect`. Methods such as `get_shader_resources()`, `get_decoration()`, `get_type()`, and `build_combined_image_samplers()` enable engine frameworks to build descriptor set layouts at runtime by interrogating shader modules rather than maintaining separate reflection metadata files. In the Linux graphics stack, SPIRV-Cross is used by ANGLE for its SPIR-V to GLSL cross-compilation path when targeting OpenGL ES backends, by DXVK for extracting binding metadata from DXC-compiled SPIR-V, and by MoltenVK as its primary shader translation layer to MSL. The library accepts SPIR-V 1.0 through 1.6 and handles most graphics-stage and compute-stage capabilities defined in the core specification. Section 6 of this chapter covers SPIRV-Cross architecture, reflection API usage, and integration patterns in detail. [Source: KhronosGroup/SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)
 
 ---
 

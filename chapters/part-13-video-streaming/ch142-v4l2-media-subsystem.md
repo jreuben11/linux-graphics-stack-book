@@ -11,6 +11,10 @@
 ## Table of Contents
 
 1. [Overview](#1-overview)
+   - [1.1 What is V4L2?](#11-what-is-v4l2)
+   - [1.2 What is the Media Controller?](#12-what-is-the-media-controller)
+   - [1.3 What is videobuf2?](#13-what-is-videobuf2)
+   - [1.4 What is DMA-BUF?](#14-what-is-dma-buf)
 2. [V4L2 Architecture: Device Nodes and the Media Controller](#2-v4l2-architecture-device-nodes-and-the-media-controller)
    - [Device Node Taxonomy](#21-device-node-taxonomy)
    - [The Media Controller Framework](#22-the-media-controller-framework)
@@ -86,6 +90,38 @@ This chapter targets two audiences. **Systems and driver developers** will find 
 - **Stateless codec programming model** — required for Raspberry Pi, Allwinner Cedrus, and Rockchip RKVDEC devices
 
 Where the kernel subsystem is well-documented but companion APIs are in flux (notably fence-based per-buffer synchronisation), this chapter explicitly distinguishes what is upstream and stable from what is a long-standing out-of-tree proposal.
+
+### 1.1 What is V4L2?
+
+Video4Linux2 (V4L2) is the primary Linux kernel API for video capture, output, and processing hardware. It was designed to replace the original Video4Linux API and provides a uniform character-device interface for an enormously diverse class of hardware: USB webcams, embedded MIPI CSI-2 camera sensors, HDMI capture cards, on-SoC hardware video codecs, and image signal processors (ISPs). User applications interact with V4L2 through file-descriptor-based ioctl calls on `/dev/videoN` device nodes, using a vocabulary of format descriptors, buffer types, and streaming commands defined in `include/uapi/linux/videodev2.h`.
+
+The core kernel implementation lives in `drivers/media/v4l2-core/`. At the API level V4L2 exposes a uniform set of operations regardless of the underlying hardware: enumerate supported formats, negotiate resolution and pixel layout, allocate a queue of DMA-capable buffers, and run the streaming state machine by cycling buffers between userspace and hardware. Behind that uniform surface, drivers implement a set of `v4l2_ioctl_ops` callbacks, delegating buffer lifecycle to the videobuf2 framework (vb2) and, on complex SoC pipelines, delegating topology management to the media controller.
+
+V4L2 also defines two complementary codec programming models: stateful codecs expose a single capture queue where the hardware manages stream state internally, while stateless codecs expose a per-frame request interface that gives software decoders precise control over reference frame management. Both models are covered in sections 10 and 11 of this chapter. [Source](https://docs.kernel.org/userspace-api/media/v4l/v4l2.html)
+
+### 1.2 What is the Media Controller?
+
+The Media Controller is a kernel framework that models a media processing device as a directed graph of hardware blocks rather than a flat set of independent device nodes. It was introduced to address the complex topologies found in embedded SoC camera pipelines, where a single sensor output may be routed through multiple ISP stages and where per-frame parameter delivery must be atomic across several independently driven hardware blocks. Each hardware element — a camera sensor, a MIPI CSI-2 receiver, an ISP stage, a scaler, a DMA engine — is represented as a **media entity**. Entities expose typed **pads** (source pads emit data; sink pads receive it), and directed **links** connect source pads to sink pads.
+
+This graph is exposed to userspace through `/dev/mediaM` and queried with ioctls such as `MEDIA_IOC_ENUM_ENTITIES` and `MEDIA_IOC_G_TOPOLOGY`. Before streaming, an application or libcamera must walk the graph, enable the correct links with `MEDIA_IOC_SETUP_LINK`, and propagate formats through each subdev pad in source-to-sink order. The `media-ctl` command-line tool from the `v4l-utils` package makes this topology visible to developers.
+
+The framework is implemented in `drivers/media/mc/`, primarily `media-device.c` and `media-entity.c`. It also hosts the **Request API**, which delivers per-frame parameters atomically across multiple drivers. Without the media controller, an application using a CSI-2 camera with an on-chip ISP would have no kernel-managed mechanism to describe or configure the interconnection between those hardware blocks. [Source](https://docs.kernel.org/driver-api/media/mc-core.html)
+
+### 1.3 What is videobuf2?
+
+Videobuf2 (vb2) is the kernel-internal buffer-management framework that V4L2 drivers delegate DMA buffer lifecycle management to. Before vb2 (merged in kernel 3.5), each V4L2 driver contained hand-rolled buffer allocation and DMA scatter-gather code, leading to widespread duplication and subtle correctness bugs. Vb2 consolidates this into a single framework with a well-defined state machine for buffer lifecycle.
+
+The framework is implemented in `drivers/media/common/videobuf2/`. It manages three memory models: kernel-allocated MMAP buffers (the most common path), userspace-provided USERPTR buffers, and kernel-managed DMABUF file descriptors for zero-copy interoperability with other DMA-capable subsystems such as GPU drivers and display hardware.
+
+Each buffer cycles through the states `DEQUEUED` (owned by userspace) → `QUEUED` (submitted via `VIDIOC_QBUF`) → `ACTIVE` (being filled or consumed by hardware) → `DONE` (ready for `VIDIOC_DQBUF`). Drivers implement a small set of `vb2_ops` callbacks — `buf_prepare`, `buf_queue`, `start_streaming`, `stop_streaming` — and rely on vb2 to handle queue synchronisation, `select()`/`poll()` readiness notification, and buffer validation. Memory-to-memory (M2M) drivers maintain two independent vb2 queues: one for the input side (confusingly named the OUTPUT queue in V4L2 terminology) and one for the output side (the CAPTURE queue). [Source](https://docs.kernel.org/driver-api/media/v4l2-videobuf2.html)
+
+### 1.4 What is DMA-BUF?
+
+DMA-BUF is a Linux kernel mechanism for sharing DMA-capable memory buffers between independent subsystems without CPU copies. A DMA-BUF handle is a file descriptor representing a buffer allocated by one subsystem (the exporter) and importable by another (the importer). Because both sides operate on the same physical memory pages through device-specific IOMMU mappings, no data needs to transit through CPU caches when passing a video frame from a V4L2 capture device to a GPU or display controller.
+
+The mechanism is defined in `include/linux/dma-buf.h` and implemented in `drivers/dma-buf/`. An exporter calls `dma_buf_export()` to wrap its memory as a shareable file descriptor; an importer calls `dma_buf_attach()` and `dma_buf_map_attachment()` to obtain the scatter-gather list needed to program its own DMA engine.
+
+In the V4L2 context, DMA-BUF surfaces through the `V4L2_MEMORY_DMABUF` memory type. A V4L2 driver acting as exporter fills `VIDIOC_EXPBUF`-exported fds with captured frame data. A GPU driver acting as importer can bind these same fds as EGL images (`EGL_LINUX_DMA_BUF_EXT`), Vulkan external images (`VK_EXT_external_memory_dma_buf`), or OpenCL imported buffers, enabling camera-to-GPU pipelines with zero intervening CPU copies. The GStreamer `v4l2src` element exploits this when negotiating DMABUF allocation with a downstream GPU sink element. [Source](https://docs.kernel.org/driver-api/dma-buf.html)
 
 ---
 

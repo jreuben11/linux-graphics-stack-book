@@ -122,6 +122,20 @@ RFC 7826 §14 defines a multiplexing mode in which RTP and RTCP are carried insi
 
 followed by the RTP or RTCP payload. Even-numbered channel IDs carry RTP; odd-numbered carry RTCP. The interleaved mode eliminates UDP firewall traversal problems and avoids NAT state management, making it the default for consumer RTSP clients (e.g., IP cameras behind NAT). The trade-off is that TCP's head-of-line blocking introduces variable delivery jitter that UDP avoids; this matters for strict real-time playback and is one reason SRT is preferred for broadcast contribution links.
 
+### 1.1 What is RTSP?
+
+RTSP (Real Time Streaming Protocol) is an application-layer control protocol defined by RFC 7826 (RTSP 2.0) that governs the negotiation, initiation, and teardown of real-time media delivery sessions over IP networks. It operates primarily over TCP port 554 and acts as a session-control plane: RTSP messages select tracks, allocate transport channels, and issue play or pause commands, but carry no media bytes themselves. The actual media payload is delivered by a companion protocol — typically RTP — negotiated through the SDP body returned by the RTSP DESCRIBE method.
+
+On Linux, RTSP appears in two broad roles. First, as a consumption protocol: IP cameras and ONVIF-compliant devices expose RTSP endpoints that GStreamer's `rtspsrc` element or FFmpeg's `rtsp://` URI scheme can receive and decode. Second, as a server-side delivery mechanism: tools such as mediamtx and GStreamer's `rtspsink` publish RTSP endpoints consumed by players and hardware decoders. RTSP session state is maintained on the server, identified by a session token returned in the SETUP response, which allows a single TCP connection to control multiple parallel media tracks (video, audio, metadata). This section focuses on the RTSP 2.0 control-plane message flow, its relationship to RTP transport, and the interleaved TCP mode that enables RTSP operation across firewalls and NAT devices.
+
+### 1.2 What is RTP?
+
+RTP (Real-time Transport Protocol), standardised in RFC 3550, is the datagram protocol that carries media payloads — video frames, audio samples, timed metadata — from sender to receiver in real-time streaming systems. RTP operates over UDP, taking advantage of UDP's low overhead and avoiding TCP's head-of-line blocking and unbounded retransmission delays that would introduce jitter in time-sensitive streams.
+
+Each RTP packet carries a fixed 12-byte header containing a payload type index (mapped to a codec via the SDP `rtpmap` attribute), a sequence number for loss detection, a media-clock timestamp for playout scheduling, and a synchronisation source (SSRC) identifier that scopes statistics per sender. The companion protocol RTCP (RFC 3550 §6) provides out-of-band control: Sender Reports correlate RTP timestamps with wall-clock time for audio/video synchronisation, while Receiver Reports feed back loss fraction and jitter statistics to the sender for congestion awareness.
+
+On Linux, RTP is the universal media transport beneath RTSP, WebRTC, and GStreamer's `rtpbin` subsystem. GStreamer provides a rich set of RTP payloader and depayloader elements — `rtph264pay`, `rtph264depay`, `rtpopuspay`, and others — that packetise codec bitstreams according to the relevant RFC payload format specifications. Understanding RTP sequence numbers, timestamps, and RTCP timing is essential for diagnosing loss, jitter, and synchronisation problems in live streaming pipelines built on Linux.
+
 ---
 
 ## SRT: Secure Reliable Transport

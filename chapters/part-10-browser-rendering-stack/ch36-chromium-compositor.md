@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Why Two Compositors? The CC/Viz Split](#1-why-two-compositors-the-ccviz-split)
+   - [1.1 What is CC (the Chrome Compositor)?](#11-what-is-cc-the-chrome-compositor)
+   - [1.2 What is Viz (the Display Compositor)?](#12-what-is-viz-the-display-compositor)
+   - [1.3 What is a Compositor Frame?](#13-what-is-a-compositor-frame)
 2. [Layer Trees and Property Trees in CC](#2-layer-trees-and-property-trees-in-cc)
 3. [Tile Rasterisation and the Raster Worker Pool](#3-tile-rasterisation-and-the-raster-worker-pool)
 4. [The Compositor Frame: Serialising Renderer Output](#4-the-compositor-frame-serialising-renderer-output)
@@ -67,6 +70,30 @@ graph TD
     CC -- "viz::CompositorFrame\n(Mojo IPC)" --> Viz
     Display -- "wl_surface commit /\nKMS SwapBuffers" --> Wayland["Wayland Compositor\n/ KMS"]
 ```
+
+### 1.1 What is CC (the Chrome Compositor)?
+
+CC, short for Chrome Compositor, is the content compositor that runs inside each Chromium renderer process and browser-UI process. Its primary role is to take the paint output produced by the Blink rendering engine and organise it into a hierarchical layer tree — a data structure that separates independently animatable visual elements from one another. By modelling the page as a tree of composited layers rather than a flat pixel surface, CC avoids the need to repaint the entire visible area whenever only one element changes. A CSS transform animation, for example, updates only a numeric matrix in the layer's transform node; CC recomposes the visible result without asking Blink to repaint any content.
+
+CC operates on two threads: a main thread that receives updates from Blink, and a compositor thread that runs the animation loop and submits frames. The compositor thread handles scroll physics, touch gesture responses, and CSS animations independently, so these interactions remain responsive even when the main thread is blocked by a long JavaScript task. The two threads synchronise through an atomic commit operation that copies the main-thread layer tree into the compositor thread's pending tree via `cc::ProxyMain` and `cc::ProxyImpl`.
+
+CC's output is a serialised `viz::CompositorFrame` — a pure data structure describing the layer tree as draw quads — sent via Mojo IPC to the Viz display service in the GPU process. CC does not issue GPU commands itself; it describes what to draw and delegates execution to Viz. In the Chromium source tree the CC component lives under `//cc/`; the main-thread API surface is `cc::LayerTreeHost` and the compositor-thread implementation is `cc::LayerTreeHostImpl`.
+
+### 1.2 What is Viz (the Display Compositor)?
+
+Viz, short for Visual Services, is Chromium's display compositor. It runs inside the GPU process — a separate operating-system process shared by all tabs — and is responsible for aggregating compositor frames submitted by every renderer process and browser-UI process into a single final image presented on the physical display. Because all aggregation and GPU command submission happen in the same process, Viz eliminates the cross-process pixel copies that the earlier single-surface architecture required.
+
+Viz was introduced as the Out-of-Process Display Compositor (OOP-D) to address structural problems with the earlier model, in which each renderer composited directly into a shared OpenGL surface owned by the browser process. In that model the browser-process UI thread blocked during display updates, multi-process iframes could not be composited without copying their pixels, and hardware video overlay required ad-hoc workarounds. With Viz, each renderer submits a `viz::CompositorFrame` over Mojo IPC. Viz's `viz::SurfaceAggregator` traverses the submitted frames, resolves cross-renderer surface references embedded as `viz::SurfaceDrawQuad` entries, and produces a flat `viz::AggregatedFrame`. The per-display `viz::Display` object drives GPU rendering via `viz::SkiaRenderer` (backed by SkiaGanesh on ANGLE or SkiaGraphite on Vulkan) and presents the final buffer to the platform output layer.
+
+On Linux with Wayland, Viz hands the rendered buffer to the Ozone/Wayland backend, which attaches it to a `wl_surface` and commits it. Viz also manages overlay candidate selection, promoting hardware video frames or other GPU textures to KMS hardware planes and bypassing GPU blending entirely. The Viz component lives under `//components/viz/` in the Chromium source tree.
+
+### 1.3 What is a Compositor Frame?
+
+A compositor frame is the serialised data structure that a Chromium renderer or browser-UI process produces once per display frame and submits to the Viz display service. It describes the visual output of one compositing unit — such as a browser tab, an embedded iframe, or the browser toolbar — as a list of draw quads rather than as a rendered pixel buffer. Because frames are pure data, they cross process boundaries cheaply over Mojo IPC without any GPU memory copy.
+
+The central type is `viz::CompositorFrame`, defined in `//components/viz/common/quads/compositor_frame.h`. It contains two principal fields: a `viz::RenderPassList`, which groups draw quads into render passes corresponding to CSS stacking contexts that require off-screen rendering (for filters, opacity groups, or mask effects); and a `viz::TransferableResourceList`, which enumerates the GPU textures referenced by quads in the frame. Each texture is identified by a `gpu::Mailbox` — a globally unique 16-byte handle — and protected by a `gpu::SyncToken` that encodes a GPU fence, ensuring the texture is not read before the producing command stream has finished writing it.
+
+When Viz receives frames from multiple renderers, `viz::SurfaceAggregator` resolves cross-renderer references and merges all frames into a single `viz::AggregatedFrame`, which `viz::SkiaRenderer` then renders into the final display buffer. The compositor frame model is what makes multi-process iframe compositing possible without requiring all renderers to share a single GPU context.
 
 ---
 

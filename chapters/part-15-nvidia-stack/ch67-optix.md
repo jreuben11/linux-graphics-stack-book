@@ -9,6 +9,9 @@
 ## Table of Contents
 
 1. [Overview](#1-overview)
+   - [1.1 What is OptiX?](#11-what-is-optix)
+   - [1.2 What is Ray Tracing?](#12-what-is-ray-tracing)
+   - [1.3 What is a BVH (Bounding Volume Hierarchy)?](#13-what-is-a-bvh-bounding-volume-hierarchy)
 2. [OptiX Programming Model and Version History](#2-optix-programming-model-and-version-history)
 3. [Device Context and Initialisation](#3-device-context-and-initialisation)
 4. [Shader Compilation Pipeline: NVRTC → PTX / OptiX-IR → Module](#4-shader-compilation-pipeline-nvrtc--ptx--optix-ir--module)
@@ -61,6 +64,30 @@ By the end of this chapter, the reader will understand:
 - How **Blender Cycles** integrates **OptiX** on **Linux**, compiling shaders via **NVRTC** at render startup and caching results in **~/.cache/cycles/**, with the **OptiX** denoiser accessible through the compositor node tree
 - The **Linux** build and development workflow: **SDK** setup from **optix-dev** or the **NVIDIA** Developer portal, **CMake** configuration using **OptiX_Apps** patterns and the **optix-toolkit** **FetchContent** integration, and driver version verification with **nvidia-smi**
 - **OptiX 9.x** deprecations and migration notes, including removal of the **DMM** (**Displaced Micro-Mesh**) API, **optixTrace()** removal from **__direct_callable__** shaders, and the **optixModuleCreate()** rename from **optixModuleCreateFromPTX()**
+
+### 1.1 What is OptiX?
+
+OptiX is NVIDIA's application-level framework for hardware-accelerated ray tracing on the GPU. It sits above the CUDA programming model and below application-level path tracers, providing the infrastructure applications need to construct acceleration structures, compile programmable shader stages, and launch ray queries efficiently on NVIDIA RT-core hardware.
+
+Unlike Vulkan KHR ray tracing, which exposes ray tracing as a Vulkan pipeline type, OptiX communicates directly with the GPU through the CUDA driver, bypassing the Vulkan driver layer entirely. This gives applications lower-latency pipeline changes and access to pre-standardisation features. OptiX ships as a headers-only SDK package that links against `libnvoptix.so`, a shared library embedded in the NVIDIA proprietary driver. The runtime function table is loaded dynamically at startup via `optixInit()`, so applications compiled against the SDK headers run against any sufficiently new driver without recompilation.
+
+On Linux, OptiX is the primary interface for production ray tracing workloads in offline renderers such as Blender Cycles and for scientific visualisation tools. It is also the foundation for the NVIDIA AI denoiser used in many post-processing pipelines, and for RTX Neural Shaders via the Cooperative Vectors API introduced in OptiX 9.0. The SDK itself carries no GPU binary code; all execution paths — BVH traversal, shader dispatch, and denoiser inference — run through `libnvoptix.so`, which is versioned alongside the driver and updated independently of the SDK headers.
+
+### 1.2 What is Ray Tracing?
+
+Ray tracing is a rendering algorithm that determines pixel colour by tracing the path of light rays from a virtual camera through the scene, testing each ray for intersections against geometric primitives, and following reflected or refracted rays to compute global illumination effects including shadows, reflections, refractions, and indirect lighting. Unlike rasterisation — which projects geometry onto a 2D screen and processes visible surfaces in approximate forward order — ray tracing evaluates the exact geometric relationship between a ray and scene geometry, making it straightforward to implement physically correct light transport.
+
+The computational challenge in ray tracing is that each ray must be tested against all geometry in the scene. Acceleration structures reduce this from O(N) to O(log N) per ray by organising geometry into spatial hierarchies that allow large scene subsets to be culled quickly. On NVIDIA hardware from the Turing generation onward, a dedicated hardware unit — the RT core — performs BVH traversal and triangle intersection tests in parallel with the programmable shader processors (SM cores), enabling real-time or near-real-time ray tracing for the first time in consumer hardware.
+
+OptiX exposes both the hardware traversal path (for triangle meshes, spheres, and curves) and a software-extensible intersection path (for custom primitives via `__intersection__` shaders), allowing a single pipeline to mix hardware-accelerated and user-defined geometry types. The programmable stages — ray generation, any-hit, closest-hit, miss, intersection, and callable shaders — map directly to the conceptual stages in the Vulkan KHR ray tracing pipeline described in Ch56, but are compiled and dispatched through the CUDA runtime rather than the Vulkan driver.
+
+### 1.3 What is a BVH (Bounding Volume Hierarchy)?
+
+A Bounding Volume Hierarchy is the spatial data structure that enables efficient ray intersection testing against large scenes. A BVH is a binary tree where each node stores an axis-aligned bounding box (AABB) enclosing all geometry under that node. During traversal, a ray is tested against each node's bounding box; if the ray misses the box, the entire subtree is culled without inspecting individual primitives. Leaf nodes contain the actual primitives — triangles, spheres, curves, or user-defined shapes — tested for exact intersection only after their ancestor boxes pass the ray test.
+
+In OptiX, acceleration structures are divided into two levels. A Geometry Acceleration Structure (GAS) covers the primitives of a single mesh or primitive set and corresponds to the BLAS (Bottom Level Acceleration Structure) in Vulkan terminology. An Instance Acceleration Structure (IAS) references multiple GAS instances, each with a 3×4 transform matrix, and corresponds to the TLAS (Top Level Acceleration Structure). This two-level hierarchy lets individual meshes be updated or animated independently — via `OPTIX_BUILD_OPERATION_UPDATE` refitting — without rebuilding the entire scene tree.
+
+BVH construction runs on the GPU via `optixAccelBuild()`. OptiX manages the internal BVH layout and optional compaction (reducing memory by up to 50 % for typical meshes) transparently; applications interact only with an opaque traversable handle and the `CUdeviceptr` pointing to the structure's GPU buffer. The RT cores consume this buffer directly during `optixLaunch()` without additional driver translation.
 
 ---
 

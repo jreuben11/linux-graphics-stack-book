@@ -9,6 +9,10 @@
 ## Table of Contents
 
 1. [Overview](#1-overview)
+   - [1.1 What is DLSS?](#11-what-is-dlss)
+   - [1.2 What is Neural Rendering?](#12-what-is-neural-rendering)
+   - [1.3 What is Frame Generation?](#13-what-is-frame-generation)
+   - [1.4 What is the NGX SDK?](#14-what-is-the-ngx-sdk)
 2. [DLSS Architecture Evolution: From CNN to Transformer](#2-dlss-architecture-evolution-from-cnn-to-transformer)
 3. [DLSS 4 Super Resolution Internals](#3-dlss-4-super-resolution-internals)
 4. [Multi Frame Generation](#4-multi-frame-generation)
@@ -130,6 +134,30 @@ Section 11 covers **TensorRT** inference optimisation for neural rendering:
 - **`trtexec`** command-line tool and the C++ **`IBuilder`** / **`INetworkDefinition`** / `nvonnxparser::IParser` API for converting **ONNX** models to GPU-architecture-specific **`.trt`** engine plans
 - Runtime inference via **`ICudaEngine`**, **`IExecutionContext`**, and `enqueueV3` with **`VK_KHR_external_memory`** interop for **Vulkan** buffer sharing
 - **INT8** calibration using **`IInt8EntropyCalibrator2`** for 2–4× latency reduction in denoising and upscaling networks
+
+### 1.1 What is DLSS?
+
+DLSS (Deep Learning Super Sampling) is NVIDIA's AI-based image upscaling and reconstruction technology. The core problem it addresses is render resolution: running a game or application at full display resolution — 4K, for example — is GPU-intensive, while rendering at a lower resolution and upscaling with traditional bilinear or bicubic filters produces visible blur and aliasing artefacts. DLSS replaces traditional upscaling with a neural network trained on high-resolution reference frames, allowing the GPU to render at a reduced resolution and recover perceptual detail that closely approximates native rendering.
+
+In the Linux graphics stack, DLSS is delivered through the NGX SDK, which ships as part of the proprietary NVIDIA driver (`libnvidia-ngx.so` and associated signed feature libraries). The Vulkan entry points are declared in `nvsdk_ngx_vk.h`. DLSS is distinct from driver-level image scaling (NIS) and open-source alternatives such as FSR or XeSS; it requires NVIDIA hardware and the proprietary NGX runtime. The technology has evolved across four major generations: DLSS 1 (game-specific CNN), DLSS 2 (generalised temporal accumulation), DLSS 3 (frame generation added on Ada Lovelace), and DLSS 4 (vision transformer running in FP8 on Tensor Cores). DLSS 4.5, announced at Computex 2026, introduced a second-generation transformer operating in linear colour space and a 6× Multi Frame Generation mode. This chapter focuses on DLSS 4 and 4.5 as the current state of the stack.
+
+### 1.2 What is Neural Rendering?
+
+Neural rendering refers to techniques that use trained neural networks to generate, reconstruct, or enhance rendered images of three-dimensional scenes. The term covers a spectrum that ranges from post-process neural filtering — such as DLSS super resolution or Ray Reconstruction — to fully neural scene representations that store geometry and appearance as optimised parameters: Neural Radiance Fields (NeRF) and 3D Gaussian Splatting (3DGS) are the most prominent examples. What unifies them is the replacement of hand-authored analytic functions — rasterisation shaders, BRDF evaluations, denoisers — with learned functions that achieve higher quality or lower compute cost within a given hardware budget.
+
+In the context of this chapter, neural rendering manifests in two ways. The first is inference at render time: DLSS SR, Ray Reconstruction, and Frame Generation are all real-time neural network inferences that modify or synthesise display-resolution frames during the render loop. The second is neural scene representation: 3D Gaussian Splatting encodes a scene reconstructed from images as a set of 3D Gaussian primitives optimised end-to-end with gradient descent, then rasterised at inference time using custom CUDA kernels (via the `gsplat` library) or Vulkan compute shaders (via `nvpro-samples/vk_gaussian_splatting`). Both manifestations rely on the same hardware substrate — NVIDIA Tensor Cores — which deliver the FP8 and FP16 matrix multiply-accumulate throughput that makes real-time neural inference feasible on consumer GPUs.
+
+### 1.3 What is Frame Generation?
+
+Frame generation is a technique in which a neural network synthesises one or more additional display frames between each pair of frames the application actually renders, increasing the apparent output frame rate without the application performing those render passes. The GPU renders frame N and frame N+1; the frame generation network uses both rendered frames together with optical flow information — the per-pixel motion field between them — to interpolate or extrapolate intermediate frames that the display subsystem presents at the panel's full refresh rate.
+
+DLSS 3 frame generation (Ada Lovelace, 2022) synthesised one frame per rendered pair, delivering approximately twice the displayed frame rate. DLSS 4 Multi Frame Generation (MFG) extends this to three generated frames per rendered frame in 4× mode (Ada Lovelace) or up to five generated frames per rendered frame in the 6× Dynamic MFG mode introduced with DLSS 4.5 on Blackwell. On Linux, generated frames must be composited and queued through the DRM page-flip pipeline within the display's vertical blank interval, imposing hard inference-latency budgets on the generation network. Frame generation does not reduce input latency and is not a substitute for an adequate rendered frame rate; it is most effective when paired with NVIDIA Reflex, which keeps the CPU-GPU pipeline latency low while the generated frames fill the remaining refresh-rate headroom.
+
+### 1.4 What is the NGX SDK?
+
+The NGX SDK (NVIDIA Graphics Extensions) is the runtime API through which Vulkan and DirectX applications access DLSS features on Linux and Windows. It ships as a component of the proprietary NVIDIA driver and is not open source. On Linux, the primary shared library is `libnvidia-ngx.so` (installed alongside the driver); feature-specific models and inference networks are provided as additional cryptographically signed shared libraries — `libnvidia-ngx-dlss.so`, `libnvidia-ngx-dlssd.so`, and `libnvidia-ngx-dlssg.so` — which NGX loads dynamically after verifying the `.nvsig` ELF-section signatures embedded in each library.
+
+The Vulkan surface of the SDK is declared in the `nvsdk_ngx_vk.h` header distributed with the DLSS SDK on GitHub. Applications initialise NGX via `NVSDK_NGX_VULKAN_Init_with_ProjectID`, query hardware capability and feature availability via `NVSDK_NGX_VULKAN_GetCapabilityParameters`, create feature instances with `NVSDK_NGX_VULKAN_CreateFeature1`, and execute inference with `NVSDK_NGX_VULKAN_EvaluateFeature`. Model file search paths on Linux default to `/usr/share/nvidia/ngx` and are overridable via the `__NGX_CONF_FILE` environment variable. For applications that need cross-vendor support, the open-source Streamline C++ wrapper abstracts DLSS, FSR, and XeSS behind a common interface and is the recommended integration path. NVK (the open-source Mesa Vulkan driver for NVIDIA hardware) has experimental NGX support gated on the `VK_NVX_binary_import` and `VK_NVX_image_view_handle` extensions, which are covered in Section 10.
 
 ---
 

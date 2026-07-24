@@ -10,6 +10,9 @@
 
 1. [Overview](#overview)
 2. [DeepStream Architecture and Version Landscape](#1-deepstream-architecture-and-version-landscape)
+   - [1.1 What is NVIDIA DeepStream SDK?](#11-what-is-nvidia-deepstream-sdk)
+   - [1.2 What is GStreamer?](#12-what-is-gstreamer)
+   - [1.3 What is TensorRT?](#13-what-is-tensorrt)
 3. [NvBufSurface: CUDA DMA-BUF Buffer Management](#2-nvbufsurface-cuda-dma-buf-buffer-management)
 4. [NvDsBatchMeta: The Metadata Hierarchy](#3-nvdsbatchmeta-the-metadata-hierarchy)
 5. [Gst-nvinfer: TensorRT Engine Integration](#4-gst-nvinfer-tensorrt-engine-integration)
@@ -188,6 +191,32 @@ graph TD
 **Python bindings deprecation**: The `pyds` Python bindings shipped with DeepStream 6.x and 7.x are **deprecated from DeepStream 9.0 onwards**. The recommended replacement is `pyservicemaker` (the Python wrapper for the Service Maker C++ API). Existing `pyds`-based code using `Gst.ElementFactory.make()` continues to function but will not receive new features or fixes.
 
 **Performance reference**: An NVIDIA T4 can run 68 concurrent H.265 video streams at 30 fps with a YOLOv8 primary detector; an A100 with 8 MIG instances can sustain 35 full-HD streams per MIG slice. [Source: DeepStream performance documentation](https://docs.nvidia.com/metropolis/deepstream/dev-guide/text/DS_Performance.html)
+
+### 1.1 What is NVIDIA DeepStream SDK?
+
+NVIDIA DeepStream SDK is a production-grade, GPU-accelerated video analytics framework distributed as a set of GStreamer plugins for Linux. It is not a standalone application or inference engine; instead, it is a collection of approximately thirty GStreamer elements — all prefixed with `nv` — that together provide a complete pipeline for ingesting, decoding, batching, inferring, tracking, annotating, and publishing results from multiple concurrent video streams. The framework is installed under `/opt/nvidia/deepstream/deepstream/`, which contains header files under `sources/includes/`, prebuilt shared libraries, and reference sample applications under `sources/apps/sample_apps/`.
+
+DeepStream targets video analytics applications — surveillance camera networks, traffic monitoring, retail people-counting, and industrial defect detection — where tens to hundreds of video streams must be processed in real time on a single GPU. It achieves this by keeping all frame data in CUDA device memory throughout the pipeline, avoiding the PCIe round-trips that would occur if frames were copied to CPU memory between pipeline stages. On an NVIDIA T4, the framework can process 68 concurrent H.265 streams at 30 fps with a YOLOv8 primary detector. DeepStream supports both discrete GPU (dGPU) deployments on Linux x86-64 and NVIDIA Jetson (Orin, AGX) edge platforms running JetPack, with the same plugin set targeting both via runtime memory type selection.
+
+[Source: DeepStream 9.0 Developer Guide — Overview](https://docs.nvidia.com/metropolis/deepstream/dev-guide/text/DS_Overview.html)
+
+### 1.2 What is GStreamer?
+
+GStreamer is a general-purpose multimedia pipeline framework for Linux and other platforms. It implements a directed graph of elements connected by pads; each element processes media data and pushes the result downstream. A GStreamer pipeline is assembled by linking source elements (file demuxers, RTSP clients), transform elements (decoders, scalers, filters), and sink elements (encoders, display, network writers) using a caps-negotiation protocol where pads advertise supported media types and the framework selects a compatible format at pipeline construction time.
+
+DeepStream extends GStreamer by providing NVIDIA-specific elements that carry CUDA-allocated frame buffers — `NvBufSurface` objects — between stages instead of the standard `GstBuffer` byte arrays. This extension preserves the GStreamer pipeline model (element linking, bus messaging, pad probes for metadata injection) while replacing CPU-side memory management with GPU-resident buffer management. A DeepStream pipeline is a valid GStreamer pipeline and can be assembled with `gst-launch-1.0`, the `Gst.Pipeline` Python API, or the higher-level Service Maker C++ builder introduced in DeepStream 9.0. DeepStream metadata is attached to GStreamer buffers via the `NvDsBatchMeta` GstMeta extension, making inference results visible to any downstream element that holds a reference to the buffer.
+
+Chapter 58 covers GStreamer fundamentals including element factories, pad negotiation, the `GstBuffer` and `GstMeta` extension points, and the plugin registry. This chapter assumes that background and focuses on the DeepStream-specific extensions above it.
+
+[Source: GStreamer Application Development Manual](https://gstreamer.freedesktop.org/documentation/application-development/index.html)
+
+### 1.3 What is TensorRT?
+
+TensorRT is NVIDIA's inference optimization runtime for deep learning models on CUDA GPUs. Given a neural network graph — described in ONNX format or exported from PyTorch or TensorFlow — TensorRT applies layer fusion, kernel auto-tuning, quantization (FP32, FP16, INT8, FP8 on Hopper), and memory layout optimization to produce an engine: a GPU-architecture-specific binary optimized for a target device's compute capability and memory bandwidth. Engine build time is spent once (typically minutes), and the resulting serialized engine file is loaded at pipeline startup for low-latency per-batch inference.
+
+Within DeepStream, TensorRT is exposed through the `nvinfer` GStreamer element. The `nvinfer` element reads an INI-format configuration file specifying the network type (detector, classifier, segmentation), a pre-built TensorRT engine file or an ONNX source from which `nvinfer` builds an engine on first run via `trtexec`, precision, batch size, and clustering mode. The element calls the TensorRT runtime on each batch of frames assembled by `nvstreammux`, then attaches raw tensor outputs and parsed bounding boxes to the `NvDsBatchMeta` structure on the GStreamer buffer. Custom output parsers are registered as shared libraries compiled against the `NvDsInferParseCustom` symbol ABI.
+
+[Source: TensorRT Developer Guide — Building an Engine](https://docs.nvidia.com/deeplearning/tensorrt/developer-guide/index.html)
 
 ---
 

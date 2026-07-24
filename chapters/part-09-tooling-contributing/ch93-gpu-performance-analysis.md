@@ -9,6 +9,9 @@ This chapter targets **graphics application developers**, **game developers**, *
 ## Table of Contents
 
 1. [Introduction: Performance Analysis vs Debugging](#1-introduction)
+   - [1.1 What is a GPU Hardware Performance Counter?](#11-what-is-a-gpu-hardware-performance-counter)
+   - [1.2 What is GPU Occupancy?](#12-what-is-gpu-occupancy)
+   - [1.3 What is Frame Time Decomposition?](#13-what-is-frame-time-decomposition)
 2. [Frame Time Decomposition with Vulkan Timestamp Queries](#2-frame-time-decomposition)
 3. [VK_KHR_performance_query: Hardware Counter Access](#3-vk_khr_performance_query)
 4. [GPU-Bound vs CPU-Bound Analysis](#4-gpu-bound-vs-cpu-bound)
@@ -54,6 +57,28 @@ Start at level 1. Only descend to deeper levels once the higher level has confir
 - **"GPU-bound is the goal."** Being GPU-bound at 100% utilisation is only good if the GPU is doing the *right* work. A shader with a 90% texture stall rate saturates the GPU but delivers terrible throughput.
 - **"VRAM size limits performance."** **VRAM** *bandwidth* is almost always the binding constraint; 24 GB at 50% bandwidth utilisation is worse than 16 GB at 95%.
 - **"Fill rate is the bottleneck."** On modern GPUs with unified shaders, fill rate limits (**ROP**s) are rarely hit. Compute throughput, bandwidth, and latency dominate.
+
+### 1.1 What is a GPU Hardware Performance Counter?
+
+A GPU hardware performance counter is a register built into the GPU's fixed-function and programmable hardware units that increments in response to specific microarchitectural events. These events range from cache hits and misses to shader instruction retirements, memory transactions, and pipeline stalls. Unlike software timers, which measure elapsed wall-clock time, hardware counters expose the internal behaviour of the GPU at the cycle level.
+
+Modern GPUs expose hundreds to thousands of such counters, grouped into domains corresponding to hardware blocks: the shader core (SM on NVIDIA, CU on AMD), the texture unit (TMU), the render output unit (ROP), the L1 and L2 caches, and the memory controller. Because GPU hardware mux configurations limit how many counter groups can be sampled simultaneously, profiling tools typically require multiple capture passes — one pass per mux configuration — to collect a full counter set. The Vulkan API standardises access to these counters through the `VK_KHR_performance_query` extension, which maps vendor-specific counters into a portable query pool mechanism. On Mesa RADV, the counter infrastructure is implemented in `src/amd/vulkan/radv_perfcounter.c` and requires enabling via `RADV_PERFTEST=perf_counters`. On NVIDIA proprietary drivers, the same hardware counters are surfaced through the `ncu` (NVIDIA Compute Profiler) command-line tool.
+
+Hardware performance counters are the foundation of quantitative GPU optimisation: without them, developers are limited to coarse frame-time measurements that cannot distinguish between bandwidth saturation, instruction throughput limits, and occupancy-driven latency hiding failures.
+
+### 1.2 What is GPU Occupancy?
+
+GPU occupancy measures the ratio of active waves (AMD terminology) or warps (NVIDIA terminology) to the theoretical maximum the hardware can schedule simultaneously on a single shader multiprocessor — a Compute Unit (CU) on AMD RDNA hardware or a Streaming Multiprocessor (SM) on NVIDIA GPUs. Occupancy is not a direct measure of performance, but it determines the GPU's ability to hide memory latency through wave-switching. When a wave stalls waiting for a texture fetch or DRAM access, the GPU can issue instructions from another resident wave; high occupancy means more waves are available for this latency hiding.
+
+Occupancy is constrained by three register file resources: Vector General-Purpose Registers (VGPRs), which store per-lane data across the SIMD width; Scalar General-Purpose Registers (SGPRs), which store data uniform across the wave; and Local Data Share (LDS) or shared memory, the on-CU scratchpad. On RDNA 3, a CU contains 1024 vector registers per SIMD, divided among all resident waves. A shader that requires 64 VGPRs can pack at most 16 waves per SIMD (1024 / 64), reducing theoretical occupancy. Developers control VGPR allocation through shader restructuring, loop unrolling choices, subgroup operations (`subgroupBallot`, `subgroupShuffle`), and explicit `barrier()` calls that allow the compiler to release registers early. AMD RDNA hardware additionally supports wave32 and wave64 modes, selectable via `VK_EXT_subgroup_size_control`, which directly affects the VGPR-to-occupancy tradeoff.
+
+### 1.3 What is Frame Time Decomposition?
+
+Frame time decomposition is the practice of partitioning a rendered frame's total GPU time budget into per-pass contributions — GBuffer, shadow maps, lighting, ray tracing, post-processing, and UI — by inserting GPU timestamp queries at the boundaries of each render pass. The goal is to identify which passes consume the most time so that optimisation effort can be directed where it has the greatest impact, rather than applied uniformly or guided by intuition.
+
+In the Vulkan API, frame time decomposition is implemented using `vkCmdWriteTimestamp2` (available in Vulkan 1.3 and via the `VK_KHR_synchronization2` extension), which records a GPU clock sample at a specified pipeline stage into a `VkQueryPool`. After the frame completes, `vkGetQueryPoolResults` retrieves these timestamps; the difference between consecutive samples, multiplied by `VkPhysicalDeviceLimits::timestampPeriod`, yields the pass duration in nanoseconds. The result is a per-frame timing table that makes the relative cost of each rendering stage visible.
+
+Frame time decomposition sits at the second level of the performance analysis hierarchy described in this chapter, below system-level frame-time monitoring (MangoHUD, nvtop) and above hardware counter collection. It is the standard first step after confirming that an application is GPU-bound, and it narrows the investigation space before descending to the hardware counter and ISA levels where the root cause of a bottleneck can be confirmed and fixed.
 
 ---
 

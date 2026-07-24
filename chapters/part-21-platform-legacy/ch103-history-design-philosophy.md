@@ -8,6 +8,10 @@
 
 - [Scope](#scope)
 - [1. Introduction: Architecture Is History](#1-introduction-architecture-is-history)
+  - [1.1 What is the Linux Graphics Stack?](#11-what-is-the-linux-graphics-stack)
+  - [1.2 What is DRM?](#12-what-is-drm)
+  - [1.3 What is Mesa?](#13-what-is-mesa)
+  - [1.4 What is Wayland?](#14-what-is-wayland)
 - [2. The X Window System: 1984–2000](#2-the-x-window-system-19842000)
 - [3. The DRI Project: 1998–2008](#3-the-dri-project-19982008)
 - [4. Mesa's Evolution: 1993–2015](#4-mesas-evolution-19932015)
@@ -50,6 +54,30 @@ What follows is an account of those four decades, told in terms of the problems 
 The story has recurring characters. There is the fundamental tension between hardware vendors who want to keep driver implementation private and a Linux kernel community that insists on full auditability and mainline integration. There is the persistent pressure toward zero-copy buffer sharing as GPU workloads diversify — from 2D desktop rendering to 3D games to machine learning inference — and the buffers must flow between an expanding set of subsystems without crossing the CPU. And there is the community's consistent preference for mechanism over policy: the kernel should provide primitives that give userspace the flexibility to build policy, not bake policy into kernel code that is then hard to change.
 
 Those threads connect 1984 to 2026.
+
+### 1.1 What is the Linux Graphics Stack?
+
+The Linux graphics stack is the collection of kernel subsystems, userspace libraries, and inter-process protocols that together translate GPU hardware capabilities into rendered pixels on a display. It spans from device drivers inside the Linux kernel — principally the Direct Rendering Manager (DRM) subsystem and its family of GPU-specific drivers — through Mesa, the userspace library that implements OpenGL, Vulkan, and related APIs, up to the display server or compositor (historically the X Window System, now Wayland) that manages per-application rendering outputs and presents a composed image to the physical display. Supporting subsystems include V4L2 for video decode, VA-API for hardware-accelerated video, and PipeWire for screen capture and audio/video routing.
+
+The stack is not monolithic. Each layer communicates with the next via stable interfaces: DRM ioctls for kernel-userspace communication, DMA-BUF file descriptors for zero-copy buffer sharing, and Wayland protocol messages for compositor-client interaction. This chapter traces how those layers and their interfaces came to be, because the shape of each interface reflects a specific engineering problem that arose at a specific point in the stack's history.
+
+### 1.2 What is DRM?
+
+The Direct Rendering Manager (DRM) is the kernel subsystem that mediates access to graphics hardware on Linux. It provides two broad services. First, it manages the display pipeline: through the Kernel Mode Setting (KMS) interface, DRM owns the CRTC, plane, connector, and encoder objects that represent the physical signal path from GPU framebuffer to monitor. Applications and compositors ask the kernel to configure and commit display state rather than programming hardware registers directly. Second, DRM provides controlled access to the GPU's 3D rendering and compute engines: through command submission ioctls and GPU memory management (GEM or TTM), a userspace process can submit work to the GPU without needing root privilege or exclusive hardware ownership.
+
+DRM exposes two device nodes: `/dev/dri/cardN` for display management (requires seat-level privilege or a session grant via logind) and `/dev/dri/renderDN` for GPU compute and rendering (accessible to any user in the `render` group). The split enforces the principle that compute access and display ownership are distinct capabilities with distinct privilege requirements. Chapter 1 covers DRM node security in depth; Chapter 2 covers the KMS object model and the ioctl interface in full.
+
+### 1.3 What is Mesa?
+
+Mesa is the open-source implementation of GPU programming APIs — primarily OpenGL, Vulkan, and OpenCL — in userspace on Linux. It is the software that translates high-level API calls (draw this triangle, allocate this buffer, compile this shader) into the hardware-specific command sequences that a GPU executes. Mesa does not live in the kernel; it is a shared library (`.so`) that loads into the application's address space and communicates with the kernel via DRM ioctls, with buffers shared to other processes via DMA-BUF file descriptors.
+
+Mesa contains a frontend state machine and API runtime for each supported API (the OpenGL state tracker, the Vulkan runtime), shared intermediate representations for shaders (NIR, and historically TGSI), a shared compiler infrastructure, and per-GPU backend drivers: `radeonsi` for AMD Radeon GCN and RDNA hardware, `iris` for Intel Xe/Gen12 and earlier, `nvk` for NVIDIA Turing and later, `panfrost` for ARM Mali Midgard/Bifrost/Valhall, `freedreno` for Qualcomm Adreno, and many others. The Gallium3D architecture separates API state tracking from hardware-specific pipe drivers so that a new GPU driver reuses the existing API frontends without reimplementing them. Chapter 6 covers Mesa's Gallium architecture; Chapters 12–16 cover individual driver implementations.
+
+### 1.4 What is Wayland?
+
+Wayland is a display server protocol for Linux and other Unix-like systems that supersedes the X Window System as the standard compositor and input-dispatch mechanism. Under Wayland, the compositor is also the display server: it receives rendering output from clients as shared memory buffers or DMA-BUF file descriptors, composites them into a scene, and presents the composed frame to the physical display via the DRM KMS interface. There is no intermediate X server layer between an application and the display.
+
+The Wayland protocol is defined in XML wire-format descriptions and specifies objects (surfaces, buffers, seats, outputs) and events exchanged over a Unix domain socket. The core protocol is intentionally minimal; application-specific functionality — desktop window management, screen locking, layer surfaces for panels and notification overlays — is added through extension protocols such as `xdg-shell`, `xdg-output`, and the wlr-layer-shell family. XWayland provides backward compatibility for legacy X11 applications by embedding an X server that translates X11 drawing commands into Wayland surface buffers, letting unported applications run under a Wayland compositor without modification. Chapter 20 covers the Wayland protocol architecture; Chapters 21–23 cover the major compositors built on it.
 
 ---
 

@@ -7,6 +7,9 @@
 ## Table of Contents
 
 1. [Tauri's Place in the Browser Rendering Landscape](#1-tauris-place-in-the-browser-rendering-landscape)
+   - [1.1 What is Tauri?](#11-what-is-tauri)
+   - [1.2 What is WebKitGTK?](#12-what-is-webkitgtk)
+   - [1.3 What is Wry?](#13-what-is-wry)
 2. [Architecture Overview: Process Model and Crate Structure](#2-architecture-overview-process-model-and-crate-structure)
 3. [Tao: GTK-First Window Management](#3-tao-gtk-first-window-management)
 4. [Wry: The Cross-Platform WebView Abstraction](#4-wry-the-cross-platform-webview-abstraction)
@@ -37,6 +40,28 @@ This architectural choice has direct consequences for the Linux graphics stack:
 - **Multi-process WebKit**: WebKitGTK runs its web content in a separate process (the WebKit Web Content Process), sharing GPU buffers with the UI process — a two-process model analogous to but independent of Chrome's multi-process architecture.
 
 The practical result: a Tauri application on Linux appears to the display stack as a GTK3 application emitting a Wayland `wl_surface`, negotiating format modifiers via `zwp_linux_dmabuf_v1`, and submitting composited frames through the same path as any other GTK3 window. The browser engine's complexity is hidden inside the WebKitGTK library.
+
+### 1.1 What is Tauri?
+
+Tauri is a framework for building desktop applications that render their user interface with a web technology stack — HTML, CSS, and JavaScript — while implementing application logic in Rust. Unlike frameworks that ship a bundled browser engine alongside every application binary, Tauri delegates rendering to the platform's native WebView component: WebKitGTK on Linux, WKWebView on macOS, and Edge WebView2 on Windows. The application binary contains no browser engine code; the engine arrives as a system library already present on the target machine.
+
+Tauri's model sits at the intersection of the native-application stack and the browser rendering stack. The Rust application process manages native windows, system integration, file I/O, and inter-process communication. The HTML frontend running inside the WebView handles UI rendering, receiving and sending typed messages across an IPC bridge that Tauri defines. On Linux, this means a Tauri application appears on the display stack as a GTK3 client — emitting `wl_surface` frames to a Wayland compositor — while internally hosting a full WebKit web content process that handles layout, JavaScript execution, and composited GL rendering. The combination makes Tauri applications significantly smaller than Electron equivalents (typically under 10 MB versus 100+ MB), at the cost of depending on the system WebKit version and GTK3 runtime.
+
+### 1.2 What is WebKitGTK?
+
+WebKitGTK is the GTK-integrated port of the WebKit browser engine. WebKit began as a fork of the KHTML layout engine and KJS JavaScript engine, and the GTK port was developed to make the same engine available on Linux desktop environments as a shared system library. On Debian and Ubuntu the relevant package is `libwebkit2gtk-4.1`; on Fedora it is `webkit2gtk4.1`.
+
+WebKitGTK exposes a GObject-based C API — `WebKitWebView`, `WebKitWebContext`, `WebKitSettings`, and related types — that allows GTK applications to embed a fully functional web rendering engine as a widget. Internally, WebKitGTK uses a multi-process architecture: the application process hosts the `WebKitWebView` GTK widget and a UI-side compositor, while actual page rendering happens in one or more Web Content Processes. The Web Content Process runs WebCore (WebKit's layout engine) and JavaScriptCore, composites layers using OpenGL calls, and shares rendered frames with the UI process as DMA-BUF textures.
+
+For the Linux graphics stack, WebKitGTK communicates with the GPU through EGL and Mesa's OpenGL implementation. It does not use Vulkan natively in its current stable release, unlike Chrome's Dawn-based WebGPU path. The GTK widget wraps the compositor output as a `wl_surface` or X11 drawable, meaning WebKitGTK rendering feeds into the same DRM/KMS display pipeline as any other OpenGL application.
+
+### 1.3 What is Wry?
+
+Wry is a cross-platform WebView abstraction library maintained as part of the Tauri project. Its purpose is to provide a uniform Rust API for embedding web content in a native window regardless of which WebView engine the platform provides. On Linux, Wry wraps the WebKitGTK `WebKitWebView` widget; on macOS it wraps `WKWebView`; on Windows it wraps Microsoft Edge WebView2.
+
+The abstraction covers WebView lifecycle management (creation, navigation, reload), JavaScript evaluation, IPC message passing through a `window.ipc.postMessage()` bridge, custom URI scheme handlers, and cross-origin configuration. Custom scheme handlers are the mechanism through which Tauri serves bundled frontend assets: Wry registers a protocol such as `tauri://` with the underlying WebKit context using `webkit_web_context_register_uri_scheme()`, so the web content process can load application assets without a network server. The handler runs in the application process and has full access to the embedded asset bundle.
+
+Wry is deliberately thin: it does not normalize browser-engine behavior across platforms or polyfill missing web APIs. Platform-specific capabilities are exposed through extension traits — `WebViewBuilderExtUnix` for Linux — which prevents the abstraction from becoming a lowest-common-denominator interface while still allowing the majority of WebView configuration to be written in platform-agnostic Rust code.
 
 ---
 

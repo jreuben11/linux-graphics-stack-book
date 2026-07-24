@@ -8,6 +8,9 @@
 
 - [Scope](#scope)
 - [1. Structural Philosophy: Bazaar, Cathedral, and Monastery](#1-structural-philosophy-bazaar-cathedral-and-monastery)
+  - [1.1 What is the Linux DRM/Mesa Stack?](#11-what-is-the-linux-drmmesa-stack)
+  - [1.2 What is WDDM (Windows Display Driver Model)?](#12-what-is-wddm-windows-display-driver-model)
+  - [1.3 What is Metal?](#13-what-is-metal)
 - [2. Innovations Where Linux Leads](#2-innovations-where-linux-leads)
   - [2.1 Mesa NIR: Open Universal Shader IR](#21-mesa-nir-open-universal-shader-ir)
   - [2.2 DMA-BUF: Cross-Process Zero-Copy Buffers](#22-dma-buf-cross-process-zero-copy-buffers)
@@ -69,6 +72,24 @@ The three stacks reflect fundamentally different organizational philosophies, an
 **macOS is a monastery.** Metal, CoreAnimation, and AGX GPU silicon are designed by the same team at Apple, optimized for the same hardware, and updated together at each annual OS release. Vertical integration is taken further than either Windows or Linux: the compiler toolchain (metalfe), the GPU driver, the compositor (CoreAnimation/WindowServer), and the application frameworks (AppKit, SwiftUI) are all Apple-controlled and Apple-silicon-optimized. The cost is portability; Metal runs on exactly the hardware Apple sells.
 
 These structural differences produce different innovation patterns, different failure modes, and different responses to external pressure. The following sections examine each dimension.
+
+### 1.1 What is the Linux DRM/Mesa Stack?
+
+The Linux graphics stack is a layered, open-source architecture spanning the kernel and userspace. At the kernel level, the Direct Rendering Manager (DRM) subsystem provides the hardware abstraction for GPU command submission, buffer object management (GEM — Graphics Execution Manager), and display configuration (KMS — Kernel Mode Setting). Each GPU is represented by a DRM driver (`amdgpu`, `i915`, `xe`, `nouveau`, `asahi`, `panfrost`) that registers its capabilities with the DRM core and exposes a device node under `/dev/dri/cardN` and `/dev/dri/renderDN`. KMS manages the display pipeline — scanout planes, output connectors, CRTC timing — through a unified ioctl interface that allows userspace to configure displays without vendor-specific display configuration code.
+
+Above the kernel, Mesa provides open-source GPU userspace drivers: Vulkan implementations (RADV for AMD, ANV for Intel, NVK for NVIDIA, Turnip for Qualcomm Adreno, Panfrost for ARM Mali), OpenGL and OpenGL ES implementations, and OpenCL through Rusticl. Mesa's internal compiler architecture centres on NIR (New Intermediate Representation), a common shader IR through which GLSL, SPIR-V, HLSL (via DXVK), WGSL, and OpenCL C all pass before reaching hardware-specific code generation backends. The Wayland display protocol provides the compositor-client interface through which applications submit rendered frames for display, using `linux-dmabuf-v1` for zero-copy buffer sharing and `linux-drm-syncobj-v1` for explicit GPU synchronization. This chapter treats the DRM/KMS/Mesa/Wayland stack as the primary reference point when comparing how equivalent GPU workloads are handled on Windows and macOS.
+
+### 1.2 What is WDDM (Windows Display Driver Model)?
+
+WDDM is the GPU kernel architecture and driver specification that Microsoft introduced with Windows Vista (2006) and has extended through each subsequent Windows release. It defines a mandatory driver model for all GPU drivers on Windows: a kernel-mode driver (KMD) handles privilege-level operations including page table management, memory residency, interrupt service, and power state transitions, while a user-mode driver (UMD) handles command buffer construction in process context without ring-0 privileges. DXGI (DirectX Graphics Infrastructure) is the system-level surface and display management API that sits between DirectX applications and the Desktop Window Manager (DWM), the Windows system compositor.
+
+Unlike the Linux model where DRM defines only the kernel contract and multiple independent userspace implementations coexist, WDDM is a complete, versioned specification maintained entirely by Microsoft. Each DirectX feature level maps to a specific WDDM version — WDDM 2.0 introduced tiled resource residency, WDDM 2.6 introduced hardware GPU scheduling, and WDDM 3.0 added per-process GPU fault isolation. Every GPU driver shipping on Windows must conform to the WDDM version for its target OS release. This uniformity enables coordinated feature delivery: DirectX 12 Ultimate certification, TDR (Timeout Detection and Recovery), and hardware scheduling all require matching WDDM extensions implemented across every certified IHV driver simultaneously. This chapter uses WDDM as the Windows GPU architecture reference when comparing hang recovery, feature delivery cadence, and driver model against Linux equivalents.
+
+### 1.3 What is Metal?
+
+Metal is Apple's low-level GPU API, introduced for iOS in 2014 and extended to macOS in 2015. It serves as the primary GPU-facing interface across all Apple platforms, replacing OpenGL and OpenCL in Apple's supported software stack. Metal operates at an abstraction level comparable to Vulkan or Direct3D 12 — explicit command buffer recording, explicit resource management, explicit pipeline state compilation — but with a smaller and more opinionated API surface designed around the constraints and capabilities of Apple GPU hardware, particularly its tile-based deferred rendering (TBDR) architecture.
+
+Metal is architecturally inseparable from the system-level graphics stack on macOS. CoreAnimation is the macOS compositor framework, rendering UI layer trees using the Metal back-end internally. WindowServer, the macOS display server, uses Metal and CoreAnimation exclusively. The Metal compiler toolchain implements the Metal Shading Language (MSL), a C++14-derived shading language compiled by Apple's proprietary metalfe front-end through an Apple-internal IR before reaching the AGX GPU back-end. On Apple Silicon, the GPU, the Neural Engine, the display engine, and the unified memory subsystem are all first-party silicon; Metal's API design reflects this tightly — features such as argument buffers (bindless resource access), tile shaders (on-chip memory access for TBDR), and binary archives (pre-compiled pipeline caching) are designed to expose Apple GPU microarchitecture capabilities directly. This chapter uses Metal as the macOS reference when comparing API ergonomics, unified memory behaviour, HDR support, and compositor integration against Linux equivalents.
 
 ---
 

@@ -8,6 +8,9 @@
 ## Table of Contents
 
 1. [The Multi-Process Architecture and the GPU Process](#1-the-multi-process-architecture-and-the-gpu-process)
+   - [1.1 What is the GPU Process?](#11-what-is-the-gpu-process)
+   - [1.2 What is Mojo?](#12-what-is-mojo)
+   - [1.3 What is ANGLE?](#13-what-is-angle)
 2. [Mojo IPC: Chrome's Typed Pipe Framework](#2-mojo-ipc-chromes-typed-pipe-framework)
 3. [The GPU Command Buffer Protocol](#3-the-gpu-command-buffer-protocol)
 4. [The Ozone Platform Abstraction Layer](#4-the-ozone-platform-abstraction-layer)
@@ -68,6 +71,30 @@ graph TD
     RP2 -- "command buffer IPC\n(Mojo)" --> GP
     BP -- "EstablishGpuChannel\n(Mojo)" --> GP
 ```
+
+### 1.1 What is the GPU Process?
+
+The GPU Process is a dedicated Chrome child process that holds all hardware GPU contexts on behalf of every tab in the browser. Chrome's multi-process architecture separates rendering into isolated processes: renderer processes parse HTML and execute JavaScript but are sandboxed against direct hardware access. The GPU Process breaks this restriction at a controlled boundary — it is the single process permitted to open DRM render nodes (`/dev/dri/renderDN`), allocate GPU memory, submit command streams via kernel `ioctl` calls, and import DMA-BUF buffers. Every renderer process, regardless of how many tabs are open, funnels its rendering requests through this one GPU Process over a typed IPC channel built on Mojo.
+
+The architectural rationale is crash isolation and security containment. GPU drivers are not hardened against malformed API call sequences from untrusted code. Isolating GPU API access in a separate process turns a driver crash or hang into a recoverable event: the browser process detects GPU Process death through Mojo pipe closure and relaunches it, converting a whole-browser freeze into a per-page `webglcontextlost` DOM event. From a security perspective, removing direct GPU API access from renderer processes eliminates an entire class of GPU driver privilege-escalation exploits. The renderer sandbox installs a `seccomp-BPF` syscall filter that denies `open`, `openat`, and `socket`, making it structurally impossible for compromised renderer code to open a DRM device node or any other hardware interface independently.
+
+On Linux, the GPU Process also hosts the Viz display compositor (`viz::DisplayCompositor`), which aggregates `CompositorFrame` submissions from all renderers and presents the final frame through the Ozone output surface. The GPU Process entry point is `GpuMain` in `gpu/ipc/service/gpu_main.cc`, and the service object that other processes communicate with is `GpuServiceImpl` in the same directory.
+
+### 1.2 What is Mojo?
+
+Mojo is Chrome's typed IPC library, used to pass messages, transfer file descriptors, and share memory between Chrome's isolated processes. It replaced the older untyped `IPC::Channel` infrastructure and is built around a formal interface definition language: `.mojom` files describe interfaces, methods, and parameter types, and the build system generates strongly typed C++ bindings — caller-side stubs (`Remote`), callee-side bindings (`Receiver`), and serialisation code — from those definitions. An interface such as `mojom::GpuChannel` is defined once in a `.mojom` file; the generator produces `GpuChannelRemote` for the renderer side and `GpuChannelReceiver` for the GPU Process side, both strongly typed.
+
+A Mojo message pipe is a pair of bidirectional endpoints; messages are serialised structs that can carry attached handles. The capability that makes Mojo effective for GPU communication on Linux is handle passing: Mojo transfers file descriptors across process boundaries using `SCM_RIGHTS` inside a `sendmsg(2)` call on an underlying Unix domain socket. This is how DMA-BUF file descriptors move from the GPU Process to the browser process and onward to the Wayland compositor. For bulk data — command buffer contents, texture uploads, vertex buffers — Mojo provides shared memory regions (`mojo::SharedMemoryRegion`); only a handle crosses the pipe while the actual data is read directly from mapped memory, avoiding kernel copy overhead.
+
+Mojo is the transport that carries the GPU command buffer protocol (Section 3), GPU channel establishment (`EstablishGpuChannel`), DMA-BUF handle exchange (Section 4), and the DawnWire WebGPU protocol (Chapter 35). Every IPC path between renderer processes, the browser process, and the GPU Process on Linux runs over Mojo.
+
+### 1.3 What is ANGLE?
+
+ANGLE (Almost Native Graphics Layer Engine) is a conformant OpenGL ES 2.0/3.x and EGL implementation that translates OpenGL ES API calls into a lower-level graphics API — primarily Vulkan on Linux, but also native OpenGL, Direct3D 11, or Metal on other platforms. Chrome does not call Mesa's OpenGL implementation directly; instead it uses ANGLE as an intermediary. This indirection provides a stable, well-tested validation layer between Chrome's command buffer decoder and the GPU driver, a path for compiling GLSL shaders to SPIR-V via the Tint compiler to achieve cross-driver shader portability, and the ability to run Chrome's GPU code path against the SwiftShader software rasteriser (`SwANGLE`) without physical GPU hardware for testing and fallback.
+
+In Chrome's GPU Process, ANGLE is the GL implementation that `CommandBufferStub` calls after the passthrough command decoder forwards decoded commands from the ring buffer. ANGLE's EGL context is created over the system's native EGL from Mesa or directly over Vulkan via the `EGL_ANGLE_platform_angle_vulkan` extension. When the Vulkan backend is selected (activated by `--use-angle=vulkan`), ANGLE translates GLSL to SPIR-V, allocates Vulkan resources, and submits `VkCommandBuffer` objects to the driver. On a typical Linux desktop with AMD or Intel hardware, that submission reaches Mesa's RADV or ANV Vulkan driver, which encodes work into a kernel command stream submitted via `DRM_IOCTL_AMDGPU_CS` or `DRM_IOCTL_I915_GEM_EXECBUFFER2`.
+
+ANGLE's source is included in the Chromium repository at `//third_party/angle/` and is also maintained as a standalone open-source project at `chromium.googlesource.com/angle/angle`.
 
 ---
 

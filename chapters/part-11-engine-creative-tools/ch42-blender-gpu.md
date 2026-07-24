@@ -18,6 +18,9 @@ Readers who have worked through the kernel driver chapters (Parts I–III), the 
 ## Table of Contents
 
 - [1. GPU Rendering in Blender: Architecture Overview](#1-gpu-rendering-in-blender-architecture-overview)
+  - [1.4 What is Cycles?](#14-what-is-cycles)
+  - [1.5 What is EEVEE?](#15-what-is-eevee)
+  - [1.6 What is GPU Compute in the Context of Rendering?](#16-what-is-gpu-compute-in-the-context-of-rendering)
 - [2. EEVEE Next: The Vulkan Rewrite](#2-eevee-next-the-vulkan-rewrite)
 - [3. Cycles GPU Backend: Multi-Backend Compute Architecture](#3-cycles-gpu-backend-multi-backend-compute-architecture)
 - [4. GLSL/SPIR-V Shader Compilation in Blender](#4-glslspir-v-shader-compilation-in-blender)
@@ -118,6 +121,28 @@ Minimum hardware for the **Vulkan** path:
 - **AMD**/**Intel**: **Mesa 25.3+** (**RADV** for **AMD**, **ANV** for **Intel**)
 
 These requirements are documented in **`VKBackend::missing_capabilities_get()`** which filters unsuitable hardware before device initialisation proceeds. [Source](https://projects.blender.org/blender/blender/src/branch/main/source/blender/gpu/vulkan/vk_backend.cc)
+
+### 1.4 What is Cycles?
+
+Cycles is Blender's physically-based Monte Carlo path tracer. Path tracing is a rendering algorithm that simulates the physical propagation of light through a scene: rays are cast from the camera through each pixel, bounce off surfaces according to physically-based scattering models (BRDFs and BTDFs), and accumulate radiance from light sources encountered along each path. Because each ray path is an independent random sample of the rendering equation, the algorithm is trivially parallel at the ray level — making it a natural GPU compute workload. Rendering converges to a noise-free image as the number of accumulated samples per pixel increases.
+
+On Linux, Cycles dispatches compute workloads through five vendor-specific backends: HIP for AMD GPUs via the ROCm stack, CUDA and OptiX for NVIDIA via `libcuda.so` and the proprietary driver, oneAPI for Intel Arc via the SYCL compiler, and an experimental Vulkan compute backend for cross-driver portability. The kernel source in `intern/cycles/kernel/` is written in portable C++ annotated with macros (`ccl_kernel`, `ccl_device`, `ccl_global`) that abstract over each backend's calling convention; the same C++ is compiled by `hipcc`, `nvcc`, `icpx`, or `glslc` depending on the target. Section 3 examines all five backends in depth, including the kernel-mode driver paths each traverses.
+
+### 1.5 What is EEVEE?
+
+EEVEE is Blender's real-time rasterization-based renderer, designed for interactive viewport feedback and fast final renders where physical accuracy can be traded for speed. Since Blender 4.2 LTS the renderer runs exclusively on the Vulkan backend — the earlier OpenGL implementation from Blender 3.x was retired and replaced by the Vulkan rewrite developed under the name EEVEE Next.
+
+EEVEE uses deferred shading: geometry is rasterized into a G-buffer (depth, normals, albedo, and packed roughness/metallic/occlusion values) in a first pass, and lighting is accumulated in subsequent passes that read those attachments. This structure decouples geometric complexity from lighting complexity, allowing many light sources to be evaluated per fragment without re-rasterizing scene geometry. Additional passes implement clustered lighting (via a `VkImage3D` frustum grid), a virtual shadow map tilemap (a GPU-resident shadow atlas with demand-paged tiles), froxel-based volumetrics, and screen-space post-processing effects — all implemented as Vulkan compute dispatches or `VK_KHR_dynamic_rendering` render passes through Blender's `VKRenderGraph` system.
+
+EEVEE does not simulate global illumination by tracing rays; it approximates indirect lighting through screen-space and probe-based techniques. This makes it orders of magnitude faster than Cycles for interactive work, at the cost of physical accuracy in scenes with complex indirect light transport.
+
+### 1.6 What is GPU Compute in the Context of Rendering?
+
+GPU compute, in the context of Blender, refers to dispatching general-purpose parallel workloads to GPU hardware using compute APIs rather than the fixed rasterization pipeline. While EEVEE primarily uses rasterization (with compute shaders for auxiliary passes such as lighting culling and volumetrics), Cycles is entirely a compute workload: every kernel dispatch — BVH intersection, surface shading, path sampling, and denoising — is submitted via the GPU's compute queue, not the graphics queue.
+
+On Linux this maps to distinct kernel subsystems. AMD GPUs expose a compute command queue through the `amdgpu` Kernel Fusion Driver (KFD); HIP's `hipModuleLaunchKernel()` targets it. NVIDIA GPUs are reached via `nvidia-uvm.ko` and `libcuda.so` as the userspace interface to the GPU compute units. Intel Arc hardware is addressed through the `i915` or `xe` kernel driver's compute engine. In each case, the compute dispatch bypasses vertex processing and rasterization hardware entirely, sending kernel code directly to the programmable shader processors — Compute Units on AMD, Streaming Multiprocessors on NVIDIA, Execution Units on Intel — via the appropriate hardware command ring.
+
+This distinction matters for performance analysis: Cycles behaves as a memory-bandwidth-bound high-performance compute workload on scenes dominated by BVH traversal (random pointer-chasing through acceleration structures) and shifts toward compute-bound behavior on scenes with complex procedural materials. It responds to tuning levers — wave size, L2 cache capacity, memory bandwidth — that differ from those that govern rasterization workloads. Section 7 analyses these characteristics per backend on current Linux hardware.
 
 ---
 
