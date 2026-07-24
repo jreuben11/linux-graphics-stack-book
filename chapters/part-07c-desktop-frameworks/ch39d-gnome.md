@@ -41,9 +41,11 @@
   - [5.3 Writing a Modern Shell Extension](#53-writing-a-modern-shell-extension)
   - [5.4 Async Programming: The GLib Main Loop](#54-async-programming-the-glib-main-loop)
   - [5.5 GJS vs PyGObject vs gtk-rs](#55-gjs-vs-pygobject-vs-gtk-rs)
+  - [5.6 GObject Introspection Internals](#56-gobject-introspection-internals)
 - [6. D-Bus Integration in GNOME](#6-d-bus-integration-in-gnome)
 - [7. GNOME Files, Nautilus, and GVfs](#7-gnome-files-nautilus-and-gvfs)
 - [8. Flatpak and GNOME](#8-flatpak-and-gnome)
+  - [8.4 AT-SPI2 Accessibility Bridge](#84-at-spi2-accessibility-bridge)
 - [9. Performance and Debugging](#9-performance-and-debugging)
 - [10. Integrations](#10-integrations)
 - [References](#references)
@@ -590,6 +592,86 @@ Because bindings all consume the same introspection data, the *same* GNOME APIs 
 
 GJS is the *only* language for GNOME Shell extensions, since the Shell's JavaScript context is what extensions plug into. For applications, PyGObject offers the fastest prototyping, gtk-rs offers compile-time safety and a single static binary, and GJS sits between — dynamic like Python but sharing the Shell's exact runtime. All three call identical C APIs, so a GObject class, signal connection, or `GSettings` binding looks structurally the same across them.
 
+### 5.6 GObject Introspection Internals
+
+**GObject Introspection (GI)** is the mechanism that lets GJS, PyGObject, and gtk-rs consume C GObject-based libraries without hand-written bindings. It works in two phases: build-time annotation scanning and runtime loading.
+
+#### Build-time: g-ir-scanner and the .gir XML
+
+At build time, **`g-ir-scanner`** processes a library's C headers together with GObject type registration calls. It extracts class hierarchies, method signatures, signal names, property names and types, and GLib type names, and emits a **`.gir`** XML file. A condensed excerpt from the GTK4 introspection data shows the shape:
+
+```xml
+<!-- gtk-4.0.gir (excerpt) — machine-generated, do not edit -->
+<namespace name="Gtk" version="4.0" c:identifier-prefixes="Gtk"
+           c:symbol-prefixes="gtk">
+
+  <class name="Button" parent="Widget"
+         c:type="GtkButton" glib:type-name="GtkButton"
+         glib:get-type="gtk_button_get_type">
+
+    <constructor name="new" c:identifier="gtk_button_new">
+      <return-value transfer-ownership="none">
+        <type name="Widget" c:type="GtkWidget*"/>
+      </return-value>
+    </constructor>
+
+    <method name="set_label" c:identifier="gtk_button_set_label">
+      <parameters>
+        <instance-parameter name="button" transfer-ownership="none">
+          <type name="Button" c:type="GtkButton*"/>
+        </instance-parameter>
+        <parameter name="label" transfer-ownership="none">
+          <type name="utf8" c:type="const char*"/>
+        </parameter>
+      </parameters>
+      <return-value transfer-ownership="none">
+        <type name="none"/>
+      </return-value>
+    </method>
+
+    <signal name="clicked">
+      <return-value transfer-ownership="none">
+        <type name="none"/>
+      </return-value>
+    </signal>
+  </class>
+</namespace>
+```
+
+[Source: GTK4 meson introspection rules](https://gitlab.gnome.org/GNOME/gtk/-/blob/main/gtk/meson.build)
+
+The `.gir` XML is human-readable but not loaded at runtime — it is compiled by **`g-ir-compiler`** into a compact binary **`.typelib`** format. On a typical GNOME installation, typelibs live in `/usr/lib/girepository-1.0/` (e.g. `Gtk-4.0.typelib`, `Gio-2.0.typelib`). [Source: GObject Introspection documentation](https://gi.readthedocs.io/)
+
+#### Runtime: GIRepository and the Type Metadata API
+
+**`GIRepository`** (`libgirepository`) is the runtime loader. When GJS executes `import Gtk from 'gi://Gtk?version=4.0'`, it calls `g_irepository_require("Gtk", "4.0", ...)`, which maps the `Gtk-4.0.typelib` into memory. The typelib exposes a C API of typed info objects:
+
+- **`GIObjectInfo`** — describes a GObject class: its `n_methods`, `n_signals`, `n_properties`, parent class, and GType.
+- **`GIFunctionInfo`** — describes one callable: symbol name, flags (constructor/method/static), parameter list (`GIArgInfo`), return type (`GITypeInfo`).
+- **`GISignalInfo`** — describes a GObject signal: name, parameter types, return type.
+- **`GIPropertyInfo`** — describes a GObject property: name, type, read/write/construct flags.
+
+GJS walks `GIObjectInfo` for `GtkButton` once at import time and synthesises a JavaScript prototype with all methods, signal connectors, and property accessors. Subsequent `new Gtk.Button()` calls invoke `GIFunctionInfo` for `gtk_button_new` through `libffi` to perform the actual C call, with argument and return-value marshalling driven by `GITypeInfo`.
+
+The same `GIFunctionInfo` path is what PyGObject uses for Python and what the `gtk4` crate's proc-macro uses at compile time to generate Rust `extern "C"` declarations. All three language bindings are consumers of the same `.gir`/`.typelib` data; only the moment of consumption differs (JIT in GJS/PyGObject, compile-time in gtk-rs).
+
+```javascript
+// At import time GJS calls GIRepository, constructs JS prototypes.
+// This is invisible to application code; shown here conceptually.
+//
+// import Gtk from 'gi://Gtk?version=4.0';
+//   → g_irepository_require("Gtk", "4.0")
+//   → for each GIObjectInfo in Gtk namespace:
+//       synthesise JS class with FFI-backed methods
+//
+// const btn = new Gtk.Button({ label: 'Click me' });
+//   → looks up GIFunctionInfo for gtk_button_new_with_label
+//   → calls via libffi with marshalled args
+//   → wraps returned GtkButton* in a JS GObject wrapper
+```
+
+[Source: GObject Introspection wiki](https://gi.readthedocs.io/en/latest/writingbindingapis.html) [Source: GJS source — `gi/object.cpp`](https://gitlab.gnome.org/GNOME/gjs/-/blob/master/gi/object.cpp)
+
 ---
 
 ## 6. D-Bus Integration in GNOME
@@ -693,6 +775,66 @@ Flatpak apps build against a **runtime** that supplies the shared platform. GNOM
 
 Inside the sandbox, an app has no direct access to the user's files, screen, or camera. Every such capability is brokered by **`xdg-desktop-portal`** (§6): the file chooser returns a document-portal fd rather than a raw path; `GNotification` routes through the Notification portal; screen capture goes through the ScreenCast portal to Mutter (§3.7). Because GIO and GTK detect the sandbox and switch to portal-backed implementations automatically, well-written GNOME app code is *identical* sandboxed or not — the developer calls `GtkFileDialog` or `g_application_send_notification()` and the portal indirection is invisible.
 
+### 8.4 AT-SPI2 Accessibility Bridge
+
+**AT-SPI2** (Assistive Technology Service Provider Interface 2) is the D-Bus-based accessibility IPC layer on Linux. GTK4 implements it through the **`GtkATContext`** abstraction, which maps GTK's accessible roles and properties onto AT-SPI2 D-Bus objects that screen readers and other assistive technologies can query.
+
+#### The AT-SPI2 D-Bus Architecture
+
+AT-SPI2 runs as a small broker daemon (**`at-spi-bus-launcher`**), which launches a dedicated accessibility D-Bus bus (`unix:path=/run/user/UID/at-spi/bus`). GTK4 apps register on this bus when accessibility is enabled (either explicitly via `gtk_accessible_update_property()` calls or when `GNOME_ACCESSIBILITY=1` / `AT_SPI_BUS_ADDRESS` is set). Each widget that exposes accessibility information registers as a D-Bus object implementing the `org.a11y.atspi2.Accessible` interface. [Source: AT-SPI2 specification](https://www.freedesktop.org/wiki/Accessibility/AT-SPI2/)
+
+The primary interfaces:
+- **`org.a11y.atspi2.Accessible`** — role, name, description, parent/children tree navigation.
+- **`org.a11y.atspi2.Text`** — for text widgets: character content, caret position, text bounds.
+- **`org.a11y.atspi2.Action`** — invokable actions (e.g. "activate" on a button).
+- **`org.a11y.atspi2.Selection`** — for list/combo widgets: which items are selected.
+- **`org.a11y.atspi2.Value`** — for range widgets (spin button, scale): current/min/max.
+
+[Source: GTK4 Accessibility API docs](https://docs.gtk.org/gtk4/index.html#accessibility)
+
+#### GtkATContext and Widget Roles
+
+GTK4's accessibility layer is built around **`GtkAccessible`** (an interface implemented by every `GtkWidget`) and **`GtkATContext`** (the backend-specific object that translates GTK roles into AT-SPI2 D-Bus objects). When a GTK4 widget is realised on a Wayland seat with accessibility enabled, GTK creates a `GtkATContext` for it:
+
+```c
+/* GTK4 accessibility — setting role and label on a custom widget.
+   GtkWidget already implements GtkAccessible; you only need to set
+   the relevant properties. */
+
+/* Give the widget a meaningful accessible role and name. */
+gtk_accessible_update_property(GTK_ACCESSIBLE(widget),
+    GTK_ACCESSIBLE_PROPERTY_LABEL, "Volume control",
+    -1);
+gtk_accessible_update_state(GTK_ACCESSIBLE(widget),
+    GTK_ACCESSIBLE_STATE_CHECKED, FALSE,
+    -1);
+
+/* For a custom value widget, also set value properties. */
+gtk_accessible_update_property(GTK_ACCESSIBLE(widget),
+    GTK_ACCESSIBLE_PROPERTY_VALUE_NOW,  0.75,
+    GTK_ACCESSIBLE_PROPERTY_VALUE_MIN,  0.0,
+    GTK_ACCESSIBLE_PROPERTY_VALUE_MAX,  1.0,
+    -1);
+```
+
+`gtk_widget_class_set_accessible_role()` in the widget's `class_init()` sets the AT-SPI2 role for all instances of a custom widget subclass. Built-in GTK4 widgets already declare the correct roles: `GtkButton` → `GTK_ACCESSIBLE_ROLE_BUTTON`, `GtkEntry` → `GTK_ACCESSIBLE_ROLE_TEXT_BOX`, `GtkListView` → `GTK_ACCESSIBLE_ROLE_LIST`, and so on. [Source: gtk/gtkaccessible.h](https://gitlab.gnome.org/GNOME/gtk/-/blob/main/gtk/gtkaccessible.h)
+
+#### Orca Screen Reader
+
+**Orca** is the GNOME screen reader. It is a Python application that subscribes to AT-SPI2 events (`object:state-changed:focused`, `object:text-changed`, `window:activate`, etc.) and converts them into speech via **speech-dispatcher** or braille output via **BrlAPI**. Orca's event loop runs on the accessibility bus:
+
+```bash
+# Observe AT-SPI2 events emitted by running apps (debugging aid).
+# accerciser is the interactive GUI; atspi-dump is a CLI alternative.
+atspi-dump --events object:state-changed:focused
+```
+
+Because GNOME Shell itself uses St widgets rather than GTK, GNOME 47+ added **St accessibility** support: `StWidget` implements `AtkObject` through the older ATK path (the AT-SPI2 bridge also translates ATK via `atk-adaptor`), giving Orca access to panel elements, quick-settings toggles, and notification banners. [Source: GNOME accessibility overview](https://help.gnome.org/users/gnome-help/stable/a11y.html)
+
+#### Keyboard Navigation
+
+GTK4's focus management (`GtkFocusable`, `gtk_widget_set_focusable()`, `GTK_ACCESSIBLE_ROLE_GROUP` containers with `gtk_widget_set_focus_child()`) drives keyboard navigation independently of screen readers, but both rely on the same role/state model. GTK4 ships default keyboard navigation for all built-in container types; custom widgets need only implement `GtkWidget.grab_focus()` and set `focusable = TRUE` to participate. Applications that target GNOME accessibility compliance should also ensure every interactive widget has a non-empty accessible name (via `gtk_accessible_update_property(... LABEL ...)` or the `accessible-label` property in Blueprint/GtkBuilder XML).
+
 ---
 
 ## 9. Performance and Debugging
@@ -790,6 +932,14 @@ graph TD
 - GNOME Platform runtime (Flathub): [https://flathub.org/](https://flathub.org/)
 - GNOME 50 release notes: [https://release.gnome.org/50/](https://release.gnome.org/50/)
 - GNOME 49 release notes: [https://release.gnome.org/49/](https://release.gnome.org/49/)
+- GObject Introspection documentation: [https://gi.readthedocs.io/](https://gi.readthedocs.io/)
+- GObject Introspection — writing binding APIs: [https://gi.readthedocs.io/en/latest/writingbindingapis.html](https://gi.readthedocs.io/en/latest/writingbindingapis.html)
+- GJS source — `gi/object.cpp` (GIObjectInfo → JS class synthesis): [https://gitlab.gnome.org/GNOME/gjs/-/blob/master/gi/object.cpp](https://gitlab.gnome.org/GNOME/gjs/-/blob/master/gi/object.cpp)
+- GTK4 introspection build rules: [https://gitlab.gnome.org/GNOME/gtk/-/blob/main/gtk/meson.build](https://gitlab.gnome.org/GNOME/gtk/-/blob/main/gtk/meson.build)
+- AT-SPI2 specification (freedesktop.org): [https://www.freedesktop.org/wiki/Accessibility/AT-SPI2/](https://www.freedesktop.org/wiki/Accessibility/AT-SPI2/)
+- GTK4 Accessibility API reference: [https://docs.gtk.org/gtk4/index.html#accessibility](https://docs.gtk.org/gtk4/index.html#accessibility)
+- gtk/gtkaccessible.h: [https://gitlab.gnome.org/GNOME/gtk/-/blob/main/gtk/gtkaccessible.h](https://gitlab.gnome.org/GNOME/gtk/-/blob/main/gtk/gtkaccessible.h)
+- GNOME accessibility help: [https://help.gnome.org/users/gnome-help/stable/a11y.html](https://help.gnome.org/users/gnome-help/stable/a11y.html)
 
 ---
 
