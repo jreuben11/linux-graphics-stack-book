@@ -28,7 +28,8 @@ As of mid-2026, xdg-desktop-portal **1.22.1** is the current stable release (202
 - [14. PipeWire Integration: OpenPipeWireRemote](#14-pipewire-integration-openpipewireremote)
 - [15. Backend Implementations](#15-backend-implementations)
 - [16. Security Model and CVEs](#16-security-model-and-cves)
-- [17. Roadmap](#17-roadmap)
+- [17. Kernel Security Mechanisms: PAM, AppArmor, SELinux, cgroups, and Namespaces](#17-kernel-security-mechanisms-pam-apparmor-selinux-cgroups-and-namespaces)
+- [18. Roadmap](#18-roadmap)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -1180,7 +1181,67 @@ gdbus call --session \
 
 ---
 
-## 17. Roadmap
+## 17. Kernel Security Mechanisms: PAM, AppArmor, SELinux, cgroups, and Namespaces
+
+The portal is often described as a security gateway, but it is important to understand precisely which kernel-level security mechanisms it touches directly and which it merely relies on indirectly. This section maps each mechanism to its actual role in portal operation, based on source analysis of xdg-desktop-portal 1.22 (commit 85338c4).
+
+### 17.1 cgroups: Snap App Identification
+
+Linux control groups (cgroups) are the only kernel security mechanism the portal reads directly in normal operation — and only for identifying **Snap** packages. Snap's confinement model organises each application into a predictable cgroup hierarchy whose name encodes the snap name and instance. The portal reads `/proc/<pid>/cgroup` and parses the hierarchy string in `_xdp_app_info_snap_parse_cgroup_file()` (in `src/xdp-app-info-snap.c`) to extract the snap name. If the cgroup path matches the pattern `snap.<name>.<component>`, the caller is identified as that snap app and granted the corresponding AppID. [Source — xdp-app-info-snap.c](https://github.com/flatpak/xdg-desktop-portal/blob/main/src/xdp-app-info-snap.c)
+
+Cgroups are **not** used for Flatpak identification. Flatpak uses a separate mechanism: the portal checks for `/proc/<pid>/root/.flatpak-info`, a file that Flatpak's bwrap sandbox creates inside the application's mount namespace root (the host path `/proc/<PID>/root` follows the app's namespace). This file is unreadable from outside the namespace if the app is confined, but the portal reads it via the `/proc/` sysfs path which is exempt. [Source — xdp-app-info-flatpak.c](https://github.com/flatpak/xdg-desktop-portal/blob/main/src/xdp-app-info-flatpak.c)
+
+### 17.2 Linux Namespaces: The Document Store and PipeWire fd Passing
+
+Linux mount namespaces and FUSE are central to how the document portal gives sandboxed apps access to host filesystem paths without exposing the full host tree.
+
+The **document portal** FUSE filesystem mounts at `/run/user/<UID>/doc/` on the host. Inside a Flatpak sandbox, the same tree is bind-mounted at `/run/flatpak/doc/`. When an app receives a file grant (via the FileChooser portal), the grant is recorded in the permission store and expressed as a host path. The FUSE server translates accesses through `/run/user/<UID>/doc/<docid>/<filename>` into `openat()` calls on the actual host file, so the sandboxed app never sees the real host path. This FUSE layer is the namespace boundary: the sandbox mount namespace cannot see `/home/` directly, but `/run/flatpak/doc/` crosses that boundary through the portal process, which runs in the host mount namespace. [Source — document-portal/document-store.c](https://github.com/flatpak/xdg-desktop-portal/blob/main/document-portal/)
+
+**PipeWire** access (camera, screen capture) does not use a bind mount at all. The portal calls `org.freedesktop.portal.OpenPipeWireRemote` which returns a Unix domain socket file descriptor via D-Bus fd passing (`G_DBUS_MESSAGE_FLAGS_ALLOW_INTERACTIVE_AUTHORIZATION`). The sandboxed app receives the fd and connects to PipeWire over it; it never needs to traverse any mount namespace boundary for this path. Namespaces are invisible to this mechanism — only fd access control at the socket layer matters.
+
+For Flatpak bwrap PID correlation, the portal uses `bwrapinfo.json` (written to `/run/user/<UID>/bwrapinfo.<pid>.json` by bwrap) and `PIDFD_GET_PID_NAMESPACE` ioctl on the pidfd to cross-check PID namespace membership. This closes a TOCTOU race where a process could replace its own `flatpak-info` after identification. [Source — xdp-app-info.c, pidfd handling](https://github.com/flatpak/xdg-desktop-portal/blob/main/src/xdp-app-info.c)
+
+### 17.3 AppArmor: Indirect Relationship
+
+The portal has **zero direct AppArmor API calls**. It does not call `aa_getcon()`, read `/proc/self/attr/current`, or load any AppArmor profiles itself. Snap app identification (§17.1) uses cgroups, not AppArmor labels, even though Snap's confinement is AppArmor-based.
+
+The portal's systemd service files specify `AssumedAppArmorLabel=unconfined` in their service definitions, which is a WirePlumber/systemd attribute indicating that the portal process itself is not AppArmor-confined. This is appropriate: the portal is a privileged host-side service that must be able to open arbitrary files on behalf of apps; confining it would require a complex AppArmor profile that mirrors the full permission store, which is not done.
+
+AppArmor **does** restrict sandboxed apps from accessing D-Bus names directly — Snap's AppArmor profiles use `deny dbus` rules and then selectively allow `org.freedesktop.portal.*` through the `snapd-dbus-proxy` (the Snap equivalent of `xdg-dbus-proxy`). The restriction is enforced by the dbus-daemon, not the portal.
+
+### 17.4 SELinux: Enforced at the D-Bus Layer
+
+The portal contains **no SELinux calls** — no `getcon()`, `selinux_check_access()`, or label manipulation. SELinux enforcement for portal access is delegated entirely to the D-Bus daemon (`dbus-daemon` or `dbus-broker`).
+
+On an SELinux-enforcing system (such as Fedora), the dbus-daemon runs in the `system_dbusd_t` domain and enforces type-enforcement rules for which SELinux domains may send messages to `org.freedesktop.portal.*`. A confined application in a domain that lacks `dbus_send` permission to `xdg_portal_t` will have its D-Bus call rejected by the daemon before the message ever reaches the portal process. The portal sees only messages the daemon has already allowed, so from its perspective SELinux is invisible.
+
+SELinux labelling of portal-created files (e.g., a screenshot saved via the FileChooser portal) inherits the label of the host directory, following standard SELinux file-creation policy. The portal does not set explicit labels on any file it creates.
+
+### 17.5 PAM: Indirect Chain via the Secret Portal
+
+The portal has **no direct PAM calls**. It does not authenticate users with PAM itself. The relationship is indirect:
+
+1. At session startup, PAM runs `pam_gnome_keyring.so` (or `pam_kwallet.so` on KDE), which unlocks the keyring using the login password as the master key.
+2. GNOME Keyring exposes the unlocked keyring over D-Bus as `org.gnome.keyring`.
+3. The **Secret portal** (`org.freedesktop.portal.Secret`) wraps `org.gnome.keyring` (or KWallet equivalents) and exposes a sandboxed interface: apps receive a file descriptor to a temporary file containing their secret token. The secret itself is stored in and retrieved from the keyring daemon.
+
+Applications that call `portal.Secret.RetrieveSecret()` never interact with PAM or the keyring daemon directly — they only talk to the portal, which mediates access to the underlying keyring. The chain is PAM → keyring daemon → Secret portal → app, with the portal at the application-facing end.
+
+### 17.6 Seccomp: Not in the Portal
+
+The portal process itself has **no seccomp filter** installed. It runs with the full system-call set, which is appropriate since it is a privileged daemon that must make arbitrary syscalls (including `open()` on host paths, `mount()` for the FUSE filesystem, `pidfd_open()` for PID correlation, and `sendmsg()` with ancillary file-descriptor data).
+
+Seccomp filtering **is** installed by `bwrap` on the sandboxed application side — this is the confinement layer that prevents the app from calling `ptrace()`, `mount()`, or other privileged syscalls that could escape the sandbox. The portal is the boundary that these syscalls cannot cross, but the filter itself lives in the app's process, not in the portal.
+
+### 17.7 D-Bus Proxy Allowlists: xdg-dbus-proxy
+
+The primary mechanism the portal ecosystem uses to restrict application D-Bus access is **xdg-dbus-proxy** (`flatpak-dbus-proxy`). Each sandboxed app gets a per-instance proxy socket that intercepts all D-Bus traffic. The proxy's allowlist — generated from the Flatpak manifest's `--own-name`, `--talk-name`, and `--call` directives — determines which D-Bus names and interfaces the app can address. Only `org.freedesktop.portal.*` is allowed by default; access to `org.gnome.keyring` directly, or to other session services, requires explicit manifest entries.
+
+This proxy mechanism is why the portal's own D-Bus service activation files (`.service` files under `$XDG_DATA_DIRS/dbus-1/services/`) are minimal — they only declare the service name and exec path for activation. There are no per-user policy files in `session.d/`; policy is enforced by the proxy, not by D-Bus configuration files. [Source — Flatpak D-Bus proxy](https://github.com/flatpak/xdg-dbus-proxy)
+
+---
+
+## 18. Roadmap
 
 This section tracks active development work and open proposals as of mid-2026. Status labels: **open PR** (merged to `main` not yet released), **draft PR** (work in progress, not ready for review), **discussion** (no code yet), **merged** (shipped in a release).
 
