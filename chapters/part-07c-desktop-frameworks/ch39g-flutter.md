@@ -11,6 +11,9 @@
   - [1.1 The Three-Layer Model: Framework, Engine, and Embedder](#11-the-three-layer-model-framework-engine-and-embedder)
   - [1.2 The Dart Runtime](#12-the-dart-runtime)
   - [1.3 Dart Isolates and the Event Loop](#13-dart-isolates-and-the-event-loop)
+  - [1.4 What is Flutter?](#14-what-is-flutter)
+  - [1.5 What is Impeller?](#15-what-is-impeller)
+  - [1.6 What is the Embedder API?](#16-what-is-the-embedder-api)
 - [2. The Linux Embedder](#2-the-linux-embedder)
   - [2.1 Flutter Desktop Embedding for Linux: the GTK Path](#21-flutter-desktop-embedding-for-linux-the-gtk-path)
   - [2.2 flutter-elinux: the Wayland-Direct Path](#22-flutter-elinux-the-wayland-direct-path)
@@ -132,6 +135,30 @@ void main() async {
 ```
 
 Flutter's engine drives this loop: it wakes the Dart event queue on vsync (from the embedder's vsync callback), input events, and timer completions. Because `build` runs synchronously on the UI thread, a long `build` call stalls the frame — the equivalent of blocking GTK's main loop or iced's `update`.
+
+### 1.4 What is Flutter?
+
+Flutter is an open-source UI toolkit that allows developers to build natively compiled applications for mobile, web, desktop, and embedded targets from a single Dart codebase. Unlike traditional UI frameworks such as GTK or Qt, Flutter does not use the host platform's native widget system; instead, it renders every pixel itself using its own GPU-backed 2D graphics engine. This design produces pixel-identical UIs across platforms at the cost of visual divergence from the host operating system's native appearance.
+
+On Linux, Flutter targets the desktop as a first-class deployment platform since Flutter 3.0 (May 2022). Applications are distributed as compiled Dart AOT binaries paired with the Flutter engine shared library (`libflutter_linux_gtk.so`). The framework layer — the widget system, animation engine, and painting canvas — is written entirely in Dart and ships as part of the application's compiled output. The engine, written in C++, provides the Dart virtual machine, the GPU renderer, text layout, and the platform channel IPC bridge. The resulting binary is self-contained: it does not depend on a standalone Dart installation on the target system, only on GTK (for the default embedding), Mesa Vulkan drivers, and the standard Linux runtime libraries.
+
+Flutter's programming model is declarative. The developer describes the desired UI as a tree of immutable `Widget` objects; the framework reconciles widget changes against an internal `Element` tree to minimize work, and the rendering layer converts the resulting `RenderObject` tree into GPU draw calls through the engine. [Source: Flutter architectural overview](https://docs.flutter.dev/resources/architectural-overview)
+
+### 1.5 What is Impeller?
+
+Impeller is Flutter's purpose-built GPU renderer, introduced to replace Skia as the default rendering backend. Where Skia compiled GLSL shaders from source at runtime on first use — causing visible frame-rate hitches known as shader compilation jank — Impeller pre-compiles all shaders to SPIR-V at build time and bakes them into the engine binary. At application startup, Impeller creates the full set of `VkPipeline` objects from these pre-compiled shaders, so no pipeline compilation occurs on the hot path during rendering.
+
+Impeller is structured around three core abstractions: `Entity` (a single draw call coupled with a geometry and a shading strategy), `EntityPass` (a container of `Entity` objects that maps to one GPU render pass), and `Pipeline` (a cached compiled `VkPipeline` keyed by vertex format, fragment program, blend mode, and sample count). The `PipelineLibrary` maintains this cache and ensures that a pipeline object for any draw operation is available before the first frame is rendered.
+
+On Linux, Impeller's primary backend is Vulkan, targeting Mesa drivers (RADV for AMD, ANV for Intel, NVK for NVIDIA) through the `VK_KHR_swapchain` and `VK_KHR_wayland_surface` extension chain. An OpenGL ES fallback backed by GBM/EGL is retained for platforms without Vulkan support. Impeller became the default renderer for Linux in Flutter 3.22 (2024). [Source: Impeller design documentation](https://github.com/flutter/flutter/blob/main/engine/src/flutter/impeller/docs/README.md)
+
+### 1.6 What is the Embedder API?
+
+The Flutter embedder API is the stable C interface through which the Flutter engine integrates with a host operating system or display system. Defined in `flutter_embedder.h`, it exposes a set of `FlutterEngine*` functions that allow a host application to create and destroy a Flutter engine instance, feed it input events (pointer, keyboard, semantics), provide a GPU surface (EGL, Vulkan, Metal, or software), deliver vsync signals, and dispatch platform messages between the host and Dart code.
+
+The embedder API is intentionally platform-agnostic: it knows nothing about GTK, Wayland, or X11. All platform-specific concerns — window creation, EGL context setup, input event translation, clipboard access — are the embedder's responsibility. The Flutter engine receives only abstract surface handles and timestamped events. This separation is what permits multiple embedder implementations to coexist: the official GTK embedding in the Flutter SDK, the `flutter-elinux` Wayland-direct embedding, and various community embedders for embedded Linux platforms.
+
+On Linux, the embedder creates a `VkSurfaceKHR` (Wayland) or an `EGLSurface` (GBM/EGLFS) and passes it to the engine via the `FlutterRendererConfig` union inside the `FlutterProjectArgs` struct. The engine then creates its Vulkan or OpenGL context against that surface and takes ownership of frame rendering. The embedder retains responsibility for signaling vsync via `FlutterEngineOnVsync`, completing the frame timing loop between the display driver and the Flutter rasterizer thread. [Source: flutter_embedder.h](https://github.com/flutter/flutter/blob/main/engine/src/flutter/shell/platform/embedder/flutter_embedder.h)
 
 ---
 

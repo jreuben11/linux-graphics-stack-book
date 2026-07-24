@@ -12,6 +12,9 @@
    - [Ray Marching and SDF Tracing](#ray-marching-and-sdf-tracing)
    - [Other Light Transport Algorithms](#other-light-transport-algorithms)
    - [Why Hardware Acceleration](#why-hardware-acceleration)
+   - [1.1 What is an Acceleration Structure (BVH)?](#11-what-is-an-acceleration-structure-bvh)
+   - [1.2 What is the Ray Tracing Pipeline?](#12-what-is-the-ray-tracing-pipeline)
+   - [1.3 What is the Shader Binding Table?](#13-what-is-the-shader-binding-table)
 2. [Ray Tracing Pipeline and Shader Stages](#ray-tracing-pipeline-and-shader-stages)
 3. [Acceleration Structures: BLAS and TLAS](#acceleration-structures-blas-and-tlas)
 4. [BVH Construction Algorithms](#bvh-construction-algorithms)
@@ -221,6 +224,34 @@ Unlike CUDA/OptiX, which are NVIDIA-only, Vulkan ray tracing runs on all three G
 - **RADV and ANV driver implementations**
 
 [Vulkan Ray Tracing specification](https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#ray-tracing)
+
+---
+
+### 1.1 What is an Acceleration Structure (BVH)?
+
+An acceleration structure is the spatial data structure that makes ray-scene intersection computationally tractable. Testing a ray against every triangle in a scene is O(N) — prohibitive for scenes with millions of primitives — so hardware ray tracing depends on a Bounding Volume Hierarchy (BVH), a tree of nested axis-aligned bounding boxes that reduces average traversal cost to O(log N). At each internal node the traversal algorithm tests the ray against two child bounding boxes; if a child box is not hit, the entire subtree beneath it is skipped. RDNA2+, Turing+, and Xe-HPG+ GPUs implement BVH traversal in dedicated fixed-function silicon, maintaining the traversal stack in hardware rather than occupying shader registers.
+
+Vulkan's `VK_KHR_acceleration_structure` extension models acceleration structures as a two-level hierarchy. A Bottom-Level Acceleration Structure (BLAS) encodes the geometry of a single mesh — triangle vertex data or procedural AABBs — and is built on the GPU with `vkCmdBuildAccelerationStructuresKHR`. A Top-Level Acceleration Structure (TLAS) references a set of BLAS instances, each with a per-instance transformation matrix and a user-defined instance index. This separation allows the same BLAS to appear at multiple positions in the scene without duplicating underlying triangle data, reducing both memory usage and rebuild cost for static geometry. Shaders receive the TLAS as a descriptor of type `VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR` and query it via `traceRayEXT()` or `rayQueryInitializeEXT()`.
+
+---
+
+### 1.2 What is the Ray Tracing Pipeline?
+
+The ray tracing pipeline is a specialised Vulkan pipeline object, created with `vkCreateRayTracingPipelinesKHR`, that coordinates programmable shader execution during hardware-accelerated BVH traversal. Unlike the rasterization pipeline, which processes geometry through a fixed-function vertex-rasterize-fragment sequence, the ray tracing pipeline models the nondeterministic path a ray takes through scene geometry. Execution is driven by the hardware traversal unit rather than by a fixed draw-call sequence.
+
+`VK_KHR_ray_tracing_pipeline` introduces five shader stages. The ray generation shader (`rgen`) is the pipeline's entry point: dispatched once per pixel by `vkCmdTraceRaysKHR`, it issues primary rays via `traceRayEXT()`. When a ray finds no intersection, the miss shader (`rmiss`) executes and typically returns a sky colour or default radiance value. When the closest intersection is confirmed, the closest-hit shader (`rchit`) computes surface shading and may recursively issue secondary rays. The any-hit shader (`rahit`) intercepts each candidate intersection before it is confirmed, enabling alpha-tested transparency without accepting every hit. The intersection shader (`rint`) replaces the built-in ray-triangle test for custom primitive types such as rounded geometry or displacement-mapped surfaces.
+
+Shader stages communicate through a user-defined ray payload structure passed by reference to each invocation in the chain. Recursive ray dispatch from within a closest-hit shader is supported up to a maximum recursion depth declared at pipeline creation. On Mesa RADV and ANV, the pipeline compiler lowers these stages to the GPU's native shader ISA, interleaved with hardware traversal calls inserted by the driver backend.
+
+---
+
+### 1.3 What is the Shader Binding Table?
+
+The Shader Binding Table (SBT) is a GPU buffer that maps ray types and geometry instances to specific shader programs and their associated per-geometry data records. It functions as a runtime dispatch table for the traversal hardware: when hardware encounters a geometry instance during BVH traversal, it indexes into the SBT to determine which closest-hit, any-hit, and intersection shaders to invoke, along with any opaque per-material data stored immediately after the shader handle in the buffer.
+
+An SBT is divided into four regions. The ray generation region contains exactly one entry — the `rgen` shader invoked by `vkCmdTraceRaysKHR`. The miss region holds one entry per ray type, for example a primary-ray miss returning a sky colour and a shadow-ray miss returning full visibility. The hit group region contains one entry per geometry instance per ray type, encoding the `rchit`/`rahit`/`rint` combination appropriate for each material. An optional callable region stores subroutines invokable from any shader via `executeCallableEXT()`.
+
+Building the SBT requires retrieving opaque shader handle bytes from the pipeline with `vkGetRayTracingShaderGroupHandlesKHR`, then copying each handle into the buffer at the stride and alignment values reported by `VkPhysicalDeviceRayTracingPipelinePropertiesKHR`. Per-geometry data — material buffer device addresses, texture indices — is appended after each handle within the shader record. This structure allows a single `vkCmdTraceRaysKHR` call to dispatch different shader programs for every geometry instance in the scene, with the traversal hardware selecting the correct program at runtime based on which instance a ray intersects.
 
 ---
 
