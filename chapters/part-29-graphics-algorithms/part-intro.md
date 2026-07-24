@@ -6,6 +6,21 @@ These chapters address three audiences simultaneously. **Graphics application de
 
 The unifying theme is **GPU-resident data parallelism**: every algorithm here is either already data-parallel or is expressed in a parallel form that maps onto Vulkan compute dispatches, vertex/fragment shader invocations, or hardware fixed-function stages. Where a CPU-centric library remains the practical production path (OpenSubdiv's topology refiner, meshoptimizer's encoder, OpenCASCADE's B-rep mesher), the relevant chapter explains the GPU upload and integration pattern so the CPU pre-pass feeds a GPU-resident pipeline.
 
+## Chapter List
+
+**Shader Algorithm Catalog**
+- [Ch 204: Shader Algorithm Catalog — Rendering Pipeline, Lighting, and Shadows](ch204-shader-algorithm-catalog.md)
+- [Ch 205: Shader Algorithm Catalog — Global Illumination and Materials](ch205-shader-gi-and-materials.md)
+- [Ch 206: Shader Algorithm Catalog — Ray Tracing and Procedural Content](ch206-shader-raytracing-and-procedural.md)
+- [Ch 207: Shader Algorithm Catalog — Visual Effects, Post-Processing, and GPU Compute](ch207-shader-vfx-postprocess-compute.md)
+
+**GPU Geometry Algorithms**
+- [Ch 208: GPU Geometry Algorithms — Surface Representation and Mesh Processing](ch208-gpu-geometry-algorithms.md)
+- [Ch 209: GPU Geometry Algorithms — Spatial Structures, Differential Geometry, and Animation](ch209-gpu-spatial-differential-animation.md)
+- [Ch 210: GPU Geometry Algorithms — Physics Simulation and Volumetric Methods](ch210-gpu-physics-and-volumetric.md)
+- [Ch 211: GPU Geometry Algorithms — Terrain, Ray Tracing Geometry, and Point Clouds](ch211-gpu-terrain-raytracing-pointcloud.md)
+- [Ch 212: GPU Geometry Algorithms — Neural Geometry, Specialized Techniques, and GPU Primitives](ch212-gpu-neural-specialized-primitives.md)
+
 ## Chapters in This Part
 
 ### Shader Algorithm Catalog (Ch 204–207)
