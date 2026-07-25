@@ -31,7 +31,16 @@ The chapter is long because Qt is large; it is organised so that a reader can ju
 - [14. QML and Qt Quick](#14-qml-and-qt-quick)
 - [15. The Qt Quick Scene Graph and QRhi](#15-the-qt-quick-scene-graph-and-qrhi)
 - [16. Qt Widgets](#16-qt-widgets)
-- [17. QtWayland: Platform Integration](#17-qtwayland-platform-integration)
+- [17. QPA Plugins and Platform Integration](#17-qpa-plugins-and-platform-integration)
+  - [17.1 The QPA Plugin System](#171-the-qpa-plugin-system)
+  - [17.2 Linux QPA Plugins](#172-linux-qpa-plugins)
+  - [17.3 The QPlatform Interface Hierarchy](#173-the-qplatform-interface-hierarchy)
+  - [17.4 QWaylandIntegration and QWaylandWindow](#174-qwaylandintegration-and-qwaylandwindow)
+  - [17.5 The Vulkan Swapchain Path](#175-the-vulkan-swapchain-path)
+  - [17.6 The OpenGL/EGL Path](#176-the-openglegl-path)
+  - [17.7 Frame Pacing](#177-frame-pacing)
+  - [17.8 Explicit Sync: Where It Actually Lives](#178-explicit-sync-where-it-actually-lives)
+  - [17.9 linux-dmabuf Zero-Copy](#179-linux-dmabuf-zero-copy)
 - [18. Qt Multimedia](#18-qt-multimedia)
 - [19. Concurrency and Threading](#19-concurrency-and-threading)
 - [20. Internationalization](#20-internationalization)
@@ -1634,15 +1643,146 @@ The two UI stacks interoperate. **`QQuickWidget`** embeds a Qt Quick scene insid
 
 ---
 
-## 17. QtWayland: Platform Integration
+## 17. QPA Plugins and Platform Integration
 
-Beneath the toolkit sits **QtWayland**, the QPA plugin that implements windowing on Wayland. It creates the `wl_surface`, negotiates `xdg-shell` roles, and delegates buffer submission to the graphics API layer — the detail that determines where Wayland buffer synchronisation actually happens.
+Qt isolates all windowing-system and GPU-surface details behind a plugin layer called the **Qt Platform Abstraction (QPA)**. This section explains QPA from first principles — what it is, how plugins are loaded, what the full set of Linux plugins looks like, and what interfaces a plugin must implement — before narrowing to the **QtWayland** client plugin that most desktop Qt applications use.
 
-### 17.1 QPA Architecture
+### 17.1 The QPA Plugin System
 
-Qt abstracts the windowing system behind the **Qt Platform Abstraction (QPA)**. A platform plugin implements interfaces — `QPlatformIntegration`, `QPlatformWindow`, `QPlatformOpenGLContext`, `QPlatformVulkanInstance`, `QPlatformBackingStore` — and Qt loads exactly one at startup, chosen by `QT_QPA_PLATFORM` (`wayland`, `xcb`, `eglfs`, `offscreen`, …) or auto-detected. On a Wayland session Qt loads the **`wayland`** plugin from `qtwayland`. [Source](https://doc.qt.io/qt-6/qpa.html)
+Every Qt GUI application must have *one* active platform plugin. The plugin is a shared library (`libq<name>.so`) located in the `plugins/platforms/` directory of the Qt installation. Qt loads it early in `QGuiApplication`'s constructor through `QFactoryLoader`, which scans that directory for `QPlatformIntegrationPlugin` factory classes. The selection order is:
 
-### 17.2 QWaylandIntegration and QWaylandWindow
+1. **`QT_QPA_PLATFORM` environment variable** — e.g. `QT_QPA_PLATFORM=wayland` forces the Wayland plugin regardless of the running session.
+2. **`-platform <name>` command-line argument** — equivalent but per-invocation.
+3. **Auto-detection** — if neither is set Qt queries the environment. The heuristic on Linux checks `WAYLAND_DISPLAY` first (selects `wayland`), then `DISPLAY` (selects `xcb`), then attempts `eglfs` for framebuffer targets. If no display is found and `QT_QPA_PLATFORM` is unset, startup fails with:
+
+   ```
+   qt.qpa.plugin: Could not find the Qt platform plugin "wayland" in ""
+   This application failed to start because no Qt platform plugin could be initialized.
+   ```
+
+   This error is common when a Qt GUI application is run over SSH without display forwarding, or in a CI container without setting `QT_QPA_PLATFORM=offscreen`.
+
+The plugin name string passed to `QT_QPA_PLATFORM` may also carry colon-separated key=value options: `QT_QPA_PLATFORM=wayland:decoration=material` selects the `wayland` plugin and sets its `decoration` option. [Source: Qt QPA documentation](https://doc.qt.io/qt-6/qpa.html)
+
+```bash
+# Typical session detection on a Wayland desktop:
+# WAYLAND_DISPLAY is set → Qt auto-selects the wayland plugin.
+$ echo $WAYLAND_DISPLAY
+wayland-0
+$ QT_LOGGING_RULES="qt.qpa.plugin=true" ./myapp 2>&1 | grep platform
+qt.qpa.plugin: loading QPA plugin "wayland" from ...
+
+# Force X11 XCB fallback on a Wayland session (for debugging):
+$ QT_QPA_PLATFORM=xcb ./myapp
+
+# Run headlessly (CI, tests, server-side rendering):
+$ QT_QPA_PLATFORM=offscreen ./myapp
+```
+
+### 17.2 Linux QPA Plugins
+
+Qt ships the following platform plugins for Linux; each is a distinct use case: [Source: Qt Platform Abstraction](https://doc.qt.io/qt-6/qpa.html) [Source: qtbase/src/plugins/platforms](https://code.qt.io/cgit/qt/qtbase.git/tree/src/plugins/platforms)
+
+#### `xcb` — X11 via libxcb
+
+The **XCB plugin** (`libqxcb.so`, `qtbase/src/plugins/platforms/xcb`) connects Qt to an X11 server using libxcb (the direct C binding to the X protocol, replacing the older Xlib). It handles window creation and management through the ICCCM and EWMH conventions, creates OpenGL contexts via **GLX** or **EGL** (`EGL_PLATFORM_X11_KHR`), and Vulkan surfaces via `VK_KHR_xcb_surface` or `VK_KHR_xlib_surface`. `xcb` is the fallback plugin for X11 sessions and for Wayland sessions that export a XWayland `DISPLAY`; it also runs under XWayland (Chapter 23), which translates X11 protocol to Wayland surface commits. Key xcb-specific options: `QT_XCB_FORCE_SOFTWARE_OPENGL=1` forces llvmpipe; `QT_X11_NO_MITSHM=1` disables MIT-SHM shared-memory image transfer.
+
+#### `wayland` — Wayland compositor client
+
+The **Wayland plugin** (`libqwayland-generic.so`, from the `qtwayland` module) is the primary plugin for modern Linux desktops. It implements the Wayland client protocol: `wl_compositor`, `xdg_wm_base` (for toplevels and popups), `wl_seat` (input), and a family of extension protocols for decoration, fractional scaling, and dmabuf. The plugin ships with multiple **shell integrations** selectable via `QT_WAYLAND_SHELL_INTEGRATION`:
+
+- `xdg-shell` (default, `xdg_wm_base`) — standard toplevels and popups.
+- `wl-shell` (deprecated, kept for legacy compositors).
+- `zwlr-layer-shell-v1` — layer-shell for panels and overlays (used by `plasmashell`/`krunner`).
+- `qt-shell` — Qt's own minimal shell, used within `QtWaylandCompositor`.
+
+**Decoration**: On compositors that do not provide server-side decorations (SSD), the Wayland plugin draws its own title bars and borders using the `org_kde_kwin_server_decoration` (KDE) or `zxdg_decoration_manager_v1` protocol. If neither is available, Qt falls back to a generic client-side decoration (CSD) renderer drawn with `QRhi`. The decoration style is pluggable: `QT_WAYLAND_DECORATION` selects a decoration plugin (`adwaita` for GNOME-style CSD, `material` for Material-style, `bradient` for Qt's default gradient style).
+
+**Input method**: The plugin binds `zwp_text_input_v2` (KDE) or `zwp_text_input_v3` (standard) for on-screen keyboard and IME integration, and `zwp_tablet_v2` for drawing tablets.
+
+#### `eglfs` — EGL framebuffer for embedded Linux
+
+The **EGLFS plugin** (`libqeglfs.so`, `qtbase/src/plugins/platforms/eglfs`) creates an EGL surface directly on a **KMS/DRM** framebuffer (via GBM + `gbm_surface_create`) or on a vendor-specific display (`bcm_host` on Raspberry Pi, `mali` on Mali SoCs) without any compositor in the middle. This is the standard choice for **embedded Linux UI** — automotive head units, kiosk terminals, industrial panels — where a full Wayland compositor is unnecessary overhead and the application owns the display.
+
+The default backend uses `eglfs_kms`: [Source: EGLFS documentation](https://doc.qt.io/qt-6/embedded-linux.html)
+
+```bash
+# EGLFS on a bare KMS/GBM device:
+$ QT_QPA_PLATFORM=eglfs ./myapp
+
+# Select a specific DRM device if multiple are present:
+$ QT_QPA_EGLFS_KMS_CONFIG=kms.json ./myapp
+```
+
+```json
+// kms.json — EGLFS KMS device configuration
+{
+    "device": "/dev/dri/card0",
+    "hwcursor": true,
+    "pbuffers": true,
+    "outputs": [
+        { "name": "HDMI1", "mode": "1920x1080" }
+    ]
+}
+```
+
+`eglfs_kms` uses `gbm_surface_create` to allocate a GBM surface, wraps it in an `EGLSurface`, renders into it with OpenGL ES, and calls `gbm_surface_lock_front_buffer()` / `drmModePageFlip()` to scan it out — the same DRM/GBM flow Chapters 2 and 4 describe. A Vulkan variant (`eglfs_kms` with a Vulkan window type) wraps the GBM BO in a `VkImage` via `VK_EXT_image_drm_format_modifier`. On Raspberry Pi hardware the `eglfs_brcm` sub-backend uses the VideoCore IV `bcm_host` API instead of GBM; on i.MX8 it uses `eglfs_viv`.
+
+#### `linuxfb` — legacy Linux framebuffer
+
+The **linuxfb plugin** renders directly into `/dev/fb0` (or `/dev/fb1`, …) using the kernel's `fbdev` interface, a legacy subsystem mostly superseded by KMS. It supports only **software (CPU) rendering** via Qt's `QPainter` raster backend. No GPU, no OpenGL, no Vulkan. It is useful only on devices too constrained for Mesa or EGL — very old SBCs, kernel-only environments — or for porting to unusual hardware that exposes an fbdev. `QT_QPA_FB_DEVICE` selects the framebuffer node.
+
+#### `offscreen` — headless rendering
+
+The **offscreen plugin** creates in-process rendering surfaces with no display output. It supports both software rasterisation and, since Qt 6.x, OpenGL via an EGL surfaceless context (`EGL_PLATFORM_SURFACELESS_MESA` or a Mesa GBM pbuffer). Used for: automated GUI testing, server-side widget rendering (PDF/SVG export), and CI pipelines:
+
+```bash
+$ QT_QPA_PLATFORM=offscreen ctest --test-dir build/
+```
+
+When `QRhi` is active under `offscreen`, it creates a `VkImage`-backed off-screen render target for GL/Vulkan paths, or falls back to software rendering for the CPU path.
+
+#### `vnc` — VNC server output
+
+The **VNC plugin** renders Qt's output into a framebuffer and serves it over the RFB (Remote Framebuffer Protocol) to VNC clients. It is primarily used for embedded devices that need remote access without a Wayland compositor. It uses Qt's software raster backend and the `libvncserver` (or Qt's built-in mini-RFB server) for the network transport.
+
+#### `minimal` and `minimalegl` — minimal headless
+
+**`minimal`** is the bare-minimum headless plugin: it creates stub platform windows but performs no rendering at all, suitable for testing non-GUI logic in a `QGuiApplication` context. **`minimalegl`** extends it with EGL context creation for tests that need a real OpenGL context but no display.
+
+### 17.3 The QPlatform Interface Hierarchy
+
+Each QPA plugin is implemented as a set of C++ classes inheriting from abstract base classes defined in `qtbase/src/gui/kernel/`. The key interfaces: [Source: QPlatformIntegration documentation](https://doc.qt.io/qt-6/qplatformintegration.html)
+
+| Interface | Role |
+|-----------|------|
+| `QPlatformIntegration` | Root factory; creates platform windows, font databases, GL/Vulkan instances, input handlers, and drag-and-drop objects. One instance per process. |
+| `QPlatformWindow` | Represents one native window/surface. Handles geometry, visibility, stacking, and the mapping between Qt logical-pixel coordinates and device pixels. |
+| `QPlatformOpenGLContext` | Wraps an `EGLContext` (or `GLXContext` on xcb). `makeCurrent`/`swapBuffers` drive the GL presentation path. |
+| `QPlatformVulkanInstance` | Wraps a `VkInstance` with the correct WSI extensions enabled. `surfaceForWindow()` returns the `VkSurfaceKHR`. |
+| `QPlatformBackingStore` | Software-raster path: provides a CPU-side image that the plugin blits to the native window. Used when `QWindow::surfaceType()` is `QSurface::RasterSurface`. |
+| `QPlatformFontDatabase` | Maps font family/style queries to font files; on Linux delegates to `fontconfig`/FreeType. |
+| `QPlatformTheme` | Supplies palette, icon theme, standard font, dialog buttons, and file-dialog filters — the desktop-integration layer. The `wayland` plugin's theme reads KDE or GNOME settings via `QGnomePlatformTheme` / `KHintsSettings`. |
+| `QPlatformInputContext` | Drives the input method (keyboard, on-screen keyboard, IME) via `QInputMethod`. On Wayland this implements `zwp_text_input_v3`. |
+| `QPlatformDrag` | Implements the cross-window drag-and-drop protocol (X11 XDND on xcb, `wl_data_device` on Wayland). |
+| `QPlatformClipboard` | Reads and writes the clipboard; on Wayland wraps `wl_data_device`/`zwp_primary_selection_v1`. |
+| `QPlatformScreen` | Represents one logical monitor. Exposes geometry, DPI, refresh rate, and the physical size for HiDPI calculations. On Wayland: one per `wl_output`. |
+
+The `QPlatformIntegration` factory creates these objects lazily on first use. A plugin author writing a custom platform (for a new SoC or proprietary compositor) needs at minimum `QPlatformIntegration`, `QPlatformWindow`, and `QPlatformBackingStore` to show a software-rendered window; `QPlatformOpenGLContext` and `QPlatformVulkanInstance` are added for GPU-accelerated surfaces.
+
+```
+QGuiApplication ctor
+  → QFactoryLoader::create("xcb"|"wayland"|"eglfs"|...)
+  → QPlatformIntegration::create()
+  → registers with QPA backend
+
+QWindow::show()
+  → QPlatformIntegration::createPlatformWindow()
+  → QPlatformWindow::setVisible(true)
+  → platform-specific: wl_surface_commit / xcb_map_window / drmModeSetCrtc
+```
+
+### 17.4 QWaylandIntegration and QWaylandWindow
 
 The client plugin's core classes live in [`qtwayland/src/client`](https://code.qt.io/cgit/qt/qtwayland.git/tree/src/client):
 
@@ -1652,7 +1792,7 @@ The client plugin's core classes live in [`qtwayland/src/client`](https://code.q
 
 The `wl_surface` created here is the object every rendering path ultimately attaches buffers to.
 
-### 17.3 The Vulkan Swapchain Path
+### 17.5 The Vulkan Swapchain Path
 
 Qt's Vulkan integration is anchored by `QVulkanInstance`, which wraps a `VkInstance` and, through the platform plugin, enables the correct WSI surface extension. On Wayland, `qwaylandvulkaninstance.cpp` enables `VK_KHR_surface` + `VK_KHR_wayland_surface`, and `qwaylandvulkanwindow.cpp` creates the `VkSurfaceKHR` from the window's `wl_surface` via `vkCreateWaylandSurfaceKHR`.
 
@@ -1678,23 +1818,23 @@ VkSurfaceKHR surface = QVulkanInstance::surfaceForWindow(&window);
 
 Under the hood the qtwayland plugin fills a `VkWaylandSurfaceCreateInfoKHR` with the `wl_display` and the window's `wl_surface`. From that point the **Vulkan WSI in Mesa** — not Qt — owns `VkSwapchainKHR` creation, image acquisition (`vkAcquireNextImageKHR`), and presentation (`vkQueuePresentKHR`), which is where Wayland buffer commits actually occur.
 
-### 17.4 The OpenGL/EGL Path
+### 17.6 The OpenGL/EGL Path
 
 On the OpenGL path the plugin uses `EGL_PLATFORM_WAYLAND_KHR`: `QWaylandGLContext` and the wayland-egl client integration create a **`wl_egl_window`** wrapping the `wl_surface`, then an `EGLSurface` over it. Rendering with `eglSwapBuffers()` triggers the EGL Wayland platform (again in Mesa) to attach the rendered buffer to the `wl_surface` and commit. The `wl_egl_window` is resizable via `wl_egl_window_resize()`, which the plugin calls on `QWaylandWindow` geometry changes so the buffer dimensions track the surface.
 
-### 17.5 Frame Pacing
+### 17.7 Frame Pacing
 
 Qt paces rendering to the compositor using **`wl_surface.frame`** callbacks: after committing a buffer, the client requests a `wl_callback` that the compositor fires when the surface is about to be repainted, signalling the client to produce the next frame. This throttles a Qt Quick animation to the compositor's refresh cadence rather than spinning. For **presentation timing**, qtwayland ships the **`wp_presentation`** protocol, whose `presented` events report the actual scan-out timestamp and refresh interval — the data a frame-timing overlay or an adaptive animation needs.
 
-### 17.6 Explicit Sync: Where It Actually Lives
+### 17.8 Explicit Sync: Where It Actually Lives
 
 Qt does **not** implement Wayland **explicit synchronisation** (`wp_linux_drm_syncobj_v1`) in its Wayland plugin. As of Qt 6.11, **qtwayland neither vendors the `linux-drm-syncobj-v1` protocol nor references it in its client buffer-submission code** — the vendored protocol set contains `linux-dmabuf` and `presentation-time` but no `syncobj`, and the client commit path (`qwaylandwindow.cpp`, `qwaylandeglwindow.cpp`, `qwaylandvulkanwindow.cpp`) contains no `syncobj`/acquire-release timeline references. The "What's New" release notes for Qt 6.8 through 6.11 list no explicit-sync entry under Wayland. [Source](https://doc.qt.io/qt-6/whatsnew611.html)
 
-The reason is structural. For the accelerated paths, Qt does **not** commit buffers to the `wl_surface` itself — it delegates to the Vulkan WSI (§17.3) or the EGL Wayland platform (§17.4). The `linux-drm-syncobj-v1` specification notes precisely this division of responsibility: graphics APIs "like EGL or Vulkan, that manage the buffer queue and commits of a `wl_surface` themselves, are likely to be using this extension internally." [Source](https://wayland.app/protocols/linux-drm-syncobj-v1) Explicit sync for a Qt client therefore comes from **Mesa**: the Vulkan WSI gained `wp_linux_drm_syncobj_v1` support in **Mesa 24.1** (2024), and the EGL Wayland platform carries its own implementation. [Source](https://www.phoronix.com/news/Mesa-24.1-Vulkan-Wayland-Exp) A Qt Vulkan application running on Mesa ≥ 24.1 against a compositor that advertises `wp_linux_drm_syncobj_v1` (KWin, Mutter, wlroots-based) gets timeline-semaphore-based acquire/release sync transparently, with no Qt-level code. Absent that, submission falls back to **implicit synchronisation**: the dma-fence attached to the dmabuf via the `linux-dmabuf` protocol orders the compositor's texturing after the client's rendering completes.
+The reason is structural. For the accelerated paths, Qt does **not** commit buffers to the `wl_surface` itself — it delegates to the Vulkan WSI (§17.5) or the EGL Wayland platform (§17.6). The `linux-drm-syncobj-v1` specification notes precisely this division of responsibility: graphics APIs "like EGL or Vulkan, that manage the buffer queue and commits of a `wl_surface` themselves, are likely to be using this extension internally." [Source](https://wayland.app/protocols/linux-drm-syncobj-v1) Explicit sync for a Qt client therefore comes from **Mesa**: the Vulkan WSI gained `wp_linux_drm_syncobj_v1` support in **Mesa 24.1** (2024), and the EGL Wayland platform carries its own implementation. [Source](https://www.phoronix.com/news/Mesa-24.1-Vulkan-Wayland-Exp) A Qt Vulkan application running on Mesa ≥ 24.1 against a compositor that advertises `wp_linux_drm_syncobj_v1` (KWin, Mutter, wlroots-based) gets timeline-semaphore-based acquire/release sync transparently, with no Qt-level code. Absent that, submission falls back to **implicit synchronisation**: the dma-fence attached to the dmabuf via the `linux-dmabuf` protocol orders the compositor's texturing after the client's rendering completes.
 
 > **Note**: The layer that owns the `wl_surface` commit owns the sync protocol. For Qt's accelerated paths that layer is Mesa's WSI/EGL, not qtwayland — so explicit sync is a property of the Mesa version and compositor in use, not of the Qt version.
 
-### 17.7 linux-dmabuf Zero-Copy
+### 17.9 linux-dmabuf Zero-Copy
 
 For zero-copy buffer sharing, both the Vulkan WSI and the EGL platform allocate GPU buffers and export them as dmabufs, advertised to the compositor through **`zwp_linux_dmabuf_v1`** (vendored at [`qtwayland/src/3rdparty/protocol/linux-dmabuf`](https://code.qt.io/cgit/qt/qtwayland.git/tree/src/3rdparty/protocol)). The compositor imports the dmabuf directly as a texture or, in the best case, scans it out via a KMS plane without an intermediate copy. On the compositor side of qtwayland, `QtWaylandCompositor`'s dmabuf integration implements the server half for Qt-based compositors.
 
