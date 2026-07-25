@@ -9,7 +9,7 @@
 - [Overview](#overview)
 - [1. KDE Frameworks 6 (KF6) Architecture](#1-kde-frameworks-6-kf6-architecture)
   - [1.1 Framework Tiers](#11-framework-tiers)
-  - [1.2 Key Frameworks](#12-key-frameworks)
+  - [1.2 Complete Framework Listing](#12-complete-framework-listing)
   - [1.3 CMake Packaging and Extra CMake Modules](#13-cmake-packaging-and-extra-cmake-modules)
   - [1.4 KDE PIM and Domain Frameworks](#14-kde-pim-and-domain-frameworks)
   - [1.5 Porting from KF5 to KF6](#15-porting-from-kf5-to-kf6)
@@ -112,20 +112,96 @@ graph TD
 
 A fourth informal category, sometimes called "Tier 4" or simply *integration plugins*, contains platform-integration modules (e.g. `frameworkintegration`, `plasma-integration`) that wire the frameworks into the running Plasma session's look and feel.
 
-### 1.2 Key Frameworks
+### 1.2 Complete Framework Listing
 
-A working knowledge of the following Tier 1 frameworks covers most application code:
+KDE Frameworks 6 ships 65 library packages across four tiers. The tables below list every framework; those with a dedicated section in this chapter are marked with a §-reference. [Source](https://api.kde.org/)
 
-| Framework | Namespace / key classes | Role |
-| --- | --- | --- |
-| **KCoreAddons** | `KJob`, `KAboutData`, `KProcess`, `KFormat`, `KUser` | Non-GUI core utilities; `KJob` is the base of the entire KIO job hierarchy |
-| **KConfig** | `KConfig`, `KConfigGroup`, `KSharedConfig`, generated `KConfigSkeleton` | INI-file and cascading XDG configuration; codegen from `.kcfg` |
-| **KI18n** | `i18n()`, `i18nc()`, `ki18n()` | Gettext-based translation, exposed to both C++ and QML |
-| **KWidgetsAddons** | `KMessageBox`, `KPageDialog`, `KActionMenu` | Additional `QWidget`-based widgets beyond Qt Widgets |
-| **KWindowSystem** | `KWindowSystem`, `KWindowInfo`, `KX11Extras` | Cross-platform (X11 + Wayland) window-management queries (§5) |
-| **Kirigami** | `Kirigami.ApplicationWindow`, `Kirigami.Page` | Adaptive QML UI toolkit (§4) |
+#### Tier 1 — Qt-only dependencies (29 frameworks)
 
-[Source](https://api.kde.org/frameworks/kcoreaddons/html/index.html)
+These libraries depend only on Qt and small third-party libraries (zlib, libxml2, etc.). They can be used in any Qt application without pulling in the rest of the KDE stack.
+
+| Framework | `KF6::` target | Key classes / QML types | Role |
+|---|---|---|---|
+| **Attica** | `Attica` | `ProviderManager`, `Provider`, `Content` | Open Collaboration Services client; protocol layer under KNewStuff |
+| **BluezQt** | `BluezQt` | `Manager`, `Device`, `Adapter`, `MediaEndpoint` | Qt wrapper for BlueZ 5 D-Bus API (Bluetooth) |
+| **KArchive** | `Archive` | `KZip`, `KTar`, `K7Zip`, `KGZipFilter` | Read/write compressed archives (zip, tar, 7z, gzip, bzip2) |
+| **KCalendarCore** | `CalendarCore` | `Calendar`, `Event`, `Todo`, `Incidence` | iCalendar/vCalendar data model; no UI, no Akonadi dependency |
+| **KCodecs** | `Codecs` | `KCodecs`, `KCharsets`, `KEncodingDetector` | Charset detection, Base64/QP encode-decode, text codec utilities |
+| **KConfig** | `ConfigCore`, `ConfigGui` | `KConfig`, `KConfigGroup`, `KSharedConfig`, `KConfigSkeleton` | Cascading XDG config with codegen from `.kcfg` (§8) |
+| **KCoreAddons** | `CoreAddons` | `KAboutData`, `KJob`, `KPluginLoader`, `KStringHandler` | Core Qt add-ons: plugin system, job base class, string utilities |
+| **KDBusAddons** | `DBusAddons` | `KDBusConnectionPool`, `KDEDModule`, `KDEInitInterface` | Convenience wrappers for QtDBus; KDED daemon-module registration |
+| **KGlobalAccel** | `GlobalAccel` | `KGlobalAccel`, `KGlobalShortcutInfo` | System-wide keyboard shortcut registration (§14) |
+| **KGuiAddons** | `GuiAddons` | `KColorUtils`, `KFontUtils`, `KModifierKeyInfo`, `KImageCache` | Qt GUI utilities: colour math, font metrics, modifier key state |
+| **KHolidays** | `Holidays` | `HolidayRegion`, `Holiday` | Regional public-holiday and special-event date lookup |
+| **KI18n** | `I18n` | `KLocalizedString`, `KLocalizedContext` (QML), `ki18n()` | Gettext-based localisation with plural forms and QML context |
+| **KIdleTime** | `IdleTime` | `KIdleTime` (singleton) | Reports user idle time; signals on timeout or resumption |
+| **Kirigami** | `Kirigami2` | `ApplicationWindow`, `Page`, `Card`, `Action` (QML) | Convergent adaptive QML UI framework for desktop and mobile (§4) |
+| **KItemModels** | `ItemModels` | `KSelectionProxyModel`, `KDescendantsProxyModel`, `KBreadcrumbSelectionModel` | Proxy models for filtering, flattening, and tree restructuring |
+| **KItemViews** | `ItemViews` | `KCategorizedView`, `KCategorizedSortFilterProxyModel`, `KFilterProxySearchLine` | Extended item views with category grouping and inline search filter |
+| **KPlotting** | `Plotting` | `KPlotWidget`, `KPlotObject`, `KPlotAxis` | Lightweight scientific 2D plotting widget with auto-scaling axes |
+| **KQuickCharts** | `QuickCharts` | `PieChart`, `LineChart`, `BarChart`, `XYChart`, `ArraySource` (QML: `org.kde.quickcharts`) | GPU-accelerated QML charts using signed-distance-field rendering |
+| **KSyntaxHighlighting** | `SyntaxHighlighting` | `Repository`, `Definition`, `AbstractHighlighter`, `SyntaxHighlighter` | Kate/TextMate grammar-based syntax highlighting engine; QML: `org.kde.syntaxhighlighting` |
+| **KTextTemplate** | `TextTemplate` | `Engine`, `Context`, `Template`, `FileSystemTemplateLoader` | Django-style text/HTML templating for reports, emails, code generation |
+| **KUserFeedback** | `UserFeedbackCore`, `UserFeedbackWidgets` | `Provider`, `Survey`, `AbstractDataSource` | Opt-in telemetry and in-app survey collection; QML: `org.kde.userfeedback` |
+| **KWidgetsAddons** | `WidgetsAddons` | `KMessageBox`, `KPageDialog`, `KTitleWidget`, `KDualAction` | Large collection of QWidget add-ons: dialogs, buttons, progress indicators |
+| **KWindowSystem** | `WindowSystem` | `KWindowSystem`, `KX11Extras`, `KWaylandExtras`, `KStartupInfo` | Cross-platform window-management queries: stacking, virtual desktops, activation (§5) |
+| **ModemManagerQt** | `ModemManagerQt` | `Manager`, `Modem`, `Bearer`, `Sim` | Qt wrapper for ModemManager D-Bus API (mobile broadband) |
+| **NetworkManagerQt** | `NetworkManagerQt` | `Manager`, `Device`, `Connection`, `AccessPoint` | Qt wrapper for NetworkManager D-Bus API (wired/wireless/VPN) |
+| **Prison** | `Prison` | `Barcode`, `ScanResult`; scanner QML types (QML: `org.kde.prison`) | Barcode rendering (QR, Data Matrix, Code 128, Aztec) and camera scanning |
+| **Solid** | `Solid` | `Device`, `DeviceNotifier`, `StorageDrive`, `PowerManagement` | Hardware abstraction: device enumeration, storage, power, batteries |
+| **Sonnet** | `SonnetCore`, `SonnetUi` | `Speller`, `Highlighter`, `SpellCheckDecorator` | Multi-backend spell-checking with dictionary, grammar, and autocorrect support |
+| **ThreadWeaver** | `ThreadWeaver` | `Weaver`, `Job`, `WeaverObserver`, `WeaverInterface` | Job-queue thread pool with explicit dependency declarations between jobs |
+
+#### Tier 2 — Tier 1 dependencies (15 frameworks)
+
+| Framework | `KF6::` target | Key classes / QML types | Role |
+|---|---|---|---|
+| **KAuth** | `AuthCore`, `Auth` | `Action`, `ExecuteJob`, `BackendManager` | PolicyKit-based privilege escalation with D-Bus helper processes (§9) |
+| **KColorScheme** | `ColorScheme` | `KColorScheme`, `KStatefulBrush` | Maps Plasma semantic colour roles to `QPalette`; handles dark/light switching |
+| **KCompletion** | `Completion` | `KCompletion`, `KCompletionBox`, `KLineEdit` | Text autocompletion: substring, weighted, shell-style with popup |
+| **KContacts** | `Contacts` | `Addressee`, `AddressBook`, `VCardConverter` | vCard 3.0/4.0 contact model and parse/serialise; used by Akonadi and PIM apps |
+| **KCrash** | `Crash` | `KCrash` (static API), `DrKonqiReporter` | Crash handler: generates backtraces, invokes DrKonqi or a custom handler |
+| **KDeclarative** | `Declarative` | `KQuickControls`, `KQuickControlsAddons`, `DragAndDrop`, `CalendarEvents` (QML modules) | Bridges KDE Frameworks into QML; provides KDE-specific QML module set |
+| **KFileMetaData** | `FileMetaData` | `Extractor`, `ExtractionResult`, `PropertyMap`, `WriterCollection` | Plugin-based metadata extraction from audio, PDF, image, and office files |
+| **KMime** | `Mime` | `Message`, `Content`, `Headers`, `Types` | Full MIME message parse and composition; used by KMail and Akonadi |
+| **KNotifications** | `Notifications` | `KNotification`, `KNotificationAction`, `KNotificationPermission` | Cross-platform desktop notifications via the freedesktop.org spec (§10) |
+| **KPackage** | `Package` | `Package`, `PackageLoader`, `PackageStructure` | Install and load content packages (Plasma themes, QML applets) from XDG dirs |
+| **KPty** | `Pty` | `KPty`, `KPtyDevice`, `KPtyProcess` | Pseudo-terminal device interface for terminal emulators |
+| **KService** | `Service` | `KService`, `KServiceTypeTrader`, `KSycoca`, `KPluginInfo` | XDG `.desktop` service database with `KSycoca` binary cache (§13) |
+| **KStatusNotifierItem** | `StatusNotifierItem` | `KStatusNotifierItem` | Freedesktop StatusNotifierItem D-Bus protocol — system-tray icon |
+| **KUnitConversion** | `UnitConversion` | `Converter`, `Value`, `UnitCategory`, `Unit` | Physical unit conversion: length, mass, temperature, currency, and more |
+| **Syndication** | `Syndication` | `Loader`, `Feed`, `Item`, `Person` | RSS (0.9x/1.0/2.0) and Atom (0.3/1.0) feed parser with unified API |
+
+#### Tier 3 — Tier 1 + Tier 2 dependencies (20 frameworks)
+
+| Framework | `KF6::` target | Key classes / QML types | Role |
+|---|---|---|---|
+| **Baloo** | `Baloo` | `Query`, `QueryRunnable`, `ResultIterator`, `File` | File indexing and full-text search; Baloo calls KFileMetaData for extraction |
+| **KBookmarks** | `Bookmarks` | `KBookmarkManager`, `KBookmark`, `KBookmarkMenu`, `KBookmarkDialog` | XBel/NS bookmark file management with widget and D-Bus integration |
+| **KCMUtils** | `KCMUtils` | `KCModule`, `KPluginSelector`; QML types | Helpers for building System Settings control-module panels |
+| **KConfigWidgets** | `ConfigWidgets` | `KConfigDialog`, `KColorButton`, `KLanguageButton`, `KHamburgerMenu` | Widgets for config dialogs wired to `KConfigSkeleton` |
+| **KDAV** | `DAV` | `DavCollection`, `DavItem`, `DavJobBase`, `DavUrl` | CalDAV/CardDAV client protocol implementation |
+| **KDESu** | `Su` | `SuProcess`, `KDESuProcess` | GUI privilege escalation by running a command as root via `su` or `ssh` |
+| **KIconThemes** | `IconThemes` | `KIconDialog`, `KIconButton`, `KIconEffect` | XDG icon theme loading, icon-picker dialog, effect overlays (disabled, selected) |
+| **KIO** | `KIOCore`, `KIOWidgets`, `KIOFileWidgets` | `KIO::StatJob`, `KFileBrowserItem`, `KDirModel`, `KOpenWithDialog` | Network-transparent URL-based I/O with worker processes and file-manager widgets (§7) |
+| **KJobWidgets** | `JobWidgets` | `KJobTrackerInterface`, `KStatusBarJobTracker`, `KUiServerJobTracker` | Progress-bar UI widgets for `KJob`-based async operations |
+| **KNewStuff** | `NewStuffCore`, `NewStuffWidgets` | `Engine`, `ItemsModel`, `Transaction`; QML types | Download and install assets from OCS servers (KDE Store, themes, scripts) |
+| **KNotifyConfig** | `NotifyConfig` | `KNotifyConfigWidget`, `KNotifyEventList` | Configuration UI for per-application notification event settings |
+| **KParts** | `Parts` | `Part`, `ReadOnlyPart`, `ReadWritePart`, `MainWindow` | Embeddable component architecture (e.g., Kate Part hosted in Konqueror) |
+| **KPeople** | `People` | `PersonData`, `PersonsModel`, `AbstractPersonPlugin`; QML types | Aggregates contacts from multiple backends into unified person objects |
+| **KRunner** | `Runner` | `AbstractRunner`, `RunnerManager`, `QueryMatch`, `RunnerContext` | Extensible query-runner framework; backend for KDE application launcher (§12) |
+| **KSvg** | `Svg` | `Svg`, `FrameSvg`, `ImageSet`; QML types | SVG-based themed rendering with recolouring and caching; core of Plasma theming |
+| **KTextEditor** | `TextEditor` | `Editor` (singleton), `Document`, `View`, `ConfigInterface` | Full embeddable text editor (Kate Part) with syntax highlighting and scripting |
+| **KTextWidgets** | `TextWidgets` | `KTextEdit`, `KRichTextEdit`, `KFind`, `KReplace` | Rich-text editing widgets and find/replace dialogs extending `QTextEdit` |
+| **KWallet** | `Wallet` | `Wallet`, `WalletManager` | Secure credential storage via the KWallet D-Bus service |
+| **KXMLGui** | `XmlGui` | `KXMLGUIFactory`, `KActionCollection`, `KMainWindow`, `KToolBar` | XML-declared action/toolbar/menu layout for KDE main windows |
+| **Purpose** | `Purpose` | `Menu` (QML), `PurposeJob`, `PurposeAlternativesModel` | Share-to / open-with abstraction: email, Nextcloud, chat, clipboard |
+
+#### Tier 4 — Workspace integration (1 framework)
+
+| Framework | `KF6::` target | Key classes | Role |
+|---|---|---|---|
+| **FrameworkIntegration** | `Style` | `KStyle` | Qt style plugin that makes Qt apps adopt KDE Plasma's theme, font, and click-behaviour; applications do not usually link this directly |
 
 **KConfig** deserves a note because it underpins all of Plasma's settings. It reads a *cascade* of configuration files following the XDG Base Directory specification — system defaults in `/etc/xdg`, then per-user overrides in `~/.config` — and merges them. The `KConfigGroup` API is group-oriented (INI `[Section]` blocks), and the `kconfig_compiler` tool generates strongly-typed accessor classes from an XML `.kcfg` schema plus a `.kcfgc` codegen file, which is how KWin, plasmashell, and System Settings share a single source of truth for their preferences. [Source](https://api.kde.org/frameworks/kconfig/html/index.html)
 

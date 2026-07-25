@@ -34,6 +34,7 @@ throughout.
 | [39e](ch39e-iced.md) | iced 0.14 | Rust | iced_wgpu (wgpu/Vulkan) | winit + iced_layershell |
 | [39f](ch39f-libcosmic.md) | libcosmic / COSMIC | Rust | iced_wgpu | cosmic-comp (smithay) |
 | [39g](ch39g-flutter.md) | Flutter | Dart / C++ | Impeller (Vulkan) | GTK embedder / flutter-elinux |
+| [39h](ch39h-dear-imgui.md) | Dear ImGui | C++ | Vulkan / OpenGL3 / SDL_GPU | Via SDL3 or GLFW (no native Wayland backend) |
 
 ---
 

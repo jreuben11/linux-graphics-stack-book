@@ -32,6 +32,15 @@ The chapter is long because Qt is large; it is organised so that a reader can ju
 - [12. Qt GUI Beyond Rendering](#12-qt-gui-beyond-rendering)
 - [13. Qt Network](#13-qt-network)
 - [14. QML and Qt Quick](#14-qml-and-qt-quick)
+  - [14.1 The QML Engine and the V4 JavaScript Engine](#141-the-qml-engine-and-the-v4-javascript-engine)
+    - [V4 history and design rationale](#v4-history-and-design-rationale)
+    - [V4 bytecode interpreter: Moth](#v4-bytecode-interpreter-moth)
+    - [V4 JIT: single-tier baseline only](#v4-jit-single-tier-baseline-only)
+    - [QML binding integration: compile-time property resolution](#qml-binding-integration-compile-time-property-resolution)
+    - [V4 garbage collector](#v4-garbage-collector)
+    - [V4 ECMAScript compliance](#v4-ecmascript-compliance)
+    - [The Qt Quick compiler toolchain](#the-qt-quick-compiler-toolchain)
+    - [V4 vs V8: a technical comparison](#v4-vs-v8-a-technical-comparison)
 - [15. The Qt Quick Scene Graph and QRhi](#15-the-qt-quick-scene-graph-and-qrhi)
 - [16. Qt Widgets](#16-qt-widgets)
 - [17. QPA Plugins and Platform Integration](#17-qpa-plugins-and-platform-integration)
@@ -1386,6 +1395,118 @@ int main(int argc, char *argv[])
 ```
 
 `QQmlComponent` compiles and instantiates a single document; `QQmlContext` supplies the name-resolution scope, letting C++ inject context properties (though registered types and singletons are preferred over context properties in Qt6). To cut first-load cost, Qt6 precompiles QML: **`qmlcachegen`** bakes each document to V4 bytecode embedded in the binary at build time, and **`qmltc`** (the QML type compiler) can compile QML documents directly to C++ classes, eliminating runtime document parsing for those types. [Source](https://doc.qt.io/qt-6/qqmlapplicationengine.html)
+
+#### V4 history and design rationale
+
+Qt has used three JavaScript engines:
+
+- **Qt 4.3 (2007):** QtScript — a from-scratch implementation with no JIT.
+- **Qt 4.5 (2009):** QtScript re-based on **JavaScriptCore** (WebKit's engine) for performance and standards coverage.
+- **Qt 5.0 (2012):** Qt attempted to switch to **V8** (Google's engine, used in Chrome). A `Qt Script V8 Port` was started but abandoned; documented blockers included V8's SCons build system, cross-compilation difficulties, snapshot-binary toolchain friction, memory overhead ("V8 is optimized for big apps"), and the impossibility of placing QML objects atop V8's JS global object as needed. [Source](https://wiki.qt.io/Qt_Script_V8_Port)
+- **Qt 5.2 (2013):** **V4** introduced, designed from scratch specifically for the QML engine. QtScript deprecated (removed Qt 6.5). The name is an internal Qt codename.
+
+The 2013 Qt Contributors Summit decision documented the core V4 design goals: eliminate V8's memory overhead, remove type-conversion costs between JS values and Qt types (`QString`, `QColor`, etc. pass through without marshalling), resolve property names at compile time rather than runtime, fix multi-instance threading problems with V8, and consolidate QML's three separate binding evaluation paths into one. [Source](https://wiki.qt.io/Qt-contributors-summit-2013-QML-engine)
+
+#### V4 bytecode interpreter: Moth
+
+V4's interpreter is named **Moth** (`src/qml/jsruntime/qv4vme_moth.cpp`). It is **register-based with a dedicated accumulator register** — most bytecodes implicitly use the accumulator as input/output, reducing operand encoding size. The dispatch strategy is:
+
+- **Computed-goto dispatch** (preferred, GCC-style `&&label` addresses): each handler jumps directly to the next instruction's handler without a central dispatch loop, eliminating branch misprediction overhead.
+- **Switch fallback** for compilers that do not support computed gotos.
+
+The `QV4_FORCE_INTERPRETER=1` environment variable disables the JIT at runtime for debugging. [Source](https://code.qt.io/cgit/qt/qtdeclarative.git/tree/src/qml/jsruntime/)
+
+#### V4 JIT: single-tier baseline only
+
+V4 has **one JIT tier** — a baseline JIT in `src/qml/jit/`. The `BaselineJIT` class compiles Moth bytecode instruction-by-instruction to native machine code in a single pass: no IR, no optimization passes, no inlining. The low-level assembler backend is the **JavaScriptCore Macro Assembler** (borrowed from WebKit), not a home-grown or LLVM backend. Availability is controlled by `QT_CONFIG(qml_jit)`:
+
+- **Enabled on:** Linux x86/x86-64, Linux ARM (Thumb-capable), macOS, Windows x86/x86-64, Android ARM.
+- **Disabled on:** iOS (App Store prohibits runtime code generation), Windows RT, and constrained ARM targets without Thumb support.
+
+When the JIT is disabled, Moth handles all execution. There is no on-stack replacement, no speculative inlining, and no hidden-class-style feedback. [Source](https://wiki.qt.io/V4)
+
+#### QML binding integration: compile-time property resolution
+
+V4's principal advantage over general-purpose JS engines in QML workloads is **compile-time property index resolution**. When the QML compiler encounters a property access (`rect.width`), it resolves the property to a numeric index in the metatype system and embeds that index directly in the Moth bytecode. At runtime, property reads bypass name lookup entirely — they are indexed slot accesses.
+
+The `FetchAndSubscribe` bytecode instruction combines a property read with subscription to its `NOTIFY` signal in a single op, wiring the QML binding's dependency graph without any extra bookkeeping. When the property changes and the signal fires, the binding expression is re-evaluated by re-running the bytecode. This tight coupling between the interpreter and the QMetaObject property system — impossible with V8's opaque object model — is why V4 outperforms V8 on typical single-expression QML bindings despite V8's far more sophisticated JIT. [Source](https://www.kdab.com/qml-engine-internals-part-3-binding-types/)
+
+Dynamic objects (e.g., items injected from C++ via `setContextProperty()`) cannot benefit from compile-time resolution and fall back to runtime name lookup.
+
+#### V4 garbage collector
+
+V4's GC is a **non-moving mark-and-sweep** collector: [Source](https://doc.qt.io/qt-6/qtqml-javascript-memory.html)
+
+- **Mark phase:** traces from roots (JS globals, compilation units, the value stack, persistent `QJSValue`/`QJSManagedValue` references).
+- **Sweep phase:** frees unmarked objects into size-class bins (linked free lists); empty address-space chunks are decommitted. Large objects use a separate huge-object allocator backed by dedicated OS pages.
+- **No compaction, no generational split.** All live objects stay at their original address; there is no young/old generation distinction.
+- **Incremental GC** (since **Qt 6.8**): collection work is spread across multiple time slices to reduce frame-time spikes. Controlled via `QV4_GC_TIMELIMIT`; set to `0` for stop-the-world collection.
+
+#### V4 ECMAScript compliance
+
+V4 targets **ES2016 (7th edition)** as its declared baseline. Additions above that baseline have been added incrementally:
+
+| Feature | Qt version |
+|---------|-----------|
+| Nullish coalescing (`??`) | Qt 5.15 |
+| Optional chaining (`?.`) | Qt 6.2 |
+| Type-annotated function parameters (auto-coerced) | Qt 6.7 |
+| Numeric literal separators (`1_000_000`) | Qt 6.8 |
+
+`async`/`await` syntax was confirmed absent in a 2022 mailing-list thread; its current status in Qt 6.11 should be verified in the release notes. `Proxy` is implemented (`qv4proxy*.cpp` exists in the source). Qt-specific extensions include `String.prototype.arg()` for locale-aware formatting and enhanced `instanceof` for QML type checking. Web APIs (`window`, DOM, `fetch`, `setTimeout`) are absent by design — Qt provides Qt-specific equivalents. [Source](https://doc.qt.io/qt-6/qtqml-javascript-hostenvironment.html)
+
+#### The Qt Quick compiler toolchain
+
+Three tools form the compilation pipeline built on top of V4:
+
+1. **`qmlcachegen`** (open-source, §1.3): serialises the parsed QML document and its V4 bytecode into a binary compilation unit embedded in the application binary. Eliminates parse time on subsequent runs; the JIT compiles hot functions from the cached bytecode at first execution.
+
+2. **`qmltc`** (QML type compiler, open-source): compiles entire QML types to C++ classes, bypassing `QQmlComponent` instantiation overhead. Requires statically-known structure; fails on unsupported language constructs.
+
+3. **`qmlsc`** (QML script compiler, **commercial only**): produces more optimised C++ than qmlcachegen for binding expressions. Two modes: *direct* (calls C++ methods without the metatype lookup mechanism) and *static* (assumes properties cannot be shadowed, enabling further compilation). [Source](https://doc.qt.io/qt-6/qtqml-qtquick-compiler-tech.html)
+
+#### V4 vs V8: a technical comparison
+
+V8 is Google's JavaScript engine, used in Chrome, Node.js, and Deno. It is a general-purpose engine designed for peak JS throughput across web workloads. The contrast with V4 is fundamental:
+
+**Execution tiers:**
+
+| | V4 | V8 |
+|---|---|---|
+| Interpreter | Moth (accumulator, computed-goto) | **Ignition** (accumulator, TurboFan-generated handlers) |
+| Baseline JIT | Single-tier baseline (bytecode → native, no IR) | **Sparkplug** (bytecode → native in one pass, 2021) |
+| Mid-tier JIT | None | **Maglev** (SSA CFG IR, 2023) |
+| Optimising JIT | None | **TurboFan** (sea-of-nodes IR, full optimisation pipeline) |
+| Hidden-class feedback | None | Maps/Shapes + inline caches (monomorphic/polymorphic/megamorphic) |
+| On-stack replacement | None | Yes (Ignition ↔ Sparkplug ↔ TF deopt) |
+| JIT assembler | JSC Macro Assembler | TurboFan-generated per-arch backends |
+
+V8's Ignition bytecode interpreter uses the same accumulator + register design as Moth but its instruction handlers are themselves **generated by TurboFan**, giving a consistent fast path across all nine supported architectures without hand-writing assembly. Sparkplug (V8's baseline JIT, introduced 2021) is structurally similar to V4's baseline JIT — a single-pass bytecode → machine code translation — but maintains Ignition-compatible stack frames enabling seamless on-stack replacement and deoptimisation back from TurboFan. Maglev and TurboFan handle hot functions with full optimisation; V4 has no equivalent. [Source](https://v8.dev/blog/ignition-interpreter) [Source](https://v8.dev/blog/sparkplug) [Source](https://v8.dev/blog/maglev)
+
+**Property access:**
+
+V8 builds **hidden classes** (Maps): every JavaScript object carries a pointer to a Map that describes its property layout. Objects with identical property-addition history share Maps, enabling type checks and property reads via single-pointer comparison and fixed-offset loads. Inline caches at property access sites specialise to observed Maps. V4 uses QML's **compile-time metatype property indices** instead — a different mechanism that is faster for QML's statically-typed objects (no feedback needed because the type is known at compile time) but provides no mechanism for dynamically-shaped objects.
+
+**Garbage collector:**
+
+| | V4 | V8 (Orinoco) |
+|---|---|---|
+| Algorithm | Non-moving mark-and-sweep | Generational mark-compact + scavenger |
+| Generational | No | Yes (nursery → intermediate → old gen) |
+| Moving / compacting | No | Yes (old gen) |
+| Incremental | Yes (Qt 6.8+) | Yes |
+| Parallel | No | Yes (parallel scavenger, parallel compaction) |
+| Concurrent | No | Yes (concurrent marking, concurrent sweeping) |
+
+V8's Orinoco GC runs marking concurrently with JavaScript execution using write barriers, and scavenges the young generation in parallel across multiple helper threads. The result is a measured 20–50% reduction in young-generation collection time and up to 50% pause reduction in long-running applications. V4's GC is simpler and single-threaded; the Qt 6.8 incremental step is the first move toward V8-style pause reduction. [Source](https://v8.dev/blog/trash-talk)
+
+**ECMAScript compliance:**
+
+V8 tracks the ECMAScript draft continuously and passes approximately 98% of the Test262 conformance suite (ES2025, ~50,000 tests). V4 targets ES2016 and adds specific features per Qt release; it does not publish conformance test results. Features present in V8 but absent or uncertain in V4 include `async`/`await`, `String.replaceAll`, top-level `await`, `WeakRef`/`FinalizationRegistry`, and `import()` dynamic imports.
+
+**When V4 wins:** For typical QML binding expressions (one to three property accesses, a conditional, arithmetic), V4's compile-time property index resolution and `FetchAndSubscribe` integration beat V8's pipeline because no runtime name lookup, no hidden-class transition, and no deoptimisation path is needed. The KDAB binding analysis confirms V4 "significantly outperforms V8 for typical one-line binding functions" despite V8's more sophisticated JIT.
+
+**When V8 wins:** For algorithmic JavaScript (sorting large arrays, complex string processing, cryptography), V8's TurboFan pipeline with inlining, bounds-check elimination, and SIMD-capable register allocation is orders of magnitude faster than V4's non-optimising baseline JIT. V4 is not designed for that class of workload and should not be used for it.
 
 ### 14.2 Type Registration and QML Modules
 

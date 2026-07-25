@@ -779,8 +779,8 @@ This chapter covers the wave of staging protocols that reached compositor implem
 - **Integrations**: Ch38 (PipeWire — owns ALSA devices on modern desktops; ALSA PCM plugin routes libasound calls into PipeWire graph), Ch140 (HDMI/DisplayPort Audio — HDA codec widget chain for HDMI audio), Ch39 (Qt Multimedia and GStreamer-GTK audio capture use ALSA or PipeWire-ALSA bridge), Ch57/Ch58 (FFmpeg/GStreamer ALSA source/sink elements), Ch26 (VA-API video decode outputs PCM via ALSA or PipeWire)
 
 ### Chapter 39: Qt and GTK GPU Rendering *(superseded — see Part VII-C)*
-> **Note**: Chapter 39 has been expanded into six chapters in Part VII-C — Desktop Frameworks.
-> See ch39a (Qt6), ch39b (KDE), ch39c (GTK4), ch39d (GNOME), ch39e (iced), ch39f (libcosmic).
+> **Note**: Chapter 39 has been expanded into eight chapters in Part VII-C — Desktop Frameworks.
+> See ch39a (Qt6), ch39b (KDE), ch39c (GTK4), ch39d (GNOME), ch39e (iced), ch39f (libcosmic), ch39g (Flutter), ch39h (Dear ImGui).
 
 - Qt6 rendering architecture: the `QRhi` (Qt Rendering Hardware Interface) abstraction; backends — Vulkan, OpenGL, Metal, D3D12; `QSGRenderNode` and the scene graph; `QQuickRenderControl` for off-screen rendering
 - Qt Wayland integration: `QPA` (Qt Platform Abstraction); `qwayland` QPA plugin; `xdg-shell` surface creation; linux-dmabuf swapchain; `zwp_linux_explicit_synchronization_v1` handshake (Ch3, Ch20)
@@ -935,6 +935,22 @@ This chapter covers the wave of staging protocols that reached compositor implem
 - **Scope**: COSMIC desktop stack — smithay-based compositor (cosmic-comp), libcosmic widget library (iced superset with CosmicWidget, CosmicTheme, cosmic-config RON files, LayerShell surfaces), CosmicTheme (semantic color tokens, palette generation), COSMIC settings daemon, cosmic-panel, cosmic-dock; pure-Rust architecture (no GTK, no Qt dependency); XWayland integration; COSMIC app ecosystem; comparison table COSMIC vs GNOME vs KDE vs elementary OS vs Budgie; deployment on Pop!_OS and other distributions; `iced_sctk` fork (pop-os/libcosmic, not upstream iced); cosmic-text (text rendering in COSMIC)
 - **Key types**: `CosmicWidget`, `CosmicTheme`, `CosmicButton`, `cosmic_config::Config`, `LayerShellSettings`, `CosmicApplication`
 - **Integrations**: Ch39e (iced — libcosmic is built on iced), Ch21 (wlroots vs. smithay for compositor implementation), Ch40 (wgpu — COSMIC rendering backend), Ch39a (Qt6 comparison for application portability)
+
+### Chapter 39h: Dear ImGui — Immediate-Mode GUI for Developer Tools and Debug Overlays *(Part VII-C)*
+
+- Design philosophy: the IMGUI paradigm — draw UI every frame, no retained widget state; contrast with retained-mode toolkits (Qt6, GTK4); target use cases (debug overlays, game editors, profilers, hardware UIs)
+- `ImGuiContext`, `ImDrawList`/`ImDrawCmd`/`ImDrawData` pipeline; vertex format (`ImDrawVert` — 20 bytes: pos/uv/col); `ImDrawIdx` (uint16 by default, 32-bit opt-in)
+- Font atlas: `ImFontAtlas` — stb_truetype (default) vs FreeType (`IMGUI_ENABLE_FREETYPE`, `misc/freetype/`); stb_rect_pack packing; 1×1 white pixel for solid-colour draws
+- Dynamic atlas (v1.92.0+): `ImTextureData` / `ImTextureRef`; `ImGuiBackendFlags_RendererHasTextures`; incremental glyph loading and per-frame texture create/update/destroy
+- ID system: `ImGuiID` as CRC32 hash chain over the ID stack; `PushID`/`PopID`; `##` separator (label vs ID), `###` separator (label-independent ID)
+- Backend architecture: Platform + Renderer split (v1.62, June 2018); backend inventory for Linux (`imgui_impl_sdl3`, `imgui_impl_glfw`, `imgui_impl_vulkan`, `imgui_impl_opengl3`, `imgui_impl_sdlgpu3`, `imgui_impl_null`)
+- Vulkan backend deep dive: `ImGui_ImplVulkan_InitInfo`; render-pass path vs `VK_KHR_dynamic_rendering` path (v1.89.7); per-frame vertex/index buffer upload; separate sampled-image + sampler descriptors (v1.92.8); `ImGui_ImplVulkan_AddTexture` / `RemoveTexture`; volk support (`IMGUI_IMPL_VULKAN_USE_VOLK`)
+- OpenGL3 backend: GL state save/restore; embedded GLSL shaders; `imgui_impl_opengl3_loader.h`
+- Platform backends on Linux: SDL3 Wayland detection (`SDL_GetCurrentVideoDriver()`), mouse capture limitation, clipboard via `wl_data_device`, IME via `zwp_text_input_v3`; GLFW Wayland considerations, fractional scale caveat
+- Build and integration: copy-source canonical approach; CMake direct-source, FetchContent, vcpkg patterns; `IMGUI_USER_CONFIG` / `imconfig.h` compile-time knobs; `IMGUI_CHECKVERSION()`
+- Docking branch (separate from master): `ImGuiConfigFlags_DockingEnable`, `ImGuiConfigFlags_ViewportsEnable`; multi-viewport secondary OS windows via `ImGuiPlatformIO` callbacks; Wayland positioning limitations
+- Ecosystem: ImPlot (plotting), imnodes / imgui-node-editor (node graphs), ImGuizmo (3D transform gizmos, `ImSequencer`), imgui_club (`imgui_memory_editor`, threaded rendering), Tracy profiler viewer (ImGui as tool UI)
+- **Integrations**: Ch18 (Mesa Vulkan — SPIR-V bytecode from embedded shaders enters NIR compiler pipeline; sampled-image/sampler descriptors); Ch14 (NIR — ImGui Vulkan SPIR-V passes through NIR); Ch20 (Wayland protocols — SDL3/GLFW handle surface/clipboard/IME/cursor; no direct libwayland-client use); Ch24 (EGL — OpenGL3 backend requires EGL/GLX context); Ch82 (Vulkan ecosystem — ImGui integrates with vk-bootstrap, VMA, volk); Ch39a (Qt6 comparison for retained vs immediate mode); ch39g (Flutter comparison)
 
 ### Chapter 39g: Flutter on Linux — Impeller, the Dart Runtime, and Native Embedding *(Part VII-C)*
 - **Scope**: Flutter's three-layer architecture (Dart framework, C++ engine, C embedder); the Dart VM — JIT kernel snapshot vs. AOT gen_snapshot; Dart isolates and the two-queue event loop; the official GTK Linux embedder (`flutter_linux_gtk`, GDK Wayland backend) and the community `flutter-elinux` Wayland-direct/GBM embedder (Sony); **Impeller** renderer — EntityPass, Pipeline cache, pre-compiled SPIR-V build pipeline (GLSL → spirv-cross → embedded byte arrays); Impeller's Vulkan backend (VkSwapchainKHR, VkCommandBuffer, VK_KHR_dynamic_rendering, VK_KHR_wayland_surface); the widget-to-GPU rendering pipeline (Widget → Element → RenderObject → LayerTree → EntityPass); platform channels (MethodChannel, EventChannel, dart:ffi); LibTxt text engine (HarfBuzz shaping, FreeType rasterization, glyph atlas); Material 3 theming (ColorScheme.fromSeed, HCT colour space); Linux build system (CMake, `flutter build linux --release`); packaging (Snap, AppImage, Flatpak); profiling (Flutter DevTools timeline, RenderDoc, Dart CPU profiler)
