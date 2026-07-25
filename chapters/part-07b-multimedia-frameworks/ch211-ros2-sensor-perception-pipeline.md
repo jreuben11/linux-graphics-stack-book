@@ -5,14 +5,33 @@ graphics application developers building perception systems on Vulkan/CUDA; robo
 engineers who need to understand the plumbing between sensors, message buses, and inference
 engines on Ubuntu-class Linux.
 
-This chapter covers the ROS 2 (Humble/Jazzy) sensor middleware stack: the DDS transport and
-QoS layer, the canonical `sensor_msgs` and `vision_msgs` message taxonomy, the TF2 transform
-tree, `image_transport` plugin architecture, multi-sensor EKF/GPS fusion via
-`robot_localization`, composable-node zero-copy, and NVIDIA Isaac ROS/NITROS for GPU-resident
-perception pipelines. Model training, CUDA kernels, and neural SLAM internals are in
-Chapter 114 (OpenCV/GPU vision) and Chapter 210 (SLAM theory); camera hardware and V4L2
-pipeline internals are in Chapter 96 (libcamera). The three chapters together form the
-complete Linux robot perception stack.
+This chapter covers the ROS 2 (Robot Operating System 2, current LTS releases Humble Hawksbill
+and Jazzy Jalisco) sensor middleware stack. **DDS** (Data Distribution Service) is the
+publish/subscribe wire protocol that replaces ROS 1's central `rosmaster` broker; every node
+publishes and subscribes to typed topics directly, with **QoS** (Quality of Service) policies
+controlling reliability, durability, and deadline semantics per topic. The **`sensor_msgs`**
+and **`vision_msgs`** packages define the canonical message types — `Image`, `PointCloud2`,
+`Imu`, `NavSatFix`, and others — that decouple sensor drivers from perception algorithms.
+**TF2** (Transform Library v2) maintains the robot's coordinate-frame tree: a time-stamped
+graph of rigid-body transforms (base_link → camera_link → map) that lets any node express
+a position or vector in any frame at any past timestamp. **`image_transport`** is a ROS 2
+plugin system that transparently compresses and decompresses image streams — JPEG, H.264,
+or depth-specific codecs — between publishers and subscribers without changing application
+code. **`robot_localization`** provides an Extended Kalman Filter (EKF) node that fuses
+heterogeneous sensor streams (wheel odometry, IMU, GPS `NavSatFix`) into a single consistent
+pose estimate on the `nav_msgs/Odometry` and `geometry_msgs/PoseWithCovarianceStamped`
+topics. **Composable nodes** are a ROS 2 deployment model in which multiple nodes are loaded
+as shared-library plugins into a single process, enabling intra-process zero-copy message
+passing via `std::unique_ptr` transfer rather than DDS serialisation and network round-trips.
+**NVIDIA Isaac ROS** is a collection of hardware-accelerated ROS 2 packages that run
+perception graphs on NVIDIA GPUs; **NITROS** (NVIDIA Isaac Transport for ROS) is its
+zero-copy transport layer, keeping image and point-cloud tensors in GPU memory (as
+`nvidia::gxf::VideoBuffer` objects) across the entire pipeline without CPU round-trips.
+
+Model training, CUDA kernels, and neural SLAM internals are in Chapter 114 (OpenCV/GPU
+vision) and Chapter 210 (SLAM theory); camera hardware and V4L2 pipeline internals are in
+Chapter 96 (libcamera). The three chapters together form the complete Linux robot perception
+stack.
 
 ---
 
