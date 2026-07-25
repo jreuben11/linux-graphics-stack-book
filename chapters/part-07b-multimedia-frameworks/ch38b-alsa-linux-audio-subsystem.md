@@ -24,6 +24,18 @@
 - [10. ALSA Sequencer and MIDI](#10-alsa-sequencer-and-midi)
 - [11. Debugging and Diagnostics](#11-debugging-and-diagnostics)
 - [12. Sound Open Firmware (SOF)](#12-sound-open-firmware-sof)
+  - [12.1 Why a DSP, and where SOF sits](#121-why-a-dsp-and-where-sof-sits)
+  - [12.2 Kernel driver layout](#122-kernel-driver-layout)
+  - [12.3 Choosing the DSP driver: `snd_intel_dspcfg`](#123-choosing-the-dsp-driver-snd_intel_dspcfg)
+  - [12.4 Firmware and topology loading](#124-firmware-and-topology-loading)
+  - [12.5 IPC3 versus IPC4](#125-ipc3-versus-ipc4)
+  - [12.6 NHLT: describing non-HDA endpoints](#126-nhlt-describing-non-hda-endpoints)
+  - [12.7 SoundWire links](#127-soundwire-links)
+  - [12.8 Debugging SOF](#128-debugging-sof)
+  - [12.9 Topology authoring with `alsatplg`](#129-topology-authoring-with-alsatplg)
+  - [12.10 Zephyr RTOS as the SOF firmware substrate](#1210-zephyr-rtos-as-the-sof-firmware-substrate)
+  - [12.11 AMD ACP architecture](#1211-amd-acp-architecture)
+  - [12.12 SDCA: SoundWire Device Class for Audio](#1212-sdca-soundwire-device-class-for-audio)
 - [13. Bluetooth LE Audio and the LC3 Codec](#13-bluetooth-le-audio-and-the-lc3-codec)
 - [14. USB Audio Class 3 (UAC3)](#14-usb-audio-class-3-uac3)
 - [15. Audio Codec Comparison](#15-audio-codec-comparison)
@@ -1262,7 +1274,7 @@ SOF has two wire protocols for host↔DSP communication, both over a shared-memo
 - **IPC3** — the original protocol used up to and including Tiger Lake era firmware. Fixed message structs grouped into topology, PM, component, stream, DAI, and trace classes.
 - **IPC4** — the protocol used by the Intel **ACE** (Audio Compute Engine) DSPs from Meteor Lake onward, aligned with the closed AVS/Windows IPC ABI. IPC4 adds a modular firmware model: a base image plus loadable **library** modules (bundles) that are fetched and loaded into the booted DSP on demand (Meteor Lake / ACE1 and newer). [Source — SOF Linux driver architecture](https://thesofproject.github.io/latest/architectures/host/linux_driver/architecture/sof_driver_arch.html)
 
-The kernel selects the IPC generation from platform data; `sound/soc/sof/ipc3-*.c` and `sound/soc/sof/ipc4-*.c` provide the two implementations behind a common ops interface. For the SOF firmware release timeline (v2.12–v2.14, the move to Zephyr RTOS, and per-platform IPC4 support), see §16.3.
+The kernel selects the IPC generation from platform data; `sound/soc/sof/ipc3-*.c` and `sound/soc/sof/ipc4-*.c` provide the two implementations behind a common ops interface. Zephyr RTOS as the IPC4 firmware substrate is covered in §12.10.
 
 ### 12.6 NHLT: describing non-HDA endpoints
 
@@ -1270,7 +1282,7 @@ An ADSP platform still needs to know how many DMICs exist, which SSP (I2S) ports
 
 ### 12.7 SoundWire links
 
-Where earlier laptops used I2S/SSP to reach the codec, current Intel and AMD platforms increasingly use **SoundWire** (MIPI SoundWire), a two-wire bus managed by `sound/soundwire/` and driven by the same ADSP. The DSP owns the SoundWire master; SOF topology wires SoundWire DAI copiers into the pipeline exactly as it would an SSP DAI. Auto-enumeration of SoundWire codecs via the SoundWire Device Class for Audio (SDCA) is covered as roadmap in §16.4.
+Where earlier laptops used I2S/SSP to reach the codec, current Intel and AMD platforms increasingly use **SoundWire** (MIPI SoundWire), a two-wire bus managed by `sound/soundwire/` and driven by the same ADSP. The DSP owns the SoundWire master; SOF topology wires SoundWire DAI copiers into the pipeline exactly as it would an SSP DAI. Auto-enumeration of SoundWire codecs via the SoundWire Device Class for Audio (SDCA) is covered in §12.12.
 
 ### 12.8 Debugging SOF
 
@@ -1291,6 +1303,123 @@ sof-logger -t -f /etc/sof/sof-<plat>.ldc
 ```
 
 `sof-logger` decodes the firmware's on-DSP trace ring using the platform's `.ldc` (log dictionary) file; combined with `snd_sof.dyndbg=+p` on the host side it gives a two-sided view of the IPC handshake. [Source — SOF kernel documentation](https://www.kernel.org/doc/html/latest/sound/soc/sof.html)
+
+### 12.9 Topology authoring with `alsatplg`
+
+The `.tplg` binary described in §12.4 is compiled from a text-format source using **`alsatplg`**, the ALSA topology compiler shipped in `alsa-utils`. SOF uses the **topology2** format — human-readable `.conf` files that describe widgets, routes, and pipelines using a structured key–value syntax derived from the ALSA topology kernel ABI. [Source — SOF topology2](https://github.com/thesofproject/sof/tree/main/tools/topology/topology2)
+
+**Widgets** are the atomic DSP modules. Each has a class defining its type and a set of tuples (key–value pairs) configuring its parameters:
+
+```conf
+# tools/topology/topology2/include/components/gain.conf
+Class.Widget."gain" {
+    DefineAttribute."uuid" {}
+    DefineAttribute."cpc" { type integer }
+    DefineAttribute."bss_size" { type integer }
+    attributes { !constructor [ "uuid" ] }
+    Object.Widget.gain [
+        { index 0  uuid "61bca9a8-18d0-4a18-8e7b-2639219804b7"
+          cpc 1700  bss_size 256 }
+    ]
+}
+```
+
+**Pipelines** are ordered lists of connected widgets. The `Object.Pipeline` block declares which widgets belong to a pipeline and in what order. **Routes** then wire pipeline endpoints to DAI copiers and to other pipelines:
+
+```conf
+# Simplified playback pipeline: host → gain → mixer → dai-copier
+Object.Pipeline.host-gateway-playback [
+    { index 0
+      Object.Widget.host-copier.playback   [ { index 0 } ]
+      Object.Widget.gain.playback          [ { index 0 } ]
+      Object.Widget.mixin.playback         [ { index 0 } ]
+    }
+]
+Object.Base.route [
+    { source "host-copier.0.playback.0"  sink "gain.0.playback.0" }
+    { source "gain.0.playback.0"         sink "mixin.0.playback.0" }
+]
+```
+
+The complete board topology is assembled from a top-level `.conf` that `#include`s component and pipeline definitions. A real board file such as `sof-mtl-rt5682.conf` selects the DAI links from NHLT, wires them to pipelines, and declares the UCM card name:
+
+```bash
+# Compile a topology source to binary
+alsatplg -c sof-mtl-rt5682.conf -o /lib/firmware/intel/sof-ipc4-tplg/sof-mtl-rt5682-ssp0.tplg
+
+# Disassemble an existing binary for inspection
+alsatplg -D /lib/firmware/intel/sof-ipc4-tplg/sof-mtl-rt5682-ssp0.tplg
+```
+
+The `alsatplg` `-D` (disassemble) flag is the first diagnostic step when a topology binary does not match the board — it shows the exact module UUIDs, pipeline connections, and DAI link names the kernel will attempt to instantiate. Mismatched UUIDs between the topology and the firmware's built-in module library produce `ipc4: comp 0x… not found` errors in `dmesg`. [Source — alsatplg man page](https://github.com/alsa-project/alsa-utils/tree/master/topology)
+
+### 12.10 Zephyr RTOS as the SOF firmware substrate
+
+From SOF v2.7 (2023) onward, the ACE-generation (Meteor Lake, Lunar Lake) SOF firmware runs on **Zephyr RTOS** rather than the custom bare-metal scheduler used in earlier Xtensa-era firmware. [Source — SOF Zephyr porting](https://thesofproject.github.io/latest/introduction/index.html)
+
+**Why Zephyr.** The earlier SOF firmware had a hand-rolled cooperative scheduler, memory allocator, and IPC dispatcher — components that Zephyr provides as mature, tested primitives. Adopting Zephyr gives SOF: preemptive thread scheduling with configurable priorities; the Zephyr device model for I2S, SoundWire, and DMA drivers; a board support package (BSP) system that maps cleanly to Intel's per-platform ACE hardware variants; and access to Zephyr's CI infrastructure and the broader RTOS ecosystem.
+
+**Build system.** Zephyr-based SOF firmware is built using **West**, Zephyr's meta-tool, rather than the earlier CMake-only approach:
+
+```bash
+# Clone the SOF firmware tree alongside the Zephyr workspace
+west init -l sof/
+west update
+
+# Build for Meteor Lake ACE1 (intel_adsp_ace15_mtpm board target)
+west build -b intel_adsp_ace15_mtpm \
+    sof/ \
+    -- -DCONFIG_SOF_LOG_LEVEL_DBG=y
+
+# Output: build/zephyr/zephyr.ri (the signed .ri image the kernel loads)
+```
+
+**Module loading on Zephyr/IPC4.** IPC4's loadable library model (§12.5) maps directly onto Zephyr's module system: each loadable bundle is a position-independent ELF that Zephyr's dynamic linker maps into the DSP address space on demand. The kernel sends an `IPC4_MOD_LOAD_LIB` command pointing at a bundle that was fetched from `/lib/firmware/intel/sof-ipc4/mtl/` and placed into shared memory; Zephyr validates the manifest header, runs relocations, and registers the module's entry points. This enables shipping a lean base `.ri` image and fetching codec-specific processing modules (e.g., `cadence_codec`, `passthrough`) only on platforms that need them.
+
+**Kernel interaction.** From the Linux driver's perspective, Zephyr vs bare-metal is opaque — the IPC4 mailbox protocol is identical. The only observable difference is in `dmesg` at load time: a Zephyr firmware image reports `Zephyr version: x.y.z` in its firmware-ready message, visible via `cat /sys/kernel/debug/sof/fw_version`. [Source — SOF ACE/Zephyr firmware](https://github.com/thesofproject/sof/tree/main/zephyr)
+
+### 12.11 AMD ACP architecture
+
+AMD's **Audio Co-Processor (ACP)** is the AMD equivalent of Intel's cAVS/ACE ADSP. It appears across all Zen-era APU families but has been redesigned in each major generation:
+
+| ACP generation | AMD APU family | DSP core | SOF support |
+|----------------|---------------|----------|-------------|
+| ACP 3.x | Raven / Renoir (Zen 2) | 32-bit embedded core | `sound/soc/sof/amd/acp3x*.c` |
+| ACP 5.x | Van Gogh (Steam Deck, Zen 2 mobile) | Xtensa HiFi3 | `sound/soc/sof/amd/acp5x*.c` |
+| ACP 6.x | Rembrandt / Raphael (Zen 3+/4) | Xtensa HiFi3 | `sound/soc/sof/amd/acp6x*.c` |
+| ACP 6.3 | Mendocino (Phoenix) | Xtensa HiFi3 | `sound/soc/sof/amd/acp63*.c` |
+| ACP 7.0 | Strix Point (Zen 5) | Xtensa HiFi5 | `sound/soc/sof/amd/acp70*.c` |
+
+[Source — SOF AMD driver tree](https://git.kernel.org/pub/scm/linux/kernel/git/tiwai/sound.git/tree/sound/soc/sof/amd)
+
+**DMA and ring buffers.** Unlike Intel's HDA DMA controller, AMD ACP uses its own dedicated DMA engine (`ACP_I2S_RX_DMA`, `ACP_HS_TX_DMA`, etc.) with ring buffer descriptors in ACP SRAM. The SOF AMD glue sets up these ACP DMA rings, maps the host PCM buffer into ACP's 32-bit address space via an ATU (Address Translation Unit), and programs the ring base/size registers before sending the stream-start IPC to the DSP.
+
+**Firmware topology on AMD.** ACP SOF loads a platform-specific `.ri` from `/lib/firmware/amd/sof/` and topology from `/lib/firmware/amd/sof-tplg/`. The driver selection on AMD is through `snd_soc_acpi_amd_*` machine driver tables in `sound/soc/amd/` — unlike Intel there is no `snd_intel_dspcfg` equivalent; the PCI device ID directly selects the correct SOF platform ops. For platforms where the ACP DSP is unused (e.g. some Raven Ridge desktop boards), a non-SOF `acp_audio_dma` driver handles I2S directly without firmware.
+
+**Debugging ACP SOF.** The standard SOF debugfs paths apply (`/sys/kernel/debug/sof/`), plus ACP-specific registers can be inspected at `/sys/kernel/debug/sof-acp/`. The `acp_dma_debug` and `acp_sw_debug` module parameters increase verbosity for DMA ring and stream state. Missing firmware manifests produce `amd_sof: request firmware failed` in `dmesg`; the most common cause on Rembrandt laptops is a missing `sof-rmb.ri` which requires linux-firmware ≥ 20230515. [Source — linux-firmware AMD SOF](https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/tree/amd/sof)
+
+### 12.12 SDCA: SoundWire Device Class for Audio
+
+**SDCA** (SoundWire Device Class for Audio) is a MIPI Alliance specification that defines a standardised register model for SoundWire audio codecs, enabling a single host-side driver to configure any SDCA-compliant codec without per-device register maps. [Source — MIPI SDCA](https://www.mipi.org/specifications/soundwire)
+
+**The problem SDCA solves.** Before SDCA, every SoundWire codec required a hand-written ASoC machine driver encoding its private register addresses, power sequences, and PLL coefficients. A platform with three different codec vendors needed three separate drivers. SDCA defines a shared address space (`Entity`, `Control`, `Function` hierarchy) that all compliant codecs implement identically; host software reads capability registers to discover the codec's audio functions (Speaker, Microphone, Jack Detection) and programs them through the standardised control model.
+
+**DisCo tables.** SDCA-compliant codecs are described to the host in ACPI via **DisCo** (Device Information and Slave Configuration) tables — ACPI `_DSD` properties that encode the SDCA `FunctionType`, `EntityType`, and interrupt routing for each codec on the SoundWire bus. The Linux kernel's SoundWire subsystem parses DisCo tables in `sound/soundwire/bus.c` and `sound/soundwire/sdca.c`, populating `struct sdca_function_desc` for each function the codec exposes. [Source — kernel SoundWire SDCA](https://git.kernel.org/pub/scm/linux/kernel/git/tiwai/sound.git/tree/sound/soundwire)
+
+**Kernel support.** SDCA support landed incrementally from kernel 5.18 (basic DisCo parsing) through 6.6 (full multi-function codec support). The `CONFIG_SOUNDWIRE_SDCA` Kconfig option enables it. The `snd_sdca_device_*` API in `include/sound/sdca_function.h` lets machine drivers enumerate functions without reading vendor datasheets:
+
+```c
+/* Enumerate SDCA functions on a SoundWire device */
+struct sdca_function_desc *func;
+list_for_each_entry(func, &sdca_slave->sdca_functions, list) {
+    dev_dbg(dev, "SDCA function: type=%d entity_count=%d\n",
+            func->type, func->entity_count);
+    if (func->type == SDCA_FUNC_TYPE_SMART_MIC)
+        sdca_setup_smart_mic(func);
+}
+```
+
+**Relationship to SOF topology.** An SDCA-capable platform still requires a SOF topology (§12.9) to describe the DSP pipeline connecting the SoundWire DAI copier to the host PCM endpoint — SDCA standardises codec-side configuration but the DSP-side pipeline graph remains board-specific. The combination of SDCA (codec self-description) + SOF topology2 (DSP pipeline description) + NHLT (bus endpoint geometry) is the complete board-description stack for a current-generation Intel or AMD laptop audio subsystem.
 
 ---
 
