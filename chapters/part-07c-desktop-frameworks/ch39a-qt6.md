@@ -17,6 +17,7 @@ The chapter is long because Qt is large; it is organised so that a reader can ju
   - [1.6 What is QML and Qt Quick?](#16-what-is-qml-and-qt-quick)
   - [1.7 What is QRhi?](#17-what-is-qrhi)
   - [1.8 Qt and C++ Standardisation](#18-qt-and-c-standardisation)
+  - [1.9 Qt's Adoption of Modern C++ (C++17/20/23/26)](#19-qts-adoption-of-modern-c-c172023-26)
 - [2. The Meta-Object System](#2-the-meta-object-system)
 - [3. Signals and Slots](#3-signals-and-slots)
 - [4. The Property and Binding System](#4-the-property-and-binding-system)
@@ -357,6 +358,200 @@ Qt's practical relationship with the C++ standard in 2026 is:
 - **Qt consumes the standard**: C++17/20/23 features (structured bindings, `if constexpr`, `std::span`, coroutines via [QCoro](https://github.com/qcoro/qcoro), modules) are progressively adopted into Qt's APIs and implementation.
 - **Qt advocates for reflection**: The Qt project is the most prominent industrial user actively tracking WG21 SG7, because P2996 + P3294 is the only credible path to removing moc. Qt developers participate as commentators and reviewers, not proposal authors.
 - **No Qt feature has been formally proposed and adopted** into the C++ standard by a Qt developer acting as WG21 proposal author. The reflection proposals (P0385, P1240, P2996) are independent WG21 work that Qt stands to benefit from, not Qt-initiated proposals.
+
+### 1.9 Qt's Adoption of Modern C++ (C++17/20/23/26)
+
+While §1.8 covered what Qt has tried to push *into* the standard, this section covers the reverse: how Qt's own APIs and internals have been progressively updated to consume new standard features as the minimum C++ version and the installed compiler base have evolved.
+
+#### C++17 as baseline (Qt 6.0, December 2020)
+
+Qt 6.0 raised the minimum required compiler standard from the de-facto C++11/14 of Qt 5 to **C++17**, unlocking `if constexpr`, fold expressions, structured bindings, CTAD, and the C++17 attribute set for use throughout the Qt source. The rationale stated in the release announcement: "With Qt 6 we now require a C++17 compatible compiler enabling the use of more modern C++ language constructs." [Source](https://www.qt.io/blog/qt-6.0-released) Practical consequences for application developers:
+
+**`std::filesystem::path` throughout QFile and QDir (Qt 6.0)**
+
+Qt 6.0 added `std::filesystem::path` constructors and accessor methods to `QFile`, `QDir`, `QFileInfo`, and related classes from day one:
+
+```cpp
+#include <filesystem>
+std::filesystem::path p = std::filesystem::current_path() / "data.bin";
+QFile f(p);                          // QFile(const std::filesystem::path &)
+std::filesystem::path back = f.filesystemFileName();  // round-trips cleanly
+```
+
+`QDir::filesystemAbsolutePath()`, `filesystemCanonicalPath()`, and `filesystemPath()` return `std::filesystem::path`. Note: the `std::filesystem::path` constructor was implicit through Qt 6.8 and became **explicit in Qt 6.9** to avoid silent construction from temporary paths. [Source](https://doc.qt.io/qt-6/qfile.html)
+
+**CTAD — mandatory for `QStringTokenizer` (Qt 6.0)**
+
+`QStringTokenizer` is the first Qt type whose template parameters are so complex that the documentation explicitly states you *must* rely on CTAD and must never name the template arguments directly:
+
+```cpp
+// Correct — CTAD deduces QStringTokenizer<QStringView, QChar>:
+QStringView input = u"one,two,three";
+for (auto token : QStringTokenizer{input, u','})
+    process(token);
+
+// If you need to name the type, use auto or the factory:
+auto tok = input.tokenize(u',');
+```
+
+Without C++17 CTAD the type is unusable; callers on C++14 must use `QStringView::split()` instead. [Source](https://doc.qt.io/qt-6/qstringtokenizer.html)
+
+**`[[nodiscard]]` and friends — progressive rollout**
+
+Qt wraps C++17/20 attributes through `<QtCompilerDetection>` macros, applying them incrementally to avoid breaking downstream code that silently discards return values:
+
+| Macro | Standard attr | Added |
+|---|---|---|
+| `Q_NODISCARD_CTOR` | `[[nodiscard]]` on constructors | Qt 6.6 |
+| `Q_NODISCARD_X(msg)` / `Q_NODISCARD_CTOR_X(msg)` | `[[nodiscard("reason")]]` | Qt 6.7 |
+| `QFile::open()` nodiscard | `[[nodiscard]]` on `open()` | Opt-in Qt 6.8, default Qt 6.10 |
+| `Q_CONSTINIT` | C++20 `constinit` | Qt 6.4 |
+| `Q_LIKELY_BRANCH` / `Q_UNLIKELY_BRANCH` | C++20 `[[likely]]`/`[[unlikely]]` | Qt 6.9 |
+
+`QT_USE_NODISCARD_FILE_OPEN` must be defined to opt into the `open()` change in Qt 6.8; from Qt 6.10 it is on by default and `QT_NO_USE_NODISCARD_FILE_OPEN` is the opt-out. [Source](https://doc.qt.io/qt-6/whatsnew68.html)
+
+**`std::optional` — direct use, no wrapper type**
+
+Qt chose not to create a `QOptional` wrapper. `std::optional` appears directly in Qt public APIs where needed:
+
+```cpp
+// Qt 6.10: returns std::nullopt if the variable is unset or non-integer
+std::optional<qint64> v = qEnvironmentVariableIntegerValue("MY_COUNT");
+if (v) doSomething(*v);
+```
+
+[Source](https://doc.qt.io/qt-6/whatsnew610.html)
+
+**`QStringView` — UTF-16 analog of `string_view` (predates Qt 6)**
+
+`QStringView` was introduced in **Qt 5.10** as a non-owning view over `QString`'s UTF-16 (`char16_t`) storage, following the same design as `std::string_view` but for a different character type. It is the analog of `std::u16string_view`. Interop additions:
+
+- **Qt 6.7**: `QStringView::operator std::u16string_view()` — explicit conversion. [Source](https://doc.qt.io/qt-6/qstringview.html)
+- **Qt 6.10**: `QByteArray` gained implicit conversion to `std::string_view` (the byte/ASCII counterpart). [Source](https://doc.qt.io/qt-6/whatsnew610.html)
+
+---
+
+#### C++20 features (adopted selectively, version-gated)
+
+Qt cannot use C++20 features inside the Qt library itself for APIs that must remain compilable with C++17 — a constraint explicitly acknowledged at QtCS2024: "We cannot use concepts inside Qt itself because the framework needs to keep Qt compiling with C++17 for the foreseeable future." [Source](https://wiki.qt.io/QtCS2024_C++20) Features that land in public-facing code are therefore either backported to C++17 (via `q20::` shim namespace) or gated to `#if __cplusplus >= 202002L`.
+
+**`QSpan` — C++17-compatible `std::span` (Qt 6.7)**
+
+`QSpan` is a C++17-compatible implementation of C++20's `std::span`, with three intentional differences: [Source](https://doc.qt.io/qt-6/qspan.html)
+
+1. **Signed `size_type`** — `qsizetype` instead of `size_t`, consistent with all Qt containers and avoiding signed/unsigned comparison warnings throughout Qt code.
+2. **Rvalue containers accepted** — `std::span` rejects temporary owning containers (`std::span{std::vector<int>{1,2,3}}` is UB); `QSpan` allows this with the same caveat.
+3. **COW-safe `const`** — `QSpan<const T>` over a Qt copy-on-write container (e.g. `QList<T>`) does not trigger a detach; `std::span<const T>` would.
+
+`QSpan` and `std::span` convert to each other implicitly.
+
+**Three-way comparison `operator<=>` (Qt 6.7–6.8)**
+
+A two-phase rollout using C++17-compatible backport types:
+
+- **Qt 6.7**: Introduced `Qt::strong_ordering`, `Qt::weak_ordering`, `Qt::partial_ordering` as C++17 types that map to the corresponding `std::*_ordering` in C++20 builds. The helper macros `Q_DECLARE_STRONGLY_ORDERED` and `Q_DECLARE_PARTIALLY_ORDERED` emit `operator<=>()` on C++20 compilers and all six relational operators on C++17. First types updated: `QDate`, `QTime`, `QDateTime`, `QTimeZone`, `qfloat16`. [Source](https://www.qt.io/blog/c20-comparisons-in-qt)
+
+- **Qt 6.8**: Most `QtCore` value types (`QString`, `QByteArray`, `QUrl`, and 20+ others) received `operator<=>()`. Using it in application code requires compiling with C++20. [Source](https://doc.qt.io/qt-6/whatsnew68.html)
+
+**`std::chrono` integration (Qt 6.6–6.8)**
+
+A sustained effort to retire Qt's `int`-millisecond time APIs in favour of `std::chrono`:
+
+- **Qt 6.6**: Most Qt time-span APIs ported to accept any `std::chrono::duration`. `QDate`, `QDateTime`, `QTimeZone` gained support for C++20 calendar types (`std::chrono::year_month_day`, `std::chrono::time_zone`). [Source](https://doc.qt.io/qt-6/whatsnew66.html)
+- **Qt 6.8**: `QChronoTimer` introduced as the `std::chrono`-native replacement for `QTimer`. `QTimer`'s `int`-millisecond ABI is frozen; `QChronoTimer` takes `std::chrono::nanoseconds` throughout and is the recommended timer for new code. [Source](https://doc.qt.io/qt-6/whatsnew68.html)
+
+```cpp
+// QChronoTimer — std::chrono throughout:
+QChronoTimer timer(500ms);      // fires every 500 milliseconds
+QObject::connect(&timer, &QChronoTimer::timeout, []{ update(); });
+timer.start();
+```
+
+**`std::ranges` and `QList` as `contiguous_range` (Qt 6.2+)**
+
+- **Qt 6.2**: `QList` (which replaced `QVector`) satisfies `std::ranges::contiguous_range` when compiled with C++20 — its iterator is a `contiguous_iterator`. [Source](https://doc.qt.io/qt-6/whatsnew62.html)
+- **Qt 6.10**: `QRangeModel` wraps any C++ range as a `QAbstractItemModel`, bridging `std::ranges` into the Qt item-model ecosystem:
+
+```cpp
+std::vector<QString> names = { "Alice", "Bob", "Carol" };
+auto model = new QRangeModel(names);  // no subclassing, no boilerplate
+listView->setModel(model);
+```
+
+- **Qt 6.11**: `QRangeModel` extended to support view ranges without const iterators (`std::views::filter`, `std::views::transform`). [Source](https://doc.qt.io/qt-6/whatsnew611.html)
+
+**Heterogeneous container lookup (Qt 6.8, C++20 only)**
+
+`QHash` and `QMap` gained heterogeneous lookup: looking up a `QHash<QString, V>` with a `QStringView` no longer constructs a temporary `QString`. This is gated to C++20 builds via the `requires` clause. [Source](https://doc.qt.io/qt-6/whatsnew68.html)
+
+**Coroutines — community library, not yet native**
+
+There is no native coroutine support in Qt Core through Qt 6.11. The community library **QCoro** (`https://invent.kde.org/sdk/qcoro`) provides `co_await`-able wrappers for `QFuture`, `QTimer`, Qt network sockets, and D-Bus calls, and is used in KDE applications. A single-header proof-of-concept making `QFuture` directly awaitable without new types was proposed for Qt 6.12 in early 2026 but was not yet merged as of this writing. [Source](https://www.arnorehn.de/blog/2026/02/09/qfuture-c-coroutines/)
+
+**C++20 modules (`import Qt6Core;`) — not yet**
+
+Qt does not yet ship as C++20 named modules. QTBUG-86697 tracks the open work; the blocker is that `moc` does not understand C++20 module syntax — a `Q_OBJECT` class defined inside a module unit cannot be processed by the current moc. The module/moc coupling is the same fundamental gap as the P2996 reflection story (§1.8): until moc can be eliminated or taught to parse module units, C++20 modules remain off the table for Qt library targets.
+
+---
+
+#### C++23 features
+
+**`std::expected` — first use in Qt 6.11 (Android JNI)**
+
+Qt chose not to create a `QExpected` wrapper type. The first public Qt API using `std::expected` directly appeared in **Qt 6.11** in `QJniObject` (Android JNI), where Java exceptions are returned as the unexpected value rather than being swallowed internally:
+
+```cpp
+// Qt 6.11 QJniObject: exception-transparent API
+std::expected<void, QJniObject> result =
+    javaObj.callMethod<void>("riskyMethod");
+if (!result)
+    qWarning() << "Java threw:" << result.error().toString();
+```
+
+The design rationale (documented in the Qt mailing-list thread) was that `std::optional<void>` is invalid in C++, making `std::expected<void, E>` the only standard-library option for void-returning methods that can fail. [Source](https://doc.qt.io/qt-6/whatsnew611.html)
+
+Broader `std::expected`-based error handling for Qt's own non-Android APIs has been prototyped (patches at `codereview.qt-project.org`) but no shipping Qt version had adopted it beyond `QJniObject` as of Qt 6.11.
+
+---
+
+#### C++26 outlook
+
+Beyond the P2996 reflection path described in §1.8, no other C++26 features have announced Qt adoption plans as of Qt 6.11:
+
+- **`std::execution` (P2300)** — Qt's event loop and `QFuture`/`QPromise` model overlaps conceptually with senders/receivers but no formal integration roadmap exists at WG21 or the Qt project level.
+- **Contracts** — no Qt interest documented.
+- **`std::linalg`** — no overlap with Qt's own `QMatrix4x4`, `QVector3D`, `QQuaternion` types.
+
+---
+
+#### Version reference
+
+| Feature | Qt version | Notes |
+|---|---|---|
+| C++17 minimum | 6.0 | Baseline for all of Qt 6 |
+| `std::filesystem::path` in QFile/QDir | 6.0 | Full constructors + accessors; explicit from 6.9 |
+| `QStringTokenizer` (CTAD required) | 6.0 | Cannot name template args explicitly |
+| `QList` as `contiguous_range` | 6.2 (C++20) | |
+| `Q_CONSTINIT` | 6.4 | Wraps C++20 `constinit` |
+| `std::chrono` duration in time APIs | 6.6 | `QDate`, `QDateTime`, `QTimeZone`, `QTimer` |
+| `Q_NODISCARD_CTOR` | 6.6 | |
+| `Q_NODISCARD_X` / `Q_NODISCARD_CTOR_X` | 6.7 | `[[nodiscard("reason")]]` |
+| `QSpan` | 6.7 | C++17-compatible `std::span` |
+| `Qt::strong/weak/partial_ordering` | 6.7 | C++17 backport of `std::*_ordering` |
+| `QStringView` → `std::u16string_view` | 6.7 | Explicit conversion operator |
+| `operator<=>` on most QtCore types | 6.8 (C++20) | |
+| `QChronoTimer` | 6.8 | `std::chrono::nanoseconds` throughout |
+| `QHash` heterogeneous lookup | 6.8 (C++20) | |
+| `QFile::open()` `[[nodiscard]]` (opt-in) | 6.8 | Default from 6.10 |
+| `Q_LIKELY_BRANCH` / `Q_UNLIKELY_BRANCH` | 6.9 | Wrap `[[likely]]`/`[[unlikely]]` |
+| `std::optional` in public API | 6.10 | `qEnvironmentVariableIntegerValue` |
+| `QByteArray` → `std::string_view` | 6.10 | Implicit conversion |
+| `QRangeModel` | 6.10 | Any C++ range as `QAbstractItemModel` |
+| `QRangeModel` + view ranges | 6.11 | `std::views::filter` etc. |
+| `std::expected` in QJniObject | 6.11 | Android; first `std::expected` in Qt |
+| C++20 modules (`import Qt6Core`) | Not yet | Blocked by moc/QTBUG-86697 |
+| Native coroutines | Not yet | QCoro (community); Qt 6.12 proposal |
+| P2996 reflection (partial moc) | Planned, no version | Full replacement requires C++29 P3294 |
 
 ---
 
