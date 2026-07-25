@@ -45,9 +45,18 @@ Readers who need the underlying Vulkan ICD mechanics (loader, JSON manifests, RA
    - [9.3 Nix and NixOS](#93-nix-and-nixos)
    - [9.4 Comparison Summary](#94-comparison-summary)
    - [9.5 Pros and Cons](#95-pros-and-cons)
-10. [Packaging Best Practices](#10-packaging-best-practices)
-11. [Integrations](#11-integrations)
-12. [References](#12-references)
+10. [Convergence Efforts](#10-convergence-efforts)
+    - [10.1 Portal Universalisation](#101-portal-universalisation)
+    - [10.2 OCI and CDI: Container GPU Convergence](#102-oci-and-cdi-container-gpu-convergence)
+    - [10.3 Nix + Declarative Flatpak](#103-nix--declarative-flatpak)
+    - [10.4 Immutable OS Convergence](#104-immutable-os-convergence)
+    - [10.5 Virtio-GPU Venus: Driver ABI Decoupling](#105-virtio-gpu-venus-driver-abi-decoupling)
+    - [10.6 `systemd-sysext` for Driver Overlays](#106-systemd-sysext-for-driver-overlays)
+    - [10.7 Linyaps](#107-linyaps)
+    - [10.8 Direction of Travel](#108-direction-of-travel)
+11. [Packaging Best Practices](#11-packaging-best-practices)
+12. [Integrations](#12-integrations)
+13. [References](#13-references)
 
 ---
 
@@ -759,7 +768,112 @@ The key differentiator for graphics is the **portal layer**: Flatpak's xdg-deskt
 
 ---
 
-## 10. Packaging Best Practices
+## 10. Convergence Efforts
+
+The four packaging models described in §9 are not converging toward a single winner; they are converging toward a common set of interfaces that any of them can implement. The convergence is happening simultaneously at the runtime layer (how GPU devices and display resources are accessed) and at the packaging/reproducibility layer (how software and its dependencies are managed and updated).
+
+### 10.1 Portal Universalisation
+
+The **xdg-desktop-portal** is the clearest convergence point across all formats. Snap's `snapd-desktop-integration` is gradually implementing the same D-Bus interfaces rather than maintaining a parallel API surface. The `wp_security_context_v1` Wayland protocol (Ch46) lets the compositor tag any sandboxed client connection — Flatpak, Snap, or a manually `bwrap`-wrapped process — with an app ID, enabling per-application protocol policy enforcement at the compositor level without format-specific knowledge. The result is that the portal layer is becoming the neutral lingua franca for display, camera, screen capture, and file access regardless of how the surrounding sandbox was constructed.
+
+### 10.2 OCI and CDI: Container GPU Convergence
+
+The **Container Device Interface (CDI)** [Source](https://github.com/cncf-tags/container-device-interface) is a vendor-neutral JSON specification for injecting GPU devices and their associated userspace libraries into OCI containers. Driven by the NVIDIA Container Toolkit and adopted by AMD ROCm for `podman` and `docker`, CDI defines a standard `DeviceSpec` that maps device nodes and host library paths into a container namespace:
+
+```json
+{
+  "cdiVersion": "0.6.0",
+  "kind": "nvidia.com/gpu",
+  "devices": [{ "name": "0", "containerEdits": {
+    "deviceNodes": [{"path": "/dev/nvidia0"}, {"path": "/dev/nvidiactl"}],
+    "mounts": [{"hostPath": "/usr/lib/x86_64-linux-gnu/libcuda.so.1",
+                "containerPath": "/usr/lib/x86_64-linux-gnu/libcuda.so.1"}]
+  }}]
+}
+```
+
+Flatpak's GL extension mechanism and Snap's `graphics-core24` content Snap both solve the same driver-injection problem with format-specific machinery. CDI is the candidate to unify them: any container runtime that speaks CDI can inject the correct GPU userspace without needing to know whether the container was built by `flatpak-builder`, `snapcraft`, or `buildah`. Alexander Larsson has discussed `flatpak-builder` emitting OCI images (rather than OSTree commits alone), which would allow Flatpak applications to be stored and distributed via standard OCI registries while retaining the portal security model — making a Flatpak app and a `podman` container interchangeable at the storage layer.
+
+### 10.3 Nix + Declarative Flatpak
+
+The `nix-flatpak` NixOS module [Source](https://github.com/gmodena/nix-flatpak) manages Flatpak application installations declaratively inside `configuration.nix`, combining Nix's reproducibility for *which* apps and versions are pinned with Flatpak's runtime sandboxing and GL extension GPU driver matching at runtime:
+
+```nix
+# /etc/nixos/configuration.nix
+services.flatpak.enable = true;
+services.flatpak.packages = [
+  { appId = "com.valvesoftware.Steam"; origin = "flathub"; }
+  { appId = "org.blender.Blender"; origin = "flathub"; commit = "abc123"; }
+];
+```
+
+This is the most practically available convergence point today. The user gets Nix-level declarative system configuration (including pinned Flatpak commits) combined with Flatpak's portal mediation and automatic GL extension version matching — without having to choose between the two ecosystems.
+
+### 10.4 Immutable OS Convergence
+
+Fedora Atomic (Silverblue/Kinoite), **Universal Blue**, and **SteamOS 3** on the Steam Deck represent an architectural pattern that unifies three of the four models: an OSTree-managed immutable base (reproducibility analogous to NixOS), Flatpak for user applications (sandboxing + portal), and `distrobox`/`toolbx` OCI containers for mutable development environments with GPU passthrough.
+
+Universal Blue extends this by layering custom `ublue-os` images on top of Fedora Atomic with NVIDIA or AMD drivers pre-baked into the base OSTree commit:
+
+```bash
+# Universal Blue image selection (GPU-specific images)
+# nvidia: bakes NVIDIA kernel module + userspace into the OSTree base
+rpm-ostree rebase ostree-unverified-registry:ghcr.io/ublue-os/silverblue-nvidia:latest
+
+# After rebase: NVIDIA driver is part of the immutable base image —
+# same atomicity guarantee as NixOS's hardware.nvidia module
+```
+
+This gives the NixOS guarantee — kernel module and userspace driver upgrade atomically — implemented with OSTree image layers instead of the Nix store, and available on any Fedora-compatible system without requiring the Nix toolchain.
+
+### 10.5 Virtio-GPU Venus: Driver ABI Decoupling
+
+Sebastian Wick's January 2026 proposal (referenced in §16 of this chapter) for Flatpak to use Mesa's **Venus Vulkan driver** over a `vtest` Unix-socket transport to `virgl_test_server` on the host would decouple the sandbox's Mesa version from the host kernel DRM driver entirely:
+
+```
+Flatpak sandbox (any Mesa version)
+    │  Venus Vulkan ICD
+    │  vtest Unix socket
+    ▼
+virgl_test_server (host Mesa, speaks host DRM ioctls)
+    │  KMS / GEM / TTM ioctls
+    ▼
+/dev/dri/renderD128
+```
+
+The sandbox-side Venus speaks a stable virtual GPU protocol; the host-side server handles kernel driver ioctls with the correct Mesa version. This eliminates the entire GL extension version-matching problem — there is no longer a need for `org.freedesktop.Platform.GL.nvidia-565-77` because the sandbox never speaks kernel ioctls directly. It converges toward the NixOS model (one canonical Mesa on the host, all applications use it) but without requiring a system-level configuration manager or any format-specific extension infrastructure.
+
+### 10.6 `systemd-sysext` for Driver Overlays
+
+`systemd-sysext` [Source](https://www.freedesktop.org/software/systemd/man/systemd-sysext.html) provides signed, immutable overlay extensions for `/usr` that can be applied at boot to any systemd-based system — including OSTree-managed immutable distributions — without rebuilding the base image:
+
+```bash
+# A GPU vendor ships a sysext image containing Mesa 25.x or NVIDIA 570.x
+# as a signed squashfs extension
+systemd-sysext merge           # applies extensions into /usr overlay
+systemd-sysext status          # list active extensions
+```
+
+GPU driver vendors could distribute Mesa or NVIDIA userspace as a `sysext` image, giving any immutable OSTree-based system (SteamOS, Fedora Atomic, Universal Blue) the same atomic driver upgrade guarantee NixOS achieves through store generations — without requiring a Nix toolchain or a Flatpak GL extension. The extension is GPG-signed, version-matched to the OS image via metadata, and applied atomically at boot.
+
+### 10.7 Linyaps
+
+**Linyaps** (formerly Linglong), developed by Deepin/UnionTech [Source](https://linglong.dev/), is a newer packaging format that uses OCI containers natively with xdg-desktop-portal integration from the ground up. Unlike Flatpak (which layered OCI export onto an OSTree-native design) or Snap (which uses SquashFS with a proprietary store), Linyaps treats an OCI image as its native unit and runs it via `bubblewrap` with full portal mediation. It is a smaller ecosystem than Flatpak or Snap but represents the cleanest implementation of the "OCI + portal" convergence direction without legacy design constraints.
+
+### 10.8 Direction of Travel
+
+The convergence is happening at two independent layers simultaneously:
+
+| Layer | Converging toward |
+|-------|-------------------|
+| **Runtime (GPU + display access)** | xdg-desktop-portal + CDI + `wp_security_context_v1` + Virtio-GPU Venus |
+| **Packaging (reproducibility + distribution)** | OCI images + declarative management (Nix modules, `nix-flatpak`, Universal Blue image layers, `systemd-sysext`) |
+
+The end state several projects are moving toward is: **OCI images managed declaratively** (Nix, image-based OSTree, or `systemd-confext`) + **CDI for GPU device injection** + **xdg-desktop-portal for display/media mediation** — a combination that would deliver AppImage's portability, Flatpak's security model, Nix's reproducibility, and Snap's background update model without requiring any single packaging format to win.
+
+---
+
+## 11. Packaging Best Practices
 
 ### 10.1 Minimal Manifest for a GPU-Accelerated Wayland Application
 
@@ -929,7 +1043,7 @@ GPU-intensive applications (games, 3D modellers, video editors) routinely use `-
 
 ---
 
-## 11. Integrations
+## 12. Integrations
 
 This chapter connects to the following chapters in the book:
 
@@ -949,7 +1063,7 @@ This chapter connects to the following chapters in the book:
 
 ---
 
-## 12. References
+## 13. References
 
 - Flatpak Documentation — Sandbox Permissions: [docs.flatpak.org/en/latest/sandbox-permissions.html](https://docs.flatpak.org/en/latest/sandbox-permissions.html)
 - Flatpak Documentation — Extensions: [docs.flatpak.org/en/latest/extension.html](https://docs.flatpak.org/en/latest/extension.html)
