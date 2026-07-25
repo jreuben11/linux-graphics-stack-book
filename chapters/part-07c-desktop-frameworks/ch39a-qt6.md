@@ -78,29 +78,212 @@ Qt is dual-licensed. The open-source editions are available under **LGPL v3** an
 
 ### 1.3 CMake-First Build
 
-Qt6 itself is built with CMake, and CMake — not `qmake` — is the recommended and best-supported build system for Qt6 applications. The Qt-specific CMake API replaces the old `.pro` file:
+Qt6 itself is built with CMake, and CMake — not `qmake` — is the recommended and best-supported build system for Qt6 applications. The Qt-specific CMake API replaces the old `.pro` file. The full vocabulary used in a typical Qt6 application `CMakeLists.txt` is seven functions and one variable, each doing a precise job. [Source](https://doc.qt.io/qt-6/cmake-manual.html)
+
+#### `CMAKE_AUTOMOC ON`
+
+The Qt meta-object system requires running the **Meta-Object Compiler (`moc`)** on every C++ header that contains a `Q_OBJECT`, `Q_GADGET`, or `Q_NAMESPACE` macro. `moc` reads the header and emits a `moc_ClassName.cpp` translation unit that defines the static `QMetaObject` for the class (§2). Setting `CMAKE_AUTOMOC ON` instructs CMake's AUTOMOC facility to scan every translation unit's dependency headers for those macros and automatically generate and compile the corresponding `moc_*.cpp` files — without `CMAKE_AUTOMOC ON` the linker would fail with "undefined symbol: ClassName::staticMetaObject" for any `QObject` subclass. `qt_standard_project_setup()` (below) sets this automatically; `set(CMAKE_AUTOMOC ON)` is only needed when calling `find_package(Qt6 ...)` without the setup function. [Source](https://doc.qt.io/qt-6/cmake-automoc.html)
+
+```cmake
+# Without qt_standard_project_setup(), set AUTOMOC manually:
+set(CMAKE_AUTOMOC ON)
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets)
+add_executable(myapp main.cpp mywidget.cpp)  # moc_mywidget.cpp generated automatically
+target_link_libraries(myapp PRIVATE Qt6::Core Qt6::Widgets)
+```
+
+Two companion variables work alongside AUTOMOC: `CMAKE_AUTOUIC ON` triggers `uic` on `.ui` designer files, and `CMAKE_AUTORCC ON` triggers `rcc` on `.qrc` resource files — both are also set by `qt_standard_project_setup()`.
+
+#### `qt_standard_project_setup()`
+
+Introduced in Qt 6.3, this function establishes the **Qt-recommended CMake project conventions** in a single call: [Source](https://doc.qt.io/qt-6/qt-standard-project-setup.html)
+
+- Sets `CMAKE_CXX_STANDARD 17` (and `CMAKE_CXX_STANDARD_REQUIRED ON`) — the minimum C++ standard Qt6 requires.
+- Enables `CMAKE_AUTOMOC`, `CMAKE_AUTOUIC`, and `CMAKE_AUTORCC`.
+- Configures install RPATH so that installed executables find the correct Qt shared libraries at runtime (`CMAKE_INSTALL_RPATH`, `CMAKE_BUILD_WITH_INSTALL_RPATH`).
+- Sets `QT_QML_OUTPUT_DIRECTORY` to `${CMAKE_BINARY_DIR}` so that all QML modules built in the project land in a consistent location the QML engine can find without additional import-path configuration during development.
 
 ```cmake
 cmake_minimum_required(VERSION 3.21)
 project(myapp LANGUAGES CXX)
 
-set(CMAKE_AUTOMOC ON)          # run moc automatically on Q_OBJECT headers
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick)
+qt_standard_project_setup()   # C++17, AUTOMOC/UIC/RCC, RPATH, QML output dir
 
-qt_standard_project_setup()    # sets C++17, RPATH, and Qt conventions
+qt_add_executable(myapp main.cpp)
+target_link_libraries(myapp PRIVATE Qt6::Core Qt6::Gui Qt6::Quick)
+```
+
+Before Qt 6.3, projects had to set each of these variables manually; `qt_standard_project_setup()` bundles them under a versioned contract so Qt can extend the defaults in future minor releases without breaking existing callers.
+
+#### `qt_add_executable()`
+
+A thin wrapper around CMake's `add_executable()` that adds Qt-specific **platform finalization**: [Source](https://doc.qt.io/qt-6/qt-add-executable.html)
+
+- On **macOS/iOS** it sets `MACOSX_BUNDLE` and links the bundle with `Info.plist` and icon resources.
+- On **Android** it produces an APK-ready shared library instead of a plain ELF executable and handles JNI entry points.
+- On **Windows** it links the correct Qt subsystem and manifest.
+- On **Linux** it is functionally identical to `add_executable()` for a plain C++ target, but it still participates in Qt's **target finalization** mechanism: after `qt_add_qml_module()` attaches a QML module to the same target, `qt_finalize_target()` (called automatically at the end of `CMakeLists.txt` processing) generates the `qmldir`, embeds QML resources, and sets up qmllint targets. Without the Qt wrapper, QML module finalization would not trigger correctly.
+
+```cmake
+qt_add_executable(myapp
+    main.cpp
+    controller.cpp
+    controller.h     # AUTOMOC will pick up Q_OBJECT here automatically
+)
+```
+
+Passing headers to `qt_add_executable()` is optional because AUTOMOC scans the include graph of each `.cpp` file; listing them explicitly is useful for IDEs and for ensuring AUTOMOC sees headers that are not transitively included.
+
+#### `qt_add_library()`
+
+The library analogue of `qt_add_executable()`. It wraps `add_library()` and participates in Qt target finalization. Its critical use case is **Qt static builds** and **plugin libraries**: in a static Qt deployment, QML type registrations and plugin metadata must be finalized into a `Q_IMPORT_PLUGIN`/`Q_IMPORT_QML_PLUGIN` call, and Qt's finalization step handles that. For a shared plugin (QPA plugin, image format plugin, style plugin) `qt_add_library()` ensures the plugin's metadata `json` is embedded correctly. [Source](https://doc.qt.io/qt-6/qt-add-library.html)
+
+```cmake
+# A reusable C++ library that exposes QML types:
+qt_add_library(mylib STATIC
+    mymodel.cpp
+    mymodel.h
+)
+qt_add_qml_module(mylib
+    URI com.example.MyLib
+    VERSION 1.0
+    SOURCES mymodel.cpp mymodel.h
+)
+target_link_libraries(mylib PUBLIC Qt6::Core Qt6::Qml)
+```
+
+#### `qt_add_qml_module()`
+
+This is the central function of Qt6's QML build system — it does the work that previously required hand-crafted `qmldir` files, manual `rcc` invocations, and separate `qmlcachegen` calls: [Source](https://doc.qt.io/qt-6/qt-add-qml-module.html)
+
+**What it takes:**
+- `URI` — the module's import identifier (`com.example.MyLib`, `MyApp`, etc.). Must be dot-separated and unique. QML files import it with `import com.example.MyLib 1.0`.
+- `VERSION` — the module version (major.minor).
+- `QML_FILES` — `.qml` and `.js` files that are part of the module; they are embedded into the target's resources (at `:/qt/qml/<URI path>/`) and processed by the tooling below.
+- `SOURCES` — C++ files containing types registered with `QML_ELEMENT` / `QML_NAMED_ELEMENT` macros; `moc` produces the QML type registration code for these.
+- `RESOURCE_PREFIX` — overrides the resource path prefix (defaults to `:/qt/qml/`).
+- `OUTPUT_DIRECTORY` — where to write the module on disk for `qmlimportscanner` during development.
+- `NO_PLUGIN` — suppresses generation of a companion plugin library when the module is embedded in the executable.
+
+**What it generates:**
+1. **`qmldir`** — the module manifest listing each QML type, its version, and its file; written into the build directory and embedded as a resource.
+2. **qmlcachegen invocation** — each `.qml` file in `QML_FILES` is compiled to V4 bytecode by `qmlcachegen` at build time and embedded alongside the source QML. At runtime the engine loads the pre-compiled bytecode, eliminating parse time and improving first-frame latency.
+3. **qmltc (optional)** — if `ENABLE_TYPE_COMPILER` is set (Qt 6.5+), QML documents in `QML_FILES` are compiled to C++ classes by `qmltc`, producing `*.cpp` files that are added to the target. This eliminates QML document parsing and binding evaluation overhead at the cost of compile time.
+4. **qmllint target** — adds a `<target>_qmllint` CMake target that runs `qmllint` over the module's QML files to catch type errors, missing properties, and deprecated API at development time.
+
+```cmake
+qt_add_qml_module(myapp
+    URI MyApp
+    VERSION 1.0
+    QML_FILES
+        Main.qml
+        components/Button.qml
+        components/Header.qml
+    SOURCES
+        backend.cpp   # class Backend : public QObject { Q_OBJECT; QML_ELEMENT ... };
+        backend.h
+)
+# After this call, `import MyApp 1.0` in QML finds Backend, Main, Button, Header.
+# `cmake --build . --target myapp_qmllint` runs static QML analysis.
+```
+
+#### `qt_add_resources()`
+
+Qt's resource system embeds arbitrary files — images, fonts, translations, config JSON, shader `.qsb` bundles, and QML files not managed by `qt_add_qml_module()` — into the application binary (or shared library) as read-only data accessible at the virtual `:/` path prefix. `qt_add_resources()` replaces the old `.qrc` XML manifest workflow with a CMake-native API: [Source](https://doc.qt.io/qt-6/qt-add-resources.html)
+
+```cmake
+qt_add_resources(myapp "images"
+    PREFIX "/img"
+    FILES
+        assets/logo.png
+        assets/splash.png
+        assets/icons/back.svg
+)
+# Runtime: QPixmap(":/img/logo.png") or QFile(":/img/icons/back.svg")
+```
+
+Under the hood `qt_add_resources()` generates a `.qrc` manifest, runs `rcc` on it to produce a `qrc_<name>.cpp` file, and adds it to the target's sources. The resulting C++ file defines a `QT_RES_<hash>_init()` function registered with `Q_CONSTRUCTOR_FUNCTION` that calls `QDir::addSearchPath` equivalents at program startup, making all embedded files immediately accessible through `QFile`, `QPixmap`, `QIcon`, and `:/`-prefix URLs in QML.
+
+For **large binary files** (video, large audio, pre-built databases) where embedding is impractical, `BIG_RESOURCES` (Qt 6.5+) defers the resource data to a separate object file compiled independently, avoiding overwhelming the C++ compiler with a single multi-megabyte translation unit:
+
+```cmake
+qt_add_resources(myapp "bigdata"
+    BIG_RESOURCES
+    PREFIX "/data"
+    FILES assets/reference_mesh.bin
+)
+```
+
+#### `qt_add_shaders()`
+
+`qt_add_shaders()` invokes the **Qt Shader Baker (`qsb`)** tool from `qtshadertools` at build time. `qsb` takes a GLSL ES 3.x source file and produces a `.qsb` bundle — a binary container that holds multiple compiled shader variants: SPIR-V (for Vulkan), GLSL (for OpenGL/OpenGL ES), MSL (for Metal), and HLSL (for Direct3D). The runtime `QShader` loader picks the variant matching the active `QRhi` backend. This means the application's CMake build performs all driver-side and cross-compilation work; the runtime never calls a shader compiler, eliminating per-driver compilation stalls on first use. [Source](https://doc.qt.io/qt-6/qtshadertools-qsb.html)
+
+```cmake
+qt_add_shaders(myapp "shaders"
+    BATCHABLE          # generate batching-compatible vertex variant for Qt Quick
+    PRECOMPILE         # also compile SPIR-V to backend IR offline where possible
+    OPTIMIZED          # run spirv-opt on the SPIR-V output
+    PREFIX "/shaders"
+    FILES
+        shaders/effect.vert
+        shaders/effect.frag
+        shaders/particles.comp   # compute shader
+)
+# Runtime: QShader sh = QShader::fromSerialized(
+#              QFile(":/shaders/effect.frag.qsb").readAll());
+```
+
+Key options:
+- `BATCHABLE` — generates an additional vertex shader variant with Qt Quick's instanced-batching attributes (`_qt_order`, `_qt_zRange`) appended. Required for shaders used inside Qt Quick's scene graph (§15) so the renderer can batch draw calls.
+- `PRECOMPILE` — where the platform supports it (e.g. GLSL → SPIR-V via `glslang`), also emits a pre-compiled binary blob in addition to the source text, shaving driver compile time even further.
+- `OPTIMIZED` — runs `spirv-opt` from SPIRV-Tools to strip debug info and fold constants before embedding, reducing `.qsb` binary size.
+- `DEFINES` — preprocessor defines injected into the GLSL source before compilation, useful for generating shader permutations without maintaining separate files.
+- `OUTPUTS` — overrides the `.qsb` output filename (default: `<input>.qsb`).
+
+**Full example** — a typical Qt Quick application with a custom post-process effect:
+
+```cmake
+cmake_minimum_required(VERSION 3.21)
+project(myapp LANGUAGES CXX)
+
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick ShaderTools)
+qt_standard_project_setup()
 
 qt_add_executable(myapp main.cpp)
 
 qt_add_qml_module(myapp
     URI MyApp
     VERSION 1.0
-    QML_FILES Main.qml
+    QML_FILES
+        Main.qml
+        ui/PostProcess.qml
+    SOURCES
+        backend.cpp backend.h
 )
 
-target_link_libraries(myapp PRIVATE Qt6::Core Qt6::Gui Qt6::Quick)
+qt_add_resources(myapp "assets"
+    PREFIX "/assets"
+    FILES
+        images/logo.png
+        fonts/Inter-Regular.ttf
+)
+
+qt_add_shaders(myapp "shaders"
+    BATCHABLE
+    OPTIMIZED
+    PREFIX "/shaders"
+    FILES
+        shaders/blur.vert
+        shaders/blur.frag
+)
+
+target_link_libraries(myapp PRIVATE
+    Qt6::Core Qt6::Gui Qt6::Quick
+)
 ```
 
-The key functions are `qt_add_executable()`, `qt_add_library()`, `qt_add_qml_module()`, `qt_add_resources()`, and `qt_add_shaders()`. `qmake` remains available for compatibility but is not recommended for new projects. [Source](https://doc.qt.io/qt-6/cmake-manual.html)
+`qmake` remains available for compatibility with Qt5 projects but is not recommended for new development and does not support `qmltc` or the new shader toolchain.
 
 ### 1.4 What Changed from Qt5
 
