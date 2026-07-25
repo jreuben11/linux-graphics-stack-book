@@ -27,9 +27,11 @@ Readers who need the underlying Vulkan ICD mechanics (loader, JSON manifests, RA
 ## Table of Contents
 
 1. [Introduction: The Security-Functionality Tension](#1-introduction-the-security-functionality-tension)
+   - [1.1 Why GPU Sandboxing Is Uniquely Hard](#11-why-gpu-sandboxing-is-uniquely-hard)
    - [1.2 What is Flatpak?](#12-what-is-flatpak)
    - [1.3 What is bubblewrap?](#13-what-is-bubblewrap)
    - [1.4 What is the GL extension?](#14-what-is-the-gl-extension)
+   - [1.5 What is OSTree?](#15-what-is-ostree)
 2. [Flatpak Sandbox Architecture](#2-flatpak-sandbox-architecture)
 3. [DRI Device Access](#3-dri-device-access)
 4. [Mesa Driver Discovery Inside the Sandbox](#4-mesa-driver-discovery-inside-the-sandbox)
@@ -37,7 +39,11 @@ Readers who need the underlying Vulkan ICD mechanics (loader, JSON manifests, RA
 6. [The xdg-desktop-portal and the Permissions Model](#6-the-xdg-desktop-portal-and-the-permissions-model)
 7. [VA-API and Hardware Video Decode](#7-va-api-and-hardware-video-decode)
 8. [Electron and CEF Applications Under Flatpak](#8-electron-and-cef-applications-under-flatpak)
-9. [Snap and AppImage Comparison](#9-snap-and-appimage-comparison)
+9. [Snap, AppImage, and Nix Comparison](#9-snap-appimage-and-nix-comparison)
+   - [9.1 Snap](#91-snap)
+   - [9.2 AppImage](#92-appimage)
+   - [9.3 Nix and NixOS](#93-nix-and-nixos)
+   - [9.4 Comparison Summary](#94-comparison-summary)
 10. [Packaging Best Practices](#10-packaging-best-practices)
 11. [Integrations](#11-integrations)
 12. [References](#12-references)
@@ -81,6 +87,27 @@ Bubblewrap (`bwrap`) is an unprivileged sandboxing tool that constructs Linux co
 ### 1.4 What is the GL extension?
 
 The GL extension is a Flatpak extension category specifically designed to carry versioned GPU userspace drivers — Mesa builds or NVIDIA proprietary libraries — matched to the kernel driver version on the host machine. The problem it addresses is fundamental: a Flatpak runtime ships a fixed Mesa version compiled into its read-only image, but the host GPU's kernel driver (e.g., `amdgpu`, `i915`, `nvidia`) may require a different Mesa or NVIDIA userspace version for correct ioctl compatibility. A GL extension carries the full Mesa DRI megadriver (`libgallium_dri.so`), GLVND vendor JSON files, and Vulkan ICD JSON manifests for a specific GPU class, and declares itself as a subdirectory extension of `org.freedesktop.Platform.GL`. At application launch, Flatpak detects the active GPU driver (via `/sys/class/drm/card0/device/driver/module/`) and automatically selects the matching GL extension, mounting its contents into `lib/GL/` inside the sandbox and using the extension's `merge-dirs` list to overlay GLVND configuration, Vulkan ICD descriptors, and the DRI driver search path. The version encoding in the extension ID (e.g., `org.freedesktop.Platform.GL.mesa-extra`, `org.freedesktop.Platform.GL.nvidia-565-77`) ensures that only a compatible userspace stack is loaded for the running kernel driver. When no matching extension is installed, Flatpak falls back to the runtime's bundled Mesa, which may or may not work correctly with the host kernel.
+
+### 1.5 What is OSTree?
+
+OSTree (formally **libostree**) is a content-addressed, immutable filesystem tree versioning system that Flatpak uses to distribute and update runtimes and applications [Source](https://ostreedev.github.io/ostree/). Its design is modelled on Git's object store, but applied to full filesystem trees of compiled binaries rather than source code.
+
+**Object model.** Every file in an OSTree repository is identified by the SHA-256 hash of its content and stored once — identical files across different runtimes or application versions share a single on-disk inode via hard links. A *commit* object records the root directory tree hash, a parent commit reference, metadata (timestamp, subject, version string), and arbitrary key–value annotations. A *ref* (analogous to a Git branch) names a current commit hash. The full ancestry of refs in a repository constitutes the deployment history.
+
+**Deployment mechanics.** On the client side, `ostree pull` fetches only the objects present in the new commit that are absent locally, then assembles the new root filesystem tree from hard links into a staging directory (e.g. `/ostree/deploy/default/deploy/<checksum>/`). The active deployment is swapped by atomically updating a symlink; the old deployment remains on disk until explicitly pruned, enabling instant rollback:
+
+```bash
+ostree admin status          # list deployments and their checksums
+ostree admin rollback        # switch to the previous deployment
+ostree refs                  # list all named refs in the local repo
+ostree log org.freedesktop.Platform/x86_64/24.08   # commit history for a runtime ref
+```
+
+**Flatpak integration.** Flatpak wraps OSTree for application management. Each Flatpak remote (e.g. Flathub at `https://dl.flathub.org/repo/`) is an OSTree repository. `flatpak install` resolves the application ref to a commit, pulls missing objects, and hard-links them into `~/.local/share/flatpak/repo/` (user install) or `/var/lib/flatpak/repo/` (system install). The runtime, application, and any extensions (including GL extensions) are each separate OSTree refs that are mounted together at launch via the bubblewrap bind-mount layer described in §2.1.
+
+**Relevance to GPU drivers.** The GL extension mechanism (§1.4) is entirely OSTree-based: `org.freedesktop.Platform.GL.nvidia-565-77` is an OSTree ref whose commit bundles the NVIDIA 565.77 userspace libraries. When a new NVIDIA host driver is installed, running `flatpak update` pulls the corresponding GL extension commit — only the delta objects, typically a few megabytes — and hard-links them into the repo. At the next application launch, bubblewrap mounts the updated extension. The OSTree hard-link model means a single copy of each Mesa `.so` or NVIDIA library serves every Flatpak application that references the same runtime version, keeping storage overhead bounded.
+
+**Delta updates.** OSTree supports *static deltas* — pre-computed binary diffs between two specific commits distributed as a single blob, analogous to a Git pack file. Flathub generates static deltas for major runtime version upgrades (e.g. `24.08` → `25.08`), which reduces network traffic from gigabytes to tens of megabytes. `flatpak update --appstream` fetches repository metadata (AppStream XML) via a delta summary rather than re-fetching the full summary file.
 
 ---
 
@@ -505,7 +532,7 @@ If GPU acceleration is not working, the most common cause is that Zypak is not c
 
 ---
 
-## 9. Snap and AppImage Comparison
+## 9. Snap, AppImage, and Nix Comparison
 
 Understanding Flatpak's GPU model is easier with a concrete comparison to the two other dominant universal packaging formats on Linux.
 
@@ -548,21 +575,116 @@ firejail --appimage ./MyApp.AppImage
 
 Firejail restricts filesystem access and can limit network, but it does not have a portal layer for mediated out-of-sandbox access. It is a lower-effort solution than either Flatpak or Snap.
 
-### 9.3 Comparison Summary
+### 9.3 Nix and NixOS
 
-| Feature | Flatpak | Snap | AppImage |
-|---------|---------|------|---------|
-| **Sandbox technology** | bubblewrap (user namespaces) | AppArmor + seccomp | None (optional: Firejail) |
-| **GPU access mechanism** | `--device=dri` + GL extension | `opengl` interface + graphics-core content Snap | Host Mesa or bundled Mesa |
-| **Driver version matching** | GL.nvidia-${VERSION} extension | NVIDIA content Snap | Relies on host ABI |
-| **Portal layer** | xdg-desktop-portal (well-defined D-Bus API) | snapd-desktop-integration (limited) | None |
-| **Vulkan support** | Via GL extension `merge-dirs` | Via graphics-core content Snap | Host Vulkan loader |
-| **VA-API** | Via GL extension + ffmpeg-full | Via graphics-core content Snap | Host libva |
-| **Classic/unrestricted mode** | `--device=all --filesystem=host` (discouraged) | `--classic` | Default |
-| **Size overhead** | Medium (runtime shared across apps) | Medium (content Snap shared) | Larger (self-contained) |
-| **Security strength** | Highest (user namespace + portal) | Medium (AppArmor, no portal standard) | None by default |
+Nix occupies a fundamentally different position from the three formats above: rather than a per-application sandbox, it is a purely functional package manager and (on NixOS) a full system configuration language. Its relevance to GPU graphics is real but operates at a different layer — driver management and reproducibility rather than runtime sandboxing.
 
-The key differentiator for graphics is the **portal layer**: Flatpak's xdg-desktop-portal provides a standardised, user-consented mechanism for screen capture, camera, and file access, while Snap's equivalent is less standardised and AppImage has none. For applications that need GPU access without compromising the security boundary, Flatpak with the GL extension mechanism is the most complete solution.
+**NixOS system-level GPU configuration.** On NixOS the entire graphics stack is declared in `/etc/nixos/configuration.nix`. Mesa, Wayland compositors, and hardware-specific VA-API drivers are all managed as a single reproducible closure:
+
+```nix
+# /etc/nixos/configuration.nix
+hardware.graphics = {                       # renamed from hardware.opengl in NixOS 24.05
+  enable = true;
+  extraPackages = with pkgs; [
+    intel-media-driver                      # iHD VA-API driver (Intel Gen 8+)
+    intel-vaapi-driver                      # i965 VA-API driver (Intel Gen 4–7)
+    vaapiVdpau                              # VA-API → VDPAU bridge
+    libvdpau-va-gl                          # VDPAU → OpenGL bridge
+    rocmPackages.clr                        # AMD ROCm OpenCL runtime
+  ];
+  extraPackages32 = with pkgs.pkgsi686Linux; [ intel-vaapi-driver ];
+};
+```
+
+NVIDIA on NixOS uses the `hardware.nvidia` module, which manages DKMS kernel module installation, GLVND setup, and the proprietary userspace libraries as a coherent unit:
+
+```nix
+hardware.nvidia = {
+  open = true;                              # open kernel module (Turing/Ampere+ recommended)
+  modesetting.enable = true;               # required for Wayland
+  powerManagement.enable = true;           # RTD3 runtime power management
+  package = config.boot.kernelPackages.nvidiaPackages.stable;
+};
+services.xserver.videoDrivers = [ "nvidia" ];
+```
+
+The critical advantage: NixOS pins the kernel module version to the userspace driver version in the same `configuration.nix` commit. A `nixos-rebuild switch` atomically upgrades both, eliminating the ABI mismatch that afflicts rolling-release distributions and is the root cause of Flatpak's complex GL extension versioning scheme.
+
+**The non-NixOS problem: nixGL.** Running Nix-packaged OpenGL or Vulkan applications on a non-NixOS host (e.g. Nix on Ubuntu or Fedora) hits the same driver-version problem as AppImage: Nix-packaged Mesa is compiled against a specific DRI driver path that does not match the host's `/usr/lib/x86_64-linux-gnu/dri/`. The result is a blank window or a segfault.
+
+The canonical solution is **nixGL** [Source](https://github.com/nix-community/nixGL), a community wrapper that generates a shell script setting `LD_LIBRARY_PATH` and `LIBGL_DRIVERS_PATH` to the host's OpenGL libraries:
+
+```bash
+# Install nixGL into the user profile
+nix profile install --impure github:nix-community/nixGL
+
+# Run an OpenGL app via nixGL wrapper
+nixGL glxgears
+
+# Run with Vulkan
+nixVulkan vkcube
+
+# Or compose in a flake devShell
+nix run --impure github:nix-community/nixGL#nixGLDefault -- ./myapp
+```
+
+The `--impure` flag is required because nixGL must inspect the host's `/proc/driver/nvidia/version` or Mesa DRI directory — information that is by definition outside the pure Nix input graph. A pure-Nix alternative, `nix-gl-host` [Source](https://github.com/numtide/nix-gl-host), achieves the same result with a Rust binary that reads `/etc/os-release` and `/proc/driver/nvidia/version` to locate host drivers at runtime without `--impure` flake evaluation.
+
+**Packaging OpenGL applications in nixpkgs.** When an upstream application targets inclusion in nixpkgs, the convention is `wrapOpenGL` (part of `makeWrapper`) to bake the correct Mesa path into the binary's `RPATH` or a wrapper script:
+
+```nix
+# In a nixpkgs derivation
+nativeBuildInputs = [ makeWrapper ];
+postInstall = ''
+  wrapProgram $out/bin/myapp \
+    --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ mesa libGL ]} \
+    --set VK_ICD_FILENAMES ${mesa.drivers}/share/vulkan/icd.d/radeon_icd.x86_64.json
+'';
+```
+
+For applications that need the full GLVND + vendor ICD stack, `pkgs.addOpenGLRunpath` is the nixpkgs idiom since NixOS 23.11 — it patches RPATH post-install to include the OpenGL driver output of the `mesa` derivation.
+
+**GPU compute in Nix devshells.** Nix's reproducibility makes it attractive for CUDA and ROCm development environments, where version coupling between compilers, runtime libraries, and kernel modules is notoriously fragile:
+
+```nix
+# flake.nix devShell for CUDA
+devShells.default = pkgs.mkShell {
+  buildInputs = with pkgs; [
+    cudaPackages.cudatoolkit
+    cudaPackages.cuda_nvcc
+    cudaPackages.libcublas
+    cudaPackages.cudnn
+    linuxPackages.nvidia_x11   # kernel-matching userspace
+  ];
+  shellHook = ''
+    export CUDA_PATH=${pkgs.cudaPackages.cudatoolkit}
+    export LD_LIBRARY_PATH=${pkgs.linuxPackages.nvidia_x11}/lib:$LD_LIBRARY_PATH
+  '';
+};
+```
+
+ROCm in nixpkgs is packaged under `pkgs.rocmPackages` with modules for `rocblas`, `miopen`, `hipcc`, and `clr` (the HIP runtime). Because ROCm requires `/dev/kfd` and DRM render nodes, devshells typically add `--device=/dev/kfd --device=/dev/dri` when invoked inside a `nix develop` environment on a non-NixOS host.
+
+**nixpkgs-wayland overlay.** For cutting-edge Wayland compositors and toolkits, the `nixpkgs-wayland` community overlay [Source](https://github.com/nix-community/nixpkgs-wayland) provides frequently updated packages for Sway, wlroots, wlr-randr, and related tools that lag behind upstream in the stable nixpkgs channel.
+
+**Reproducibility versus flexibility tradeoff.** NixOS's all-or-nothing approach to GPU driver management delivers the strongest reproducibility guarantee of any Linux packaging system — the same `configuration.nix` produces the same driver stack across hardware generations. The cost is that per-application driver version isolation (as in Flatpak's GL.nvidia-${VERSION} extension) is not the Nix model; an NixOS system runs one Mesa and one NVIDIA userspace version system-wide. This is a deliberate design choice: in the Nix model, version mismatches are prevented at configuration time rather than mediated at runtime.
+
+### 9.4 Comparison Summary
+
+| Feature | Flatpak | Snap | AppImage | Nix/NixOS |
+|---------|---------|------|---------|-----------|
+| **Sandbox technology** | bubblewrap (user namespaces) | AppArmor + seccomp | None (optional: Firejail) | None (system config, not sandbox) |
+| **GPU access mechanism** | `--device=dri` + GL extension | `opengl` interface + graphics-core content Snap | Host Mesa or bundled Mesa | Declarative `hardware.graphics.*`; nixGL on non-NixOS |
+| **Driver version matching** | GL.nvidia-${VERSION} extension | NVIDIA content Snap | Relies on host ABI | Atomic system closure (NixOS); nixGL/nix-gl-host (non-NixOS) |
+| **Portal layer** | xdg-desktop-portal (well-defined D-Bus API) | snapd-desktop-integration (limited) | None | None (not an app sandbox) |
+| **Vulkan support** | Via GL extension `merge-dirs` | Via graphics-core content Snap | Host Vulkan loader | nixpkgs Mesa + vendor ICDs; nixVulkan wrapper |
+| **VA-API** | Via GL extension + ffmpeg-full | Via graphics-core content Snap | Host libva | `hardware.graphics.extraPackages` |
+| **CUDA / ROCm** | Explicit `/dev/nvidia*` grants | `hardware-observe` + NVIDIA content Snap | Host libs | `cudaPackages` / `rocmPackages` devShells |
+| **Classic/unrestricted mode** | `--device=all --filesystem=host` (discouraged) | `--classic` | Default | Default (no sandbox concept) |
+| **Reproducibility** | Runtime version-pinned by extension | Content Snap version-pinned | Bundled at image build time | Strongest: full closure including kernel module |
+| **Security strength** | Highest (user namespace + portal) | Medium (AppArmor, no portal standard) | None by default | N/A (system-level, not per-app) |
+
+The key differentiator for graphics is the **portal layer**: Flatpak's xdg-desktop-portal provides a standardised, user-consented mechanism for screen capture, camera, and file access, while Snap's equivalent is less standardised and AppImage has none. Nix/NixOS sits outside this axis entirely — it provides the strongest driver-version reproducibility guarantee but is a system-configuration tool rather than a per-application sandbox.
 
 ---
 
