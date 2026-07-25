@@ -18,6 +18,7 @@ The chapter is long because Qt is large; it is organised so that a reader can ju
   - [1.7 What is QRhi?](#17-what-is-qrhi)
   - [1.8 Qt and C++ Standardisation](#18-qt-and-c-standardisation)
   - [1.9 Qt's Adoption of Modern C++ (C++17/20/23/26)](#19-qts-adoption-of-modern-c-c172023-26)
+  - [1.10 Qt Roadmap and Release Policy](#110-qt-roadmap-and-release-policy)
 - [2. The Meta-Object System](#2-the-meta-object-system)
 - [3. Signals and Slots](#3-signals-and-slots)
 - [4. The Property and Binding System](#4-the-property-and-binding-system)
@@ -556,6 +557,60 @@ Beyond the P2996 reflection path described in §1.8, no other C++26 features hav
 | C++20 modules (`import Qt6Core`) | Not yet | Blocked by moc/QTBUG-86697 |
 | Native coroutines | Not yet | QCoro (community); Qt 6.12 proposal |
 | P2996 reflection (partial moc) | Planned, no version | Full replacement requires C++29 P3294 |
+
+### 1.10 Qt Roadmap and Release Policy
+
+#### Release cadence and LTS policy
+
+Qt ships **two minor releases per year** (spring and autumn). Starting with Qt 6.8, every fourth minor release is designated **Long-Term Support (LTS)**; that cadence gives LTS releases at 6.4, 6.8, 6.12, 6.16, … The support window was lengthened with Qt 6.8: commercial LTS support now runs for **five years** (previously three). Open-source users receive the same patch code within twelve months under LGPL compliance; immediate LTS patch access requires a commercial licence. [Source](https://www.qt.io/development/qt-framework/release-cycle) [Source](https://www.qt.io/development/qt-framework/qt-lts)
+
+| Version | Released | OSS support end | Commercial support end |
+|---------|----------|-----------------|------------------------|
+| Qt 6.8 LTS | Oct 2024 | Apr 2025 | Oct 2029 |
+| Qt 6.9 | Apr 2025 | Oct 2025 | Apr 2026 |
+| Qt 6.10 | Oct 2025 | Apr 2026 | Oct 2026 |
+| Qt 6.11 | Mar 2026 | Sep 2026 | Mar 2027 |
+| Qt 6.12 LTS | Sep 2026 (target) | ~Mar 2027 | ~Sep 2031 |
+
+Qt 6.8 is the current active LTS. Qt 6.12 (beta 1 shipped June 2026) is the next LTS and brings `VK_EXT_device_fault` support in QRhi, indirect rendering, Qt Canvas Painter graduating to fully-maintained, and progress-indicator support in `qmlls`. [Source](https://wiki.qt.io/Qt_6.12_Release)
+
+#### Qt 7
+
+**No Qt 7 has been announced as of July 2026.** No discussion of a next major version appears on the Qt Project mailing lists, official blog, wiki, or Qt World Summit 2025 materials. Major Qt versions have historically been separated by roughly seven years (Qt 4: 2005, Qt 5: 2012, Qt 6: 2020), but The Qt Company has made no forward statement about timing or scope of a future major release. Any expectation of a Qt 7 in the near term is speculation, not an official position.
+
+#### Qt Bridges — the language-agnostic initiative
+
+The most significant strategic direction announced at **Qt World Summit 2025** (May 2025) is **Qt Bridges**: a framework that decouples the language used to write application business logic from Qt's C++ core, with QML/Qt Quick serving as the universal frontend. The declared goal is to let developers "stay focused on their existing codebases and their preferred programming language." [Source](https://www.qt.io/blog/about-the-new-qt-bridging-technology) [Source](https://www.phoronix.com/news/Qt-Bridges-New-Languages)
+
+| Language | Status (July 2026) |
+|----------|--------------------|
+| Rust | Public Beta (v0.2) |
+| C# (.NET) | Public Beta (v0.3 beta) |
+| Python | Early Access |
+| Swift | Early Access |
+| Kotlin / Java | Early Access |
+
+C# and Rust reached public beta first; "Phase 2" (additional languages and deeper platform coverage) begins once these two mature. The Qt Bridges repositories are at `https://github.com/qt/qtbridges`. Licensing is LGPL-3.0 / Qt Commercial — not commercial-only. The Qt Company has stated it plans to document the private QML APIs used by bridges, enabling community-built integrations for languages beyond the five listed. §28 of this chapter covers the Rust bridges in depth.
+
+#### QML tooling: `qmlls`
+
+The QML language server (`qmlls`) ships as part of Qt but carries a **"currently in development"** caveat — it is not a stable API. Qt 6.11 added go-to-C++-definition, multi-project support, and automatic rebuild of `all_qmltyperegistration` when C++ headers change. Qt 6.12 adds a progress indicator. Known limitations include no autocompletion on invalid QML files and no context-property autocompletion. No public stabilisation target date has been announced. [Source](https://doc.qt.io/qt-6/qtqml-tooling-qmlls.html) [Source](https://www.qt.io/blog/whats-new-in-qml-language-server-in-6.11)
+
+#### Build system: CMake only going forward
+
+`qmake` is in **bug-fix-only** maintenance. All new Qt build features, module definitions, and QML toolchain integration (`qt_add_qml_module`, `qt_add_shaders`, `cxx_qt_import_crate`) are CMake-exclusive and will not be back-ported to qmake. No removal date has been announced, but new projects should use CMake. [Source](https://www.qt.io/blog/qt-and-cmake-the-past-the-present-and-the-future)
+
+#### moc and C++26 reflection
+
+As discussed in §1.8, full moc replacement via C++26 reflection (P2996) is **research-phase work with no announced timeline**. The Qt Company confirmed at QtCS2024 that C++26 reflection alone is insufficient (token injection, P3294, is needed for signal injection and is a C++29 candidate). No Qt version has been targeted for even partial moc replacement in any official statement. [Source](https://wiki.qt.io/C++_reflection_(P2996)_and_moc)
+
+#### QRhi and graphics direction
+
+`QRhi` became a semi-public API in Qt 6.6 (same stability tier as QPA — usable but not covered by Qt's full binary-compatibility guarantee). The trajectory is continued feature expansion: Qt 6.12 adds Vulkan `VK_EXT_device_fault` for improved GPU crash diagnostics and indirect rendering support. Qt Quick 3D XR is gaining mono-view configuration for 2D AR glasses (Qt 6.12). The long-term direction is QRhi as the single portable GPU abstraction layer across all Qt rendering — scene graph, Qt Quick 3D, Qt Graphs, and application-level custom rendering — progressively retiring the legacy direct-OpenGL paths.
+
+#### Qt Contributors Summit 2026
+
+The next contributors summit is scheduled for Oslo, October 27–30, 2026. A new community goal-setting process was introduced in 2026: three community goals voted on by contributors and tracked for the following development cycle. Proposal submissions opened July 2026; goals will be announced at the summit. [Source](https://www.qt.io/blog/qt-contributors-summit-2026-oslo-in-october)
 
 ---
 
