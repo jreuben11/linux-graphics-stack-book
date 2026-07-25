@@ -16,6 +16,7 @@ The chapter is long because Qt is large; it is organised so that a reader can ju
   - [1.5 What is Qt6?](#15-what-is-qt6)
   - [1.6 What is QML and Qt Quick?](#16-what-is-qml-and-qt-quick)
   - [1.7 What is QRhi?](#17-what-is-qrhi)
+  - [1.8 Qt and C++ Standardisation](#18-qt-and-c-standardisation)
 - [2. The Meta-Object System](#2-the-meta-object-system)
 - [3. Signals and Slots](#3-signals-and-slots)
 - [4. The Property and Binding System](#4-the-property-and-binding-system)
@@ -306,6 +307,56 @@ QML (Qt Modelling Language) is a declarative, JavaScript-extended language for d
 ### 1.7 What is QRhi?
 
 The Qt Rendering Hardware Interface (`QRhi`) is a portable, low-level GPU abstraction that allows Qt's rendering code — the Qt Quick scene graph, Qt Quick 3D, and application-level custom rendering — to run unchanged on top of Vulkan, OpenGL ES, OpenGL, Metal, and Direct3D 11/12. On Linux, the two active backends are Vulkan (`QRhiVulkan`) and OpenGL/OpenGL ES (`QRhiGles2`). `QRhi` exposes a unified set of resource types — render targets, pipelines, vertex and index buffers, uniform buffers, textures, samplers, and render passes — mapped to each backend's native objects at runtime. Shaders are pre-compiled offline by the `qsb` tool (from `qtshadertools`) into a `QShader` bundle that carries SPIR-V (Vulkan), GLSL (OpenGL), MSL (Metal), and HLSL (D3D11) variants; the runtime therefore never invokes a driver-side shader compiler on the hot path. Applications can access `QRhi` directly through `QQuickWindow::rendererInterface()` and `QRhiSwapChain` to perform custom GPU work that integrates with the Qt Quick scene graph, sharing the same device and command queue. The `QRhi` implementation lives in `qtbase/src/gui/rhi`. [Source](https://www.qt.io/blog/graphics-in-qt-6.0-qrhi-qt-quick-qt-quick-3d)
+
+### 1.8 Qt and C++ Standardisation
+
+Qt predates the modern C++ standard library by more than a decade, and many of its core design patterns — meta-object reflection, property bindings, type-erased containers, signal/slot communication — have no equivalent in the standard. Over time the C++ standard has grown to cover adjacent territory, and Qt has adapted; in one area — compile-time reflection — the two trajectories are now on a deliberate collision course.
+
+#### Reflection: the moc elimination path
+
+Qt's meta-object compiler (`moc`) exists because C++ has no compile-time or runtime reflection: there is no standard mechanism to enumerate a class's properties, emit a per-type `QMetaObject`, or hook a signal declaration into a dispatch table. WG21's **Study Group 7 (SG7)** has pursued reflection for over a decade through a series of proposals that grew progressively more complete:
+
+- **P0385 / P1240** (Chochlík, Sutton, et al., 2016–2022) — "Static Reflection" and "Scalable Reflection in C++"; established the `^^T` reflection operator and splice syntax. [Source](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2017/p0578r1.html)
+- **P2996 "Reflection for C++26"** (Childers, Dimov, Revzin, Vandevoorde, et al.) — the synthesis proposal adopted into the **C++26 working draft** at the Sofia WG21 meeting, June 2025. It standardises `^^T` reflection expressions, `[: :]` splices, and `[[=...]]` annotation access, giving C++ programs the ability to introspect types, enumerators, bases, and data members at compile time. [Source](https://herbsutter.com/2025/06/21/trip-report-june-2025-iso-c-standards-meeting-sofia-bulgaria/) [Source](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2024/p2996r3.html)
+
+The Qt project has tracked these proposals as a potential path to eliminating `moc`. A 2014 analysis on `isocpp.org` examined whether the then-current draft could replace `moc`, concluding it could not yet; a [2016 conference talk](https://isocpp.org/blog/2017/01/qts-moc-and-qmetaobject-reflection-olivier-goffart-meeting-cpp-2016) laid out what the standard would need to provide; and The Qt Company's [QtCS2024 session on C++26 reflection](https://wiki.qt.io/QtCS2024_C++26_Reflection) concluded that P2996 alone is still "not good enough" for moc replacement. The [Qt wiki page "C++ reflection (P2996) and moc"](https://wiki.qt.io/C++_reflection_(P2996)_and_moc) maintains a living gap analysis identifying the remaining blockers:
+
+| Gap | Required proposal | C++ target |
+|-----|-------------------|------------|
+| Injecting signal member definitions at compile time | **P3294** "Code Injection with Token Sequences" | C++29 (candidate) |
+| String-based property name lookup | P3394 (annotations) | C++29 (candidate) |
+| Function parameter reflection (for slot signatures) | P3096 | TBD |
+| Expansion statements (for iterating reflected members) | P1306 | TBD |
+| Static storage for reflected data (`define_static`) | P3491 | TBD |
+
+In January 2026, The Qt Company [demonstrated](https://www.qt.io/blog/c26-reflection-qrangemodel) using C++26 reflection to implement a `QRangeModel` for plain C++ aggregates using the `^^` and `[: :]` operators, explicitly noting that **signal injection remains unsolved** until P3294 lands. The practical upshot: applications written today still require moc; a reflection-based Qt that eliminates it is a C++29 or later proposition, contingent on P3294's adoption.
+
+#### Features that went standard → Qt (not the reverse)
+
+The influence has mostly run the other direction: the C++ standard has standardised patterns that Boost pioneered, and Qt has adopted the results.
+
+| C++ standard addition | Origin | Qt's relationship |
+|---|---|---|
+| `std::function`, `std::bind` (C++11, from TR1) | Boost.Function / Boost.Bind | Qt 5 *consumed* these to enable functor-style `connect()` syntax ([Source](https://wiki.qt.io/New_Signal_Slot_Syntax)); Qt did not influence their standardisation |
+| `std::optional`, `std::variant`, `std::any` (C++17) | Boost (Boost.Optional, Boost.Variant) | Qt's `QVariant` is a parallel, runtime-typed container with different semantics; no standardisation connection |
+| `std::string_view` (C++17) | Independent WG21 work | `QStringView` was introduced *after* `std::string_view` to give Qt the same benefit for `QString`'s UTF-16 storage |
+| `std::filesystem` (C++17) | Boost.Filesystem (Dawes) | Qt has `QDir`/`QFileInfo`; no contribution to `std::filesystem` |
+| `std::span` (C++20) | WG21 (Müller, McNellis, et al.) | Qt 6.7 introduced `QSpan` as a near-drop-in after the standard landed |
+| `std::format` (C++20) | `{fmt}` library / Python | Qt's `QString::arg()` predates this; `std::format` derives from `{fmt}`, not from Qt |
+| `std::execution` / P2300 (C++26) | Niebler, Lelbach, et al. | Qt's event-loop model is architecturally distinct (reactor, not sender/receiver); no Qt authorship in P2300; no formal convergence proposal at WG21 ([Source](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2024/p2300r10.html)) |
+| Networking TS N4734 | Boost.Asio (Kohlhoff) | Qt's `QNetworkAccessManager` uses a different architecture; Qt is not named in N4734 and no Qt developer is an N4734 author; the TS has never been merged into the standard due to conflict with P2300's executor model ([Source](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2021/p2464r0.html)) |
+
+#### QProperty and the absence of a standard binding system
+
+Qt 6 introduced `QProperty<T>` (§4.2), a compile-time reactive property engine that brings QML-style automatic dependency tracking to C++. No equivalent has been proposed to WG21. The Qt project developed `QProperty<T>` as an internal solution motivated by QML's binding semantics, with no documented standardisation ambitions; the [2021 QtCS design notes](https://wiki.qt.io/QtCS2021_-_Qt_Property_Bindings) contain no references to WG21. The community project **KDBindings** (KDAB, 2022) provides a Boost-style header-only signal/slot and property binding library for C++17 without moc, but similarly makes no WG21 proposal. [Source](https://www.kdab.com/signals-slots-properties-bindings/)
+
+#### Summary
+
+Qt's practical relationship with the C++ standard in 2026 is:
+
+- **Qt consumes the standard**: C++17/20/23 features (structured bindings, `if constexpr`, `std::span`, coroutines via [QCoro](https://github.com/qcoro/qcoro), modules) are progressively adopted into Qt's APIs and implementation.
+- **Qt advocates for reflection**: The Qt project is the most prominent industrial user actively tracking WG21 SG7, because P2996 + P3294 is the only credible path to removing moc. Qt developers participate as commentators and reviewers, not proposal authors.
+- **No Qt feature has been formally proposed and adopted** into the C++ standard by a Qt developer acting as WG21 proposal author. The reflection proposals (P0385, P1240, P2996) are independent WG21 work that Qt stands to benefit from, not Qt-initiated proposals.
 
 ---
 
