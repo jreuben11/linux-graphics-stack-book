@@ -53,8 +53,12 @@ The chapter is long because Qt is large; it is organised so that a reader can ju
 - [25. Deploying Qt Applications on Linux](#25-deploying-qt-applications-on-linux)
 - [26. Porting Qt 5 to Qt 6](#26-porting-qt-5-to-qt-6)
 - [27. Key Add-on Modules](#27-key-add-on-modules)
-- [28. Performance and Debugging](#28-performance-and-debugging)
-- [29. Integrations](#29-integrations)
+- [28. Language Bindings](#28-language-bindings)
+  - [28.1 PySide6 — Qt for Python](#281-pyside6--qt-for-python)
+  - [28.2 cxx-qt — Rust Bindings (KDAB)](#282-cxx-qt--rust-bindings-kdab)
+  - [28.3 Qt Bridge for Rust — Official Qt Rust Bridge](#283-qt-bridge-for-rust--official-qt-rust-bridge)
+- [29. Performance and Debugging](#29-performance-and-debugging)
+- [30. Integrations](#30-integrations)
 - [References](#references)
 
 ---
@@ -2652,7 +2656,415 @@ Beyond the core covered above, Qt6 provides a broad add-on set. A brief tour of 
 
 ---
 
-## 28. Performance and Debugging
+## 28. Language Bindings
+
+Qt's C++ API can be consumed from Python and Rust through two distinct strategies: a **full binding layer** that wraps the entire Qt API surface (PySide6, cxx-qt), and a **backend bridge** that exposes only the logic needed to connect a non-C++ backend to a QML frontend (Qt Bridge for Rust). This section covers all three, with a comparison table at the end.
+
+### 28.1 PySide6 — Qt for Python
+
+**PySide6** is the official Python binding for Qt 6, maintained by The Qt Company as part of the **Qt for Python** project. Released in December 2020 alongside Qt 6.0, it is licensed under LGPL-3.0 / GPL-2.0 / GPL-3.0 — the LGPL option permits closed-source distribution without a commercial Qt licence, which is the primary advantage over the competing **PyQt6** (Riverbank Computing, GPL or commercial). The current stable release is 6.11.1 (May 2026). Wheels are published to PyPI for CPython 3.10–3.14 on Linux x86-64/ARM64, Windows ARM64/x86-64, and macOS 13+ universal2. [Source](https://pypi.org/project/PySide6/) [Source](https://www.qt.io/blog/qt-for-python-6-released)
+
+#### Shiboken6 — the binding generator
+
+PySide6 is produced by **Shiboken6**, a two-part tool: [Source](https://doc.qt.io/qtforpython-6/shiboken6/)
+
+1. **`shiboken6-generator`** — parses Qt headers with libclang, merges the result with per-module **typesystem XML** files (declaring which types to expose, ownership rules, C++ snippets to inject, and type conversions), and emits CPython extension `.cpp` source files. These are compiled into the `.so`/`.pyd` extension modules installed by `pip`.
+
+2. **`shiboken6` runtime module** — a compiled extension loaded by all PySide6 modules; manages the C++/Python object identity map, reference counting, and type dispatch. It is independently usable for binding non-Qt C++ libraries.
+
+The typesystem XML capability is substantial: `<modify-function>` renames or removes methods, `<inject-code>` inserts handwritten C++ at specific wrapper points, `<modify-argument ownership="...">` transfers object lifetime between C++ and Python, and `<container-type>` defines how `QList<T>`, `QMap<K,V>` etc. map to Python `list`/`dict`. Since Qt 6.6 `shiboken6-generator` is published to PyPI, enabling third-party projects to wrap their own Qt-based C++ libraries with the same infrastructure. [Source](https://doc.qt.io/qtforpython-6/shiboken6/shibokengenerator.html)
+
+#### Signals, slots, and properties
+
+```python
+from PySide6.QtCore import QObject, Signal, Slot, Property
+
+class Sensor(QObject):
+    # Class-level Signal descriptors — declare at class scope
+    valueChanged = Signal(float)
+    errorOccurred = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self._value = 0.0
+
+    @Slot(float)           # optional for same-thread; required for queued connections
+    def setValue(self, v: float):
+        if self._value != v:
+            self._value = v
+            self.valueChanged.emit(v)   # emit like a function call
+
+    @Property(float, notify=valueChanged)
+    def value(self) -> float:
+        return self._value
+
+    @value.setter
+    def value(self, v: float):
+        self.setValue(v)
+
+# Connect any Python callable — lambda, method, or function:
+sensor = Sensor()
+sensor.valueChanged.connect(lambda v: print(f"new value: {v}"))
+sensor.valueChanged.connect(display.updateReading)
+```
+
+`Signal` is a descriptor that must live at class scope on a `QObject` subclass. `@Slot` is optional for direct connections but required for **cross-thread (queued) connections**; it also reduces overhead by registering the method in Qt's meta-object. `Property` with a `notify` signal makes the property visible to QML bindings and `QPropertyAnimation`. [Source](https://doc.qt.io/qtforpython-6/)
+
+#### QML integration
+
+The `@QmlElement` decorator registers a Python `QObject` subclass as a QML type, replacing the older `qmlRegisterType()` call:
+
+```python
+# backend.py
+from PySide6.QtCore import QObject, Slot
+from PySide6.QtQml import QmlElement
+
+QML_IMPORT_NAME = "com.example.myapp"    # module-level globals, set BEFORE the class
+QML_IMPORT_MAJOR_VERSION = 1
+
+@QmlElement
+class Backend(QObject):
+    @Slot(str, result=str)
+    def process(self, text: str) -> str:
+        return text.upper()
+```
+
+```python
+# main.py
+import sys, backend   # importing the module triggers @QmlElement registration
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+
+app    = QGuiApplication(sys.argv)
+engine = QQmlApplicationEngine()
+engine.load("main.qml")
+sys.exit(app.exec())
+```
+
+```qml
+// main.qml
+import com.example.myapp 1.0
+Item {
+    Backend { id: b }
+    Text { text: b.process("hello") }   // → "HELLO"
+}
+```
+
+`@QmlSingleton` creates a process-wide QML singleton; `@QmlForeign(CppClass)` registers an existing C++ class under a Python-defined name. `pyside6-qmltyperegistrar` generates `.qmltypes` files for IDE completion. [Source](https://doc.qt.io/qtforpython-6/PySide6/QtQml/QmlElement.html)
+
+#### Subclassing QAbstractListModel
+
+```python
+from PySide6.QtCore import Qt, QAbstractListModel, QModelIndex
+from PySide6.QtQml import QmlElement
+
+QML_IMPORT_NAME = "com.example.models"
+QML_IMPORT_MAJOR_VERSION = 1
+
+NAME_ROLE = Qt.UserRole + 1
+AGE_ROLE  = Qt.UserRole + 2
+
+@QmlElement
+class PersonModel(QAbstractListModel):
+    def __init__(self, data=None, parent=None):
+        super().__init__(parent)
+        self._data = data or []
+
+    def rowCount(self, parent=QModelIndex()) -> int:
+        return len(self._data)
+
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid():
+            return None
+        row = self._data[index.row()]
+        if role == NAME_ROLE: return row["name"]
+        if role == AGE_ROLE:  return row["age"]
+
+    def roleNames(self):
+        return {NAME_ROLE: b"name", AGE_ROLE: b"age"}  # bytes values, not str
+```
+
+`data()` returns plain Python objects — shiboken converts at the boundary; no `QVariant` wrapping in Python. Mutation must bracket `beginInsertRows()`/`endInsertRows()` for correct QML view updates. [Source](https://doc.qt.io/qtforpython-6/examples/example_qml_editingmodel.html)
+
+#### asyncio integration
+
+`PySide6.QtAsyncio` (introduced as technology preview in Qt 6.6) provides an asyncio event loop backed by Qt's own event loop:
+
+```python
+import asyncio, PySide6.QtAsyncio as QtAsyncio
+from PySide6.QtWidgets import QApplication, QPushButton
+
+async def fetch_data():
+    await asyncio.sleep(1)   # non-blocking; Qt events run concurrently
+    print("done")
+
+app = QApplication([])
+btn = QPushButton("Fetch")
+btn.clicked.connect(lambda: asyncio.ensure_future(fetch_data()))
+btn.show()
+QtAsyncio.run()   # replaces app.exec(); drives both Qt and asyncio
+```
+
+[Source](https://doc.qt.io/qtforpython-6/PySide6/QtAsyncio/index.html)
+
+#### Deployment
+
+`pyside6-deploy main.py` wraps **Nuitka** to compile Python bytecode to C and link it into a standalone native binary alongside Qt shared libraries. On Android, `pyside6-android-deploy` automates NDK/SDK download and APK/AAB production. PyInstaller remains a community-supported alternative with faster build times but larger output. [Source](https://doc.qt.io/qtforpython-6/deployment/deployment-pyside6-deploy.html)
+
+#### PySide6 vs. PyQt6
+
+| Aspect | PySide6 | PyQt6 |
+|--------|---------|-------|
+| Maintainer | The Qt Company | Riverbank Computing |
+| Licence | LGPL-3.0 / GPL | GPL + commercial |
+| Binding generator | shiboken6 | sip |
+| Signal class name | `Signal` | `pyqtSignal` |
+| Slot decorator | `Slot` | `pyqtSlot` |
+| Enum qualification | short names work | fully-qualified required |
+| `__feature__` imports | `snake_case`, `true_property` | not available |
+| Official deploy tool | `pyside6-deploy` (Nuitka) | none |
+
+The two bindings are ~95% source-compatible; porting is mostly signal/slot name and enum-qualification changes.
+
+---
+
+### 28.2 cxx-qt — Rust Bindings (KDAB)
+
+**cxx-qt** is a collection of Rust crates from KDAB (Klarälvdalens Datakonsult AB) for safe, bidirectional Rust ↔ Qt interoperability. Version 0.9.1 (July 2026). Licensed MIT OR Apache-2.0. Supports Qt 5.15 LTS and all Qt 6 releases; MSRV Rust 1.85. [Source](https://github.com/KDAB/cxx-qt) [Source](https://kdab.github.io/cxx-qt/book/)
+
+#### Architecture: cxx foundation
+
+cxx-qt is built on the [`cxx`](https://github.com/dtolnay/cxx) crate, which generates matched Rust and C++ stubs from a single bridge module, eliminating most `unsafe` FFI. `#[cxx_qt::bridge]` is a strict superset of `#[cxx::bridge]` — plain CXX blocks work unchanged inside it — plus two Qt-specific extern block kinds:
+
+- **`extern "RustQt"`** — exposes a Rust struct as a `QObject` subclass to Qt/C++/QML
+- **`extern "C++Qt"`** — imports an existing C++ `QObject` (with its signals) into Rust
+
+The code-generation pipeline: the `cxx-qt-gen` crate parses the bridge at compile time, emits both Rust glue and C++ `QObject` wrapper code, and `cxx-qt-build` compiles the C++ alongside the Rust crate.
+
+#### The `#[cxx_qt::bridge]` macro
+
+```rust
+use cxx_qt_lib::{QUrl, QString};
+
+#[cxx_qt::bridge]
+pub mod qobject {
+    unsafe extern "C++" {
+        include!("cxx-qt-lib/qurl.h");
+        type QUrl = cxx_qt_lib::QUrl;
+        include!("cxx-qt-lib/qstring.h");
+        type QString = cxx_qt_lib::QString;
+    }
+
+    extern "RustQt" {
+        #[qobject]
+        #[qml_element]
+        #[qml_singleton]
+        #[qproperty(bool, logging_enabled, cxx_name = "loggingEnabled")]
+        type RustSensor = super::RustSensorState;   // type alias → QObject wrapper
+
+        // Signal: emitted by calling self.reading_updated(v)
+        #[qsignal]
+        fn reading_updated(self: Pin<&mut RustSensor>, value: f64);
+
+        // Invokable from QML/C++
+        #[qinvokable]
+        fn start_polling(self: Pin<&mut RustSensor>);
+
+        // Read-only invokable
+        #[qinvokable]
+        fn unit(self: &RustSensor) -> QString;
+    }
+}
+
+// The Rust struct holding state
+#[derive(Default)]
+pub struct RustSensorState {
+    logging_enabled: bool,
+}
+
+// Invokable implementations live outside the bridge mod as normal impls
+impl qobject::RustSensor {
+    fn start_polling(mut self: Pin<&mut Self>) {
+        // ... start a background thread, emit reading_updated via CxxQtThread
+    }
+    fn unit(&self) -> QString {
+        QString::from("°C")
+    }
+}
+```
+
+Key attributes:
+
+| Attribute | Effect |
+|-----------|--------|
+| `#[qobject]` | Generates a C++ `QObject` subclass |
+| `#[qml_element]` | Registers as QML type (`QML_ELEMENT`) |
+| `#[qml_singleton]` | Registers as QML singleton |
+| `#[qproperty(Type, name)]` | Declares `Q_PROPERTY`; auto-generates getter/setter/notify |
+| `#[qsignal]` | Declares a Qt signal; call it like a function to emit |
+| `#[qinvokable]` | Marks method as `Q_INVOKABLE` |
+| `#[base = SomeQObject]` | Sets C++ base class (e.g. `QAbstractListModel`) |
+| `#[cxx_override]` | Overrides a C++ virtual method |
+| `#[inherit]` | Delegates to the base class implementation |
+
+Full property control with custom READ/WRITE/NOTIFY/RESET is available:
+
+```rust
+#[qproperty(QUrl, endpoint,
+    cxx_name = "endpoint",
+    READ, WRITE = set_endpoint,
+    NOTIFY = endpoint_changed, RESET = reset_endpoint)]
+```
+
+#### Build system
+
+**Cargo-first (no CMake in user code):**
+
+```toml
+# Cargo.toml
+[dependencies]
+cxx-qt     = "0.9"
+cxx-qt-lib = { version = "0.9", features = ["qt_gui", "qt_qml"] }
+
+[build-dependencies]
+cxx-qt-build = "0.9"
+```
+
+```rust
+// build.rs
+use cxx_qt_build::{CxxQtBuilder, QmlModule};
+
+fn main() {
+    CxxQtBuilder::new_qml_module(
+        QmlModule::new("com.example.sensors")
+            .qml_file("qml/Main.qml"),
+    )
+    .qt_module("Network")
+    .files(["src/sensor.rs"])
+    .build();
+}
+```
+
+`CxxQtBuilder` discovers Qt via `qmake` (or `QMAKE` env var), runs `moc` on generated headers, compiles C++ glue, and links against `QtCore`/`QtQml`/`QtQuick`. For **CMake-first projects** (integrating into an existing C++ Qt application), `cxx_qt_import_crate()` from [cxx-qt-cmake](https://github.com/kdab/cxx-qt-cmake) imports the Rust crate as a static library via [Corrosion](https://github.com/corrosion-rs/corrosion):
+
+```cmake
+cxx_qt_import_crate(MANIFEST_PATH rust/Cargo.toml CRATES my_crate)
+cxx_qt_import_qml_module(my_qml_module
+    URI "com.example.sensors"
+    SOURCE_CRATE my_crate)
+target_link_libraries(myapp PRIVATE my_qml_module)
+```
+
+#### Thread safety
+
+Qt's thread-affinity rule (QObjects must be accessed from their owning thread) is enforced through an opt-in threading model:
+
+```rust
+impl cxx_qt::Threading for RustSensor {}   // opt in
+
+fn start_polling(mut self: Pin<&mut Self>) {
+    let qt_thread = self.qt_thread();   // CxxQtThread<RustSensor>: Send + Clone
+    std::thread::spawn(move || {
+        let reading = poll_hardware();
+        qt_thread.queue(move |mut qobj| {
+            qobj.as_mut().reading_updated(reading);  // runs on Qt thread
+        }).unwrap();
+    });
+}
+```
+
+`CxxQtThread<T>` is `Send` (can cross thread boundaries) but not `Copy` or `Sync`. `.queue(f)` posts a `FnOnce(Pin<&mut T>)` to the Qt event loop. There is no native async/await support; the recommended pattern is to run async work on a background runtime (Tokio) and queue results back. [Source](https://kdab.github.io/cxx-qt/book/)
+
+#### `cxx-qt-lib` Qt type wrappers
+
+The companion `cxx-qt-lib` crate provides hand-written CXX bridges for common Qt types, implementing standard Rust traits (`Default`, `Clone`, `PartialEq`, `Display`, `IntoIterator`, `FromIterator`, `serde::Serialize/Deserialize` where applicable):
+
+- **QtCore**: `QString`, `QByteArray`, `QUrl`, `QUuid`, `QVariant`, `QList<T>`, `QMap<K,V>`, `QHash<K,V>`, `QSet<T>`, `QDate`, `QDateTime`, `QTime`, `QTimeZone`, `QPoint`/`F`, `QRect`/`F`, `QSize`/`F`, `QLine`/`F`, `QModelIndex`, `QCoreApplication`, …
+- **QtGui** (`qt_gui` feature): `QColor`, `QFont`, `QImage`, `QPainter`, `QPainterPath`, `QPen`, `QVector2D`/`3D`/`4D`, `QQuaternion`, …
+- **QtQml** (`qt_qml` feature): `QQmlEngine`, `QQmlApplicationEngine`
+- **`cxx-qt-lib-extras`**: `QApplication` (QtWidgets entry point), `QCommandLineParser`, `QEventLoop`
+
+**Not covered**: `QWidget` and other QtWidgets API — there are no Rust-level widget bindings. Rust QObject subclasses can be embedded *inside* QWidgets applications via C++ but widgets cannot be manipulated directly from Rust. [Source](https://github.com/KDAB/cxx-qt/tree/main/crates/cxx-qt-lib)
+
+---
+
+### 28.3 Qt Bridge for Rust — Official Qt Rust Bridge
+
+**qtbridge-rust** is The Qt Company's own Rust bridge, announced as **Qt Bridges** at Qt World Summit 2025 (May 2025) and reaching **public beta on 1 July 2026**. [Source](https://www.qt.io/blog/qt-bridges-public-beta-for-rust) [Source](https://www.phoronix.com/news/Qt-Bridges-New-Languages) It is available on GitHub as a read-only mirror (`https://github.com/qt/qtbridge-rust`); contributions go through Qt's Gerrit. Licensed LGPL-3.0 / Qt Commercial.
+
+**Requirements**: Qt 6.10 or higher; Rust stable ≥ 1.88.
+
+#### Design philosophy: backend bridge, not full bindings
+
+Unlike cxx-qt (which wraps Qt's API bidirectionally), qtbridge-rust takes a narrower scope: Rust provides the **application backend**; QML/Qt Quick is the **only** supported frontend. No Qt Widgets, no C++ mixing in user code. The Qt blog explicitly recommends cxx-qt for projects that need to mix Rust and C++, use Qt Widgets, or access Qt modules with a C++-only API. [Source](https://www.qt.io/blog/about-the-new-qt-bridging-technology)
+
+Like cxx-qt, qtbridge-rust is built on the `cxx` crate. User application code is C++-free, though a C++ toolchain must be present to compile the bridge layer.
+
+#### The `#[qobject]` macro
+
+```rust
+use qtbridge::{qobject, QApp};
+
+#[derive(Default)]
+pub struct SensorState { value: f64 }
+
+#[qobject(Singleton)]           // Singleton → accessible in QML without instantiation
+impl SensorState {
+    #[qproperty]
+    value: f64,                 // QML-readable/writable property
+
+    #[qslot]                    // callable from QML
+    fn start(&self) { /* … */ }
+
+    #[qsignal]                  // emittable from Rust, handleable in QML
+    fn reading_updated(&self, v: f64);
+}
+
+fn main() {
+    QApp::new()
+        .register::<SensorState>()
+        .load_qml(include_bytes!("qml/Main.qml"))
+        .run();
+}
+```
+
+**Memory model**: every exposed QObject is held as `Rc<RefCell<T>>`. Multiple owners — Rust, the QML engine, QML components — are supported; borrow-rule violations surface as **panics at runtime** rather than compile-time errors. A borrow is cached within a single QML call chain to avoid redundant re-borrows. For cross-thread calls, `QmlMethodInvoker` (a `Send`-able handle) queues work onto the Qt event loop. [Source](https://www.qt.io/blog/rust-ui-framework-via-bridging-technology)
+
+Built-in model/view support: `QListModel`/`QListModelBase` for `ListView`, `QTableModel`/`QTableModelBase` for `TableView`.
+
+#### Build system
+
+Cargo is the primary build system; no CMake required in user code:
+
+```toml
+[dependencies]
+qtbridge = "*"
+```
+
+`qtbridge-build-utils` (wrapping `qt-build-utils`) discovers Qt via `qmake`, runs `moc` on generated headers, and links `QtCore`, `QtQml`, `QtQuick`. Qt 6.10 is required; as of the public beta this version is not yet in most Linux distribution package managers.
+
+#### Comparison: cxx-qt vs. qtbridge-rust
+
+| | cxx-qt 0.9 (KDAB) | qtbridge-rust 0.2 (The Qt Company) |
+|---|---|---|
+| Status | Active community (pre-1.0) | Public beta |
+| Qt minimum | 5.15 LTS | 6.10 |
+| Ownership model | Compile-time (`Pin<&mut T>`, Rust borrow checker) | Runtime (`Rc<RefCell<T>>`, panics on conflict) |
+| Frontend | QML **and** C++ (bidirectional) | QML only |
+| Qt Widgets | No Rust API (can host in C++) | No |
+| C++ in user code | Optional (CMake path enables it) | None required |
+| Thread model | Explicit `CxxQtThread<T>` (Send) | `QmlMethodInvoker` (Send) |
+| Async/await | No native support | No native support |
+| Build system | Cargo-first or CMake-first | Cargo-first |
+| Qt module coverage | Core, Gui, Qml, QuickControls, extras | Core, Qml, Quick |
+| IDE / QML tooling | `.qmltypes` + `qmlls.ini` generated (0.8+) | Not yet; QML LS does not see Rust types |
+| Licence | MIT / Apache-2.0 | LGPL-3.0 / Qt Commercial |
+
+**Recommended choice**: use **cxx-qt** for projects integrating Rust into an existing C++ Qt codebase, needing access to specific Qt C++ modules, or targeting Qt < 6.10. Use **qtbridge-rust** for new pure-Rust backends paired with a QML frontend on Qt 6.10+, where the simpler `Rc<RefCell<T>>` ownership model and C++-free build are valued. The official Qt blog describes the two as "almost orthogonal." [Source](https://www.qt.io/blog/about-the-new-qt-bridging-technology)
+
+---
+
+## 29. Performance and Debugging
 
 Qt exposes a rich set of environment variables and tools for diagnosing the render pipeline:
 
@@ -2668,7 +3080,7 @@ For QML-level profiling, **`qmlprofiler`** attaches to an application started wi
 
 ---
 
-## 29. Integrations
+## 30. Integrations
 
 - **Chapter 39b (GTK4 GPU Rendering)** — the companion chapter contrasting Qt's `QRhi`/scene-graph model with GTK4's `GskRenderer`; §4.4 compares Qt's meta-object/`QProperty` system with GObject.
 - **Chapter 18 (Mesa Vulkan drivers)** — Qt's `QRhi` Vulkan backend is a client of Mesa's Vulkan drivers (ANV, RADV, NVK); the SPIR-V emitted by `qsb` (§15.5) enters those drivers.
