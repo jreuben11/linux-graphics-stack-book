@@ -44,6 +44,7 @@ Readers who need the underlying Vulkan ICD mechanics (loader, JSON manifests, RA
    - [9.2 AppImage](#92-appimage)
    - [9.3 Nix and NixOS](#93-nix-and-nixos)
    - [9.4 Comparison Summary](#94-comparison-summary)
+   - [9.5 Pros and Cons](#95-pros-and-cons)
 10. [Packaging Best Practices](#10-packaging-best-practices)
 11. [Integrations](#11-integrations)
 12. [References](#12-references)
@@ -685,6 +686,76 @@ ROCm in nixpkgs is packaged under `pkgs.rocmPackages` with modules for `rocblas`
 | **Security strength** | Highest (user namespace + portal) | Medium (AppArmor, no portal standard) | None by default | N/A (system-level, not per-app) |
 
 The key differentiator for graphics is the **portal layer**: Flatpak's xdg-desktop-portal provides a standardised, user-consented mechanism for screen capture, camera, and file access, while Snap's equivalent is less standardised and AppImage has none. Nix/NixOS sits outside this axis entirely — it provides the strongest driver-version reproducibility guarantee but is a system-configuration tool rather than a per-application sandbox.
+
+### 9.5 Pros and Cons
+
+#### Flatpak
+
+**Pros:**
+- **Strongest security boundary** for a desktop app format: user namespaces + seccomp + portal mediation. A Flatpak GPU app cannot escape its sandbox without an explicit permission grant or a kernel namespace vulnerability.
+- **GL extension mechanism** solves the hardest problem in Linux GPU packaging — matching the userspace driver to the running kernel module — in a way that is automatic, distribution-agnostic, and atomic (OSTree delta updates).
+- **xdg-desktop-portal** provides a standardised, user-consented API surface for screen capture, camera, file access, and notifications. A Flatpak app on GNOME and KDE uses the same portal calls; the compositor provides the implementation.
+- **Runtime sharing via OSTree hard links** means multiple Flatpak apps sharing the same `org.freedesktop.Platform//24.08` runtime store only one copy of Mesa, glibc, and GTK on disk.
+- **Flathub** is the largest curated Linux application catalogue, with CI-enforced metadata validation, static analysis, and sandbox review.
+
+**Cons:**
+- **Startup latency**: bubblewrap namespace setup and OSTree bind-mount assembly add ~50–150 ms of process startup overhead visible in time-to-first-frame for GPU apps.
+- **Mesa version lag**: the `org.freedesktop.Platform` runtime is released on a ~6-month cycle. Apps that require a Mesa feature newer than the current runtime version cannot ship it via the stable extension mechanism without maintaining a custom runtime fork.
+- **D-Bus complexity**: portal interactions require the `xdg-desktop-portal` daemon and a compositor-specific backend (GNOME, KDE, wlroots) to be running. Headless or minimal Wayland compositor environments may lack the portal backend, breaking camera or screen-capture flows.
+- **NVIDIA proprietary driver**: the GL extension ID must exactly match the installed kernel module version. A user who updates the NVIDIA host driver without immediately running `flatpak update` is left with a version mismatch that silently falls back to software rendering. The mismatch is not always surfaced clearly.
+- **Compute workloads**: GPU compute access (`/dev/kfd` for ROCm, `/dev/nvidia-uvm` for CUDA) requires explicit `--device` grants that are not standardised and not enforced by Flathub policy — each upstream application manifest handles it differently.
+
+---
+
+#### Snap
+
+**Pros:**
+- **AppArmor policy** is enforced by the kernel and cannot be bypassed by userspace bugs in the sandbox tool — unlike user-namespace-based approaches, which depend on `CLONE_NEWUSER` being correctly implemented.
+- **`graphics-core24` content Snap** provides a curated, tested Mesa + Vulkan + VA-API bundle maintained by Canonical that works with the `opengl` interface across all supported Ubuntu releases without application developers needing to understand driver versioning.
+- **Automatic updates**: `snapd` performs background delta updates and transactional refresh, with rollback on failure. No manual `flatpak update` required.
+- **`--classic` confinement** provides an escape hatch for developer tools and other software that legitimately needs unrestricted host access, with a clear opt-in model.
+
+**Cons:**
+- **Ubuntu/Canonical ecosystem bias**: the `graphics-core24` content Snap and `snapd` infrastructure are primarily developed and tested on Ubuntu. Non-Ubuntu distributions have experienced `snapd` packaging and integration issues.
+- **No standardised portal layer**: `snapd-desktop-integration` exists but is not equivalent to xdg-desktop-portal. Screen capture, camera access, and file dialogs lack the same cross-compositor standardisation.
+- **Squashfs mount overhead**: each Snap is a SquashFS image that must be loop-mounted at application launch. Systems with many installed Snaps accumulate loop devices, which can affect mount latency and `df` output readability.
+- **No user-namespace sandbox on non-AppArmor kernels**: Snap security degrades to weaker confinement on distributions without AppArmor loaded (e.g. Fedora with SELinux, Arch with no LSM). AppArmor is Ubuntu-default but not universal.
+- **NVIDIA driver matching** relies on the NVIDIA content Snap, which is a separate independently versioned package. Mismatches between the NVIDIA host kernel module and the content Snap version are possible and can be harder to diagnose than the Flatpak GL extension versioning.
+
+---
+
+#### AppImage
+
+**Pros:**
+- **Zero installation** and **zero daemon**: an AppImage is a self-contained executable. Running it requires only FUSE and execute permission. Suitable for CI environments, air-gapped systems, and one-off testing.
+- **Maximum application control**: the developer decides every bundled library version. There is no runtime platform to lag behind upstream Mesa or toolchain releases.
+- **Portable across distributions**: an AppImage built on a sufficiently old glibc (e.g. Ubuntu 20.04 base) runs on any Linux distribution with a compatible or newer glibc, without distribution packaging.
+- **No update infrastructure required**: users can carry an AppImage on a USB drive and run it on any compatible machine.
+
+**Cons:**
+- **No sandbox**: AppImage provides zero security isolation. The application runs with full user-level access to the filesystem, network, and devices. Malicious or buggy AppImages have the same capabilities as any user process.
+- **GPU driver ABI fragility**: if the AppImage bundles Mesa, it must be compatible with both the host kernel DRM driver and host glibc. Bundling an old Mesa can result in missing KMS features, broken sync, or corrupted rendering on newer GPU hardware. Not bundling Mesa re-introduces host dependency.
+- **No portal integration**: screen capture, camera access, and privileged display operations require the AppImage to call host libraries directly, bypassing the standardised xdg-desktop-portal consent model.
+- **Update story is per-application**: AppImageUpdate and the `update` section in the AppImage spec exist, but there is no centralised update infrastructure equivalent to Flathub or `snapd`. Each application developer must implement update checking independently.
+- **Large file sizes** for applications that bundle a full Mesa + Qt/GTK stack, since there is no runtime sharing mechanism.
+
+---
+
+#### Nix / NixOS
+
+**Pros:**
+- **Strongest reproducibility guarantee** in the Linux ecosystem: the entire dependency closure — including the GPU kernel module version, Mesa, and compute runtimes — is pinned to a single `flake.lock` hash. The same flake input hash produces bit-identical builds across machines and time.
+- **Atomic GPU driver upgrades**: on NixOS, `hardware.nvidia.package` and the kernel module are upgraded together in a single `nixos-rebuild switch`. There is no window where the userspace driver version and the kernel module version are mismatched — the new generation is fully assembled before activation.
+- **Best CUDA/ROCm devShell ergonomics**: `cudaPackages` and `rocmPackages` in nixpkgs provide versioned, pinned GPU compute toolchain environments. `nix develop` drops into a shell with the exact NVCC, cuDNN, and library versions pinned, reproducible across developer machines.
+- **Hard-link deduplication**: Nix's `/nix/store` uses the same content-addressed hard-link approach as OSTree. Multiple generations of NixOS configurations sharing a Mesa version store only one copy.
+- **No runtime to lag behind**: there is no `org.freedesktop.Platform` equivalent with a 6-month release cycle. nixpkgs tracks upstream Mesa, GCC, and library releases continuously.
+
+**Cons:**
+- **Not a per-application sandbox**: NixOS provides no bubblewrap-equivalent isolation between applications. A GPU application on NixOS runs with full user privileges. For multi-tenant or kiosk use cases, additional tooling (systemd units with `PrivateDevices=`, `bubblewrap` manual invocation, or `nix-sandbox`) is required.
+- **The non-NixOS problem**: running Nix-packaged GPU apps on Ubuntu, Fedora, or Arch requires nixGL or nix-gl-host and the `--impure` flag. The ergonomics are significantly worse than Flatpak's automatic GL extension selection.
+- **Nix language learning curve**: `configuration.nix` and flake-based development environments require learning the Nix expression language, which has a steep initial curve compared to writing a Flatpak manifest YAML.
+- **`nixpkgs` GPU packaging coverage gaps**: while Mesa, CUDA, and ROCm are well-packaged, some vendor-specific VA-API drivers, media SDK libraries, and proprietary compute libraries have incomplete or outdated nixpkgs packaging requiring overlays or `fetchurl` workarounds.
+- **Binary cache dependency**: the Nix build model is source-first with binary caching via `cache.nixos.org`. GPU compute packages (CUDA, ROCm) are large; on a slow connection or in environments where the binary cache is unavailable, building from source is prohibitively slow.
 
 ---
 
