@@ -56,6 +56,7 @@
   - [9.9 Reference Counting and Floating References](#99-reference-counting-and-floating-references)
   - [9.10 GObject Introspection and Language Bindings](#910-gobject-introspection-and-language-bindings)
 - [10. GLib: The Foundation Library](#10-glib-the-foundation-library)
+  - [10.0 Primitive Type Aliases](#100-primitive-type-aliases-glibtypesh)
   - [10.1 Event Loop: GMainLoop and GMainContext](#101-event-loop-gmainloop-and-gmaincontext)
   - [10.2 Async Work: GTask](#102-async-work-gtask)
   - [10.3 Type-Safe Values: GVariant](#103-type-safe-values-gvariant)
@@ -1975,6 +1976,43 @@ classDiagram
 ## 10. GLib: The Foundation Library
 
 **GLib** is the C utility library underlying GTK and GObject. It provides the event loop, async task model, data structures, and type-safe value boxing used throughout the GTK stack. [Source](https://docs.gtk.org/glib/)
+
+### 10.0 Primitive Type Aliases (`glib/gtypes.h`)
+
+Before any of the higher-level APIs, GLib defines a complete set of `typedef` aliases for C's primitive types. These appear throughout every GTK header and source file and serve two purposes: **platform neutrality** (the sizes are guaranteed across LP64, LLP64, and ILP32 ABIs) and **semantic documentation** (a `gpointer` in a function signature signals "opaque, GLib-managed" in a way `void *` alone does not). [Source](https://docs.gtk.org/glib/index.html#type-aliases)
+
+| Alias | Underlying C type | Notes |
+|---|---|---|
+| `gpointer` | `void *` | Generic opaque pointer; used for user-data parameters in every callback |
+| `gconstpointer` | `const void *` | Read-only opaque pointer; used where the callee must not free |
+| `gboolean` | `gint` (not `_Bool`) | `TRUE`/`FALSE` macros; intentionally `int`-sized for ABI stability across C89 and C99 boundaries |
+| `gchar` / `guchar` | `char` / `unsigned char` | Used where GLib owns encoding (almost always UTF-8); `gchar *` implies `g_free()` ownership |
+| `gshort` / `gushort` | `short` / `unsigned short` | Rarely used directly; present for completeness |
+| `gint` / `guint` | `int` / `unsigned int` | At least 32-bit; the default integer in GLib APIs |
+| `glong` / `gulong` | `long` / `unsigned long` | Platform-width (32-bit on ILP32/LLP64, 64-bit on LP64) |
+| `gint8` / `guint8` | `signed char` / `unsigned char` | Exactly 8 bits |
+| `gint16` / `guint16` | `short` / `unsigned short` | Exactly 16 bits |
+| `gint32` / `guint32` | `int` / `unsigned int` | Exactly 32 bits |
+| `gint64` / `guint64` | `long long` / `unsigned long long` (or `__int64` on MSVC) | Exactly 64 bits; `G_GINT64_CONSTANT(v)` appends the right suffix |
+| `gfloat` | `float` | Single-precision; guaranteed IEEE 754 |
+| `gdouble` | `double` | Double-precision; the default floating-point type in GLib/GTK |
+| `gsize` | `unsigned long` (LP64) / `unsigned int` (ILP32) | Matches `sizeof` result; used for counts and byte lengths |
+| `gssize` | `long` (LP64) / `int` (ILP32) | Signed counterpart to `gsize`; used for error-return lengths |
+| `goffset` | `gint64` | File/stream byte offset; always 64-bit regardless of platform |
+
+**`GDestroyNotify`** is the ubiquitous free-callback typedef: `typedef void (*GDestroyNotify)(gpointer data)`. It appears wherever GLib takes ownership of a pointer and needs to know how to release it: `g_object_set_data_full()`, `g_hash_table_new_full()`, `g_source_set_callback()`, `GClosure` invalidation notifiers, and many more. Passing `g_free` as a `GDestroyNotify` is the most common usage; passing `g_object_unref` releases a GObject when the container drops its reference.
+
+**`TRUE` / `FALSE`** are `#define`d as `1` / `0` (not `(gboolean)1`). Code that tests `if (gboolean_var == TRUE)` is incorrect — always use `if (gboolean_var)` or `if (!gboolean_var)`, as any non-zero `gint` is truthy regardless of whether it equals exactly `1`.
+
+**Integer formatting macros.** Because `gint64` and `guint64` may be `long long` or `__int64` depending on the compiler, GLib provides `G_GINT64_FORMAT` and `G_GUINT64_FORMAT` for use with `printf`/`g_strdup_printf`. Similarly `G_GSIZE_FORMAT` and `G_GSSIZE_FORMAT` handle `gsize`/`gssize`. Always use these instead of `%lld` to stay portable.
+
+```c
+gint64  ts = g_get_monotonic_time ();   /* microseconds since an arbitrary epoch */
+g_print ("timestamp: %" G_GINT64_FORMAT " µs\n", ts);
+
+gsize   n  = g_utf8_strlen (str, -1);
+g_print ("length: %" G_GSIZE_FORMAT " code points\n", n);
+```
 
 ### 10.1 Event Loop: GMainLoop and GMainContext
 
