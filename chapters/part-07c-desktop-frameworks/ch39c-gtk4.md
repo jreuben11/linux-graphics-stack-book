@@ -45,13 +45,44 @@
 - [7. The GTK4 Widget System](#7-the-gtk4-widget-system)
 - [8. libadwaita: GNOME HIG Adaptive Widgets](#8-libadwaita-gnome-hig-adaptive-widgets)
 - [9. The GObject Type System](#9-the-gobject-type-system)
+  - [9.1 Instance and Class Struct Layout](#91-instance-and-class-struct-layout)
+  - [9.2 G_DEFINE_TYPE: What the Macro Generates](#92-g_define_type-what-the-macro-generates)
+  - [9.3 Class Casting: G_OBJECT_CLASS, GTK_WIDGET_CLASS, and G_TYPE_FROM_CLASS](#93-class-casting-g_object_class-gtk_widget_class-and-g_type_from_class)
+  - [9.4 GObjectClass Vtable: constructed, dispose, finalize, set_property](#94-gobjectclass-vtable-constructed-dispose-finalize-set_property)
+  - [9.5 GtkWidgetClass Vtable: snapshot, measure, size_allocate](#95-gtkwidgetclass-vtable-snapshot-measure-size_allocate)
+  - [9.6 Properties](#96-properties)
+  - [9.7 Signals](#97-signals)
+  - [9.8 G_DEFINE_TYPE Variants and GInterfaces](#98-g_define_type-variants-and-ginterfaces)
+  - [9.9 Reference Counting and Floating References](#99-reference-counting-and-floating-references)
+  - [9.10 GObject Introspection and Language Bindings](#910-gobject-introspection-and-language-bindings)
 - [10. GLib: The Foundation Library](#10-glib-the-foundation-library)
+  - [10.1 Event Loop: GMainLoop and GMainContext](#101-event-loop-gmainloop-and-gmaincontext)
+  - [10.2 Async Work: GTask](#102-async-work-gtask)
+  - [10.3 Type-Safe Values: GVariant](#103-type-safe-values-gvariant)
+  - [10.4 Process Spawning and Utilities](#104-process-spawning-and-utilities)
+  - [10.5 Strings, Paths, and Internationalisation](#105-strings-paths-and-internationalisation)
+  - [10.6 Logging and Diagnostics](#106-logging-and-diagnostics)
+  - [10.7 Command-Line Parsing: GOptionContext](#107-command-line-parsing-goptioncontext)
+  - [10.8 Threading and Synchronisation](#108-threading-and-synchronisation)
 - [11. GIO: Files, Settings, and D-Bus](#11-gio-files-settings-and-d-bus)
-- [12. Language Bindings](#12-language-bindings)
-- [13. WebKitGTK: Embedding Web Content](#13-webkitgtk-embedding-web-content)
-- [14. Font and Text Rendering](#14-font-and-text-rendering)
-- [15. Performance and Debugging](#15-performance-and-debugging)
-- [16. Integrations](#16-integrations)
+- [12. Language Bindings and Rust Support](#12-language-bindings-and-rust-support)
+  - [12.1 PyGObject: Async Patterns](#121-pygobject-async-patterns)
+  - [12.2 The gtk4-rs Crate Ecosystem](#122-the-gtk4-rs-crate-ecosystem)
+  - [12.3 Object Handles and the clone! Macro](#123-object-handles-and-the-clone-macro)
+  - [12.4 Properties and Property Bindings in Rust](#124-properties-and-property-bindings-in-rust)
+  - [12.5 Async Rust with GLib](#125-async-rust-with-glib)
+  - [12.6 Custom Widgets and Composite Templates in Rust](#126-custom-widgets-and-composite-templates-in-rust)
+  - [12.7 relm4: The Elm Architecture for GTK4](#127-relm4-the-elm-architecture-for-gtk4)
+- [13. GTK4 Application Programming Guide](#13-gtk4-application-programming-guide)
+  - [13.1 Project Structure and Meson Build](#131-project-structure-and-meson-build)
+  - [13.2 GResource: Bundling Assets](#132-gresource-bundling-assets)
+  - [13.3 Blueprint: Ergonomic UI Description](#133-blueprint-ergonomic-ui-description)
+  - [13.4 GSettings Schema](#134-gsettings-schema)
+  - [13.5 Flatpak Packaging](#135-flatpak-packaging)
+- [14. WebKitGTK: Embedding Web Content](#14-webkitgtk-embedding-web-content)
+- [15. Font and Text Rendering](#15-font-and-text-rendering)
+- [16. Performance and Debugging](#16-performance-and-debugging)
+- [17. Integrations](#17-integrations)
 - [References](#references)
 
 ---
@@ -323,7 +354,7 @@ GSK_RENDERER=cairo  myapp   # force the software fallback
 GSK_RENDERER=help   myapp   # list available renderers and exit
 ```
 
-Absent an override, GDK detects driver capability and selects `GskVulkanRenderer` on Wayland (4.16+) or `GskNglRenderer` otherwise, falling back to Cairo if no GPU renderer initialises. The chosen renderer is reported by `GSK_DEBUG=renderer` (§11).
+Absent an override, GDK detects driver capability and selects `GskVulkanRenderer` on Wayland (4.16+) or `GskNglRenderer` otherwise, falling back to Cairo if no GPU renderer initialises. The chosen renderer is reported by `GSK_DEBUG=renderer` (§16).
 
 ---
 
@@ -434,7 +465,7 @@ The connection between CSS and the GPU is direct: each supported visual property
 | `transform: rotate(...)` | `GskTransformNode` | Matrix in vertex stage |
 | `color` (text) | `GskTextNode` foreground | Glyph-atlas draw |
 
-Because the mapping is one-directional and mechanical, a themer editing CSS is really editing the render-node tree indirectly, and a system developer inspecting the render-node tree (§2.4, §11) can read back which CSS produced each node.
+Because the mapping is one-directional and mechanical, a themer editing CSS is really editing the render-node tree indirectly, and a system developer inspecting the render-node tree (§2.4, §16) can read back which CSS produced each node.
 
 ### 5.3 GtkCssProvider and Custom Theming
 
@@ -771,57 +802,524 @@ graph TD
 
 ## 9. The GObject Type System
 
-Every GTK4 type — `GtkWidget`, `GskRenderer`, `GdkTexture`, `AdwApplication` — is a **GObject**. GObject is GLib's runtime type system: single inheritance, interfaces, properties, and signals for C, with no preprocessor step. Understanding it is required to read GTK internals, write custom widgets, or use the language bindings. [Source](https://docs.gtk.org/gobject/)
+Every GTK4 type — `GtkWidget`, `GskRenderer`, `GdkTexture`, `AdwApplication` — is a **GObject**. GObject is GLib's runtime type system for C: single inheritance, interfaces, reference counting, signals, and introspectable properties, with zero preprocessor dependency beyond a handful of registration macros. Understanding its mechanics is required to read GTK internals, write custom widgets, implement GInterfaces, or understand how language bindings project the C API into other languages. [Source](https://docs.gtk.org/gobject/)
 
-**GType and G_DEFINE_TYPE.** Each type has a `GType` id obtained lazily from a generated `*_get_type()` function. `G_DEFINE_TYPE` generates that function plus class-init and instance-init hooks; `G_DEFINE_ABSTRACT_TYPE` does the same for a non-instantiable base:
+### 9.1 Instance and Class Struct Layout
+
+GObject implements single inheritance through **C struct embedding**: the first member of every instance struct must be its parent's instance struct, and the first member of every class struct must be its parent's class struct. Because C guarantees a struct's address equals the address of its first member, a pointer to a subtype can be safely cast to a pointer to any ancestor type — no offset adjustment required.
 
 ```c
-G_DEFINE_TYPE (MeterWidget, meter_widget, GTK_TYPE_WIDGET)
+/* ── Instance structs ─────────────────────────────────────────────────── */
+
+/* GLib internal (simplified): */
+struct _GObject {
+    GTypeInstance  g_type_instance;   /* MUST be first in every GObject */
+    volatile gint  ref_count;
+    GData         *qdata;             /* arbitrary attached data via g_object_set_data() */
+};
+
+/* GtkWidget (simplified, actual fields are in private data): */
+struct _GtkWidget {
+    GInitiallyUnowned parent_instance;  /* GInitiallyUnowned extends GObject */
+    GtkWidgetPrivate *priv;
+};
+
+/* Your custom type: */
+struct _MeterWidget {
+    GtkWidget parent_instance;   /* MUST be first; gives us the full GtkWidget layout */
+    gdouble   fraction;          /* custom state follows */
+    GdkRGBA   fill_color;
+};
+
+/* ── Class structs (vtables) ──────────────────────────────────────────── */
+
+struct _GObjectClass {
+    GTypeClass   g_type_class;      /* MUST be first; contains the GType id */
+    /* virtual functions overridable by subclasses: */
+    GObject *   (*constructor)     (GType, guint, GObjectConstructParam *);
+    void        (*set_property)    (GObject *, guint, const GValue *, GParamSpec *);
+    void        (*get_property)    (GObject *, guint, GValue *, GParamSpec *);
+    void        (*dispose)         (GObject *);
+    void        (*finalize)        (GObject *);
+    void        (*notify)          (GObject *, GParamSpec *);
+    void        (*constructed)     (GObject *);
+    /* ... more fields omitted */
+};
+
+struct _GtkWidgetClass {
+    GObjectClass parent_class;     /* GObjectClass embedded first */
+    /* GTK-specific vtable entries: */
+    void     (*snapshot)           (GtkWidget *, GtkSnapshot *);
+    void     (*size_allocate)      (GtkWidget *, int width, int height, int baseline);
+    void     (*measure)            (GtkWidget *, GtkOrientation, int for_size,
+                                    int *min, int *nat, int *min_baseline, int *nat_baseline);
+    void     (*realize)            (GtkWidget *);
+    void     (*unrealize)          (GtkWidget *);
+    void     (*map)                (GtkWidget *);
+    void     (*unmap)              (GtkWidget *);
+    gboolean (*focus)              (GtkWidget *, GtkDirectionType);
+    void     (*css_changed)        (GtkWidget *, GtkCssStyleChange *);
+    void     (*state_flags_changed)(GtkWidget *, GtkStateFlags old_flags);
+    /* ... many more */
+};
+
+struct _MeterWidgetClass {
+    GtkWidgetClass parent_class;   /* GtkWidgetClass embedded first */
+    /* custom virtual functions this type exposes to subclasses: */
+    void (*value_changed) (MeterWidget *self, gdouble new_value);
+};
+```
+
+The hierarchy of embedded structs forms a **linear prefix**: any `MeterWidget *` is simultaneously a valid `GtkWidget *`, `GObject *`, and `GTypeInstance *` by C's pointer-to-first-member rule. The casting macros (§9.3) validate and document these casts.
+
+### 9.2 G_DEFINE_TYPE: What the Macro Generates
+
+`G_DEFINE_TYPE(TypeName, type_name, TYPE_PARENT)` is the canonical way to register a new GObject type. It expands to roughly the following code (paraphrased from `gobject/gtype.h`): [Source](https://docs.gtk.org/gobject/func.type_register_static.html)
+
+```c
+/* What G_DEFINE_TYPE (MeterWidget, meter_widget, GTK_TYPE_WIDGET) expands to: */
+
+/* 1. Forward-declare the two user-supplied init functions */
+static void meter_widget_class_init (MeterWidgetClass *klass);
+static void meter_widget_init       (MeterWidget      *self);
+
+/* 2. Expose a parent_class pointer so chain-up can find the parent vtable */
+static gpointer meter_widget_parent_class = NULL;
+
+/* 3. Generate the *_get_type() function — thread-safe, runs once via g_once_init */
+GType
+meter_widget_get_type (void)
+{
+    static gsize type_id_volatile = 0;          /* zero-initialised; 0 means "not yet registered" */
+    if (g_once_init_enter (&type_id_volatile)) {
+        GType type_id;
+        static const GTypeInfo info = {
+            .class_size     = sizeof (MeterWidgetClass),
+            .base_init      = NULL,
+            .base_finalize  = NULL,
+            .class_init     = (GClassInitFunc) meter_widget_class_init,
+            .class_finalize = NULL,
+            .class_data     = NULL,
+            .instance_size  = sizeof (MeterWidget),
+            .n_preallocs    = 0,
+            .instance_init  = (GInstanceInitFunc) meter_widget_init,
+        };
+        /* Register with the GLib type system under the parent type */
+        type_id = g_type_register_static (
+                      GTK_TYPE_WIDGET,                 /* parent GType */
+                      g_intern_static_string ("MeterWidget"), /* type name string */
+                      &info, 0 /* GTypeFlags */);
+        /* Stash the parent class pointer for chain-up use */
+        meter_widget_parent_class = g_type_class_peek_parent (
+                      g_type_class_ref (type_id));
+        g_once_init_leave (&type_id_volatile, type_id);
+    }
+    return (GType) type_id_volatile;
+}
+
+/* 4. Convenience macro: METER_TYPE_WIDGET expands to meter_widget_get_type() */
+#define METER_TYPE_WIDGET (meter_widget_get_type ())
+```
+
+**`g_once_init_enter` / `g_once_init_leave`** guarantee the registration block runs exactly once even under concurrent calls from multiple threads, using an atomic compare-and-swap. The `GTypeInfo` struct passed to `g_type_register_static()` tells the type system the sizes of the class and instance structs (so it can allocate them) and the pointers to the class-init and instance-init functions.
+
+**class_init** runs once when the type is first used (not per-instance). It receives an already-zeroed, freshly allocated `MeterWidgetClass` that has been chain-initialised: the type system first calls the parent chain's `class_init` functions from `GObject` down to `GtkWidget`, then calls `meter_widget_class_init`. This means `GObjectClass` and `GtkWidgetClass` vtable slots are already populated with GTK defaults before your code runs — you override only the entries you need.
+
+**instance_init** (`meter_widget_init`) runs once per object allocation, after the instance memory has been zeroed and the parent's `instance_init` chain has completed.
+
+### 9.3 Class Casting: G_OBJECT_CLASS, GTK_WIDGET_CLASS, and G_TYPE_FROM_CLASS
+
+Inside `class_init`, the parameter is typed as `MeterWidgetClass *klass`, but you need to access the vtable slots of parent classes. The casting macros make this safe and self-documenting. [Source](https://docs.gtk.org/gobject/type_system.html)
+
+```c
+/* G_OBJECT_CLASS upcast: MeterWidgetClass* → GObjectClass* */
+#define G_OBJECT_CLASS(klass) \
+    (G_TYPE_CHECK_CLASS_CAST ((klass), G_TYPE_OBJECT, GObjectClass))
+
+/* GTK_WIDGET_CLASS upcast: MeterWidgetClass* → GtkWidgetClass* */
+#define GTK_WIDGET_CLASS(klass) \
+    (G_TYPE_CHECK_CLASS_CAST ((klass), GTK_TYPE_WIDGET, GtkWidgetClass))
+
+/* Your own type's class cast: GObject* → MeterWidgetClass* */
+#define METER_WIDGET_CLASS(klass) \
+    (G_TYPE_CHECK_CLASS_CAST ((klass), METER_TYPE_WIDGET, MeterWidgetClass))
+```
+
+`G_TYPE_CHECK_CLASS_CAST` is a **safe upcast** — since `MeterWidgetClass` begins with `GtkWidgetClass` which begins with `GObjectClass`, the pointer value is unchanged; only the C type changes. In debug builds (`--enable-debug` or `GOBJECT_DEBUG=instance-count`) it additionally asserts that the class pointer's embedded `GTypeClass.g_type` is a descendant of the target type, catching mistakes at runtime. In release builds it reduces to a plain C cast with zero overhead.
+
+```c
+static void
+meter_widget_class_init (MeterWidgetClass *klass)
+{
+    /* Upcast to GObjectClass to override the dispose/finalize/properties vtable */
+    GObjectClass *object_class = G_OBJECT_CLASS (klass);
+    object_class->dispose      = meter_widget_dispose;
+    object_class->finalize     = meter_widget_finalize;
+    object_class->set_property = meter_widget_set_property;
+    object_class->get_property = meter_widget_get_property;
+
+    /* Upcast to GtkWidgetClass to override the rendering/layout vtable */
+    GtkWidgetClass *widget_class = GTK_WIDGET_CLASS (klass);
+    widget_class->snapshot       = meter_widget_snapshot;
+    widget_class->measure        = meter_widget_measure;
+
+    /* Install properties (see §9.5) */
+    g_object_class_install_properties (object_class, N_PROPS, props);
+
+    /* Register a custom signal (see §9.6) */
+    signals[SIG_VALUE_CHANGED] =
+        g_signal_new ("value-changed",
+                      G_TYPE_FROM_CLASS (klass),   /* ← extract GType from class ptr */
+                      G_SIGNAL_RUN_LAST, 0,
+                      NULL, NULL, NULL,
+                      G_TYPE_NONE, 1, G_TYPE_DOUBLE);
+
+    /* Set CSS name for styling: button { } vs .meter { } */
+    gtk_widget_class_set_css_name (widget_class, "meter");
+
+    /* Optionally load a composite template */
+    gtk_widget_class_set_template_from_resource (
+        widget_class, "/com/example/my-app/meter-widget.ui");
+}
+```
+
+**`G_TYPE_FROM_CLASS(klass)`** extracts the `GType` id from any class pointer:
+
+```c
+#define G_TYPE_FROM_CLASS(klass)  (((GTypeClass *)(klass))->g_type)
+```
+
+The very first field of every class struct is a `GTypeClass` which contains the `GType` integer identifier for this class's type. `G_TYPE_FROM_CLASS` casts the pointer to `GTypeClass *` and reads `.g_type`. This is needed for `g_signal_new()` — which takes a `GType` argument, not a class pointer — and for any other API that identifies a type by its `GType` integer.
+
+**Instance casting macros** mirror the class variants; declare them in the type's public header:
+
+```c
+/* Cast an arbitrary GObject* to MeterWidget* (with debug type check) */
+#define METER_WIDGET(obj) \
+    (G_TYPE_CHECK_INSTANCE_CAST ((obj), METER_TYPE_WIDGET, MeterWidget))
+
+/* Boolean type test — returns TRUE if obj is a MeterWidget or subclass */
+#define IS_METER_WIDGET(obj) \
+    (G_TYPE_CHECK_INSTANCE_TYPE ((obj), METER_TYPE_WIDGET))
+
+/* Retrieve the class vtable from any instance */
+#define METER_WIDGET_GET_CLASS(obj) \
+    (G_TYPE_INSTANCE_GET_CLASS ((obj), METER_TYPE_WIDGET, MeterWidgetClass))
+```
+
+`G_TYPE_CHECK_INSTANCE_CAST` performs a **downcast**: it asserts (in debug builds) that `obj->g_type_instance.g_class->g_type` is `METER_TYPE_WIDGET` or a descendant. `IS_METER_WIDGET` is the corresponding `instanceof` check. `METER_WIDGET_GET_CLASS` recovers the class pointer from an instance — useful when a virtual method override needs to read class-level data.
+
+### 9.4 GObjectClass Vtable: constructed, dispose, finalize, set_property
+
+The `GObjectClass` vtable entries you most commonly override: [Source](https://docs.gtk.org/gobject/class.Object.html)
+
+| Field | When called | Typical use |
+|---|---|---|
+| `constructed` | After all `g_object_new()` properties are set | Safe to access all installed properties; chain up with `G_OBJECT_CLASS(parent_class)->constructed(obj)` |
+| `dispose` | When refcount drops to 0 — **may be called multiple times** if the object is re-referenced during teardown | Release references to other GObjects (`g_clear_object`), disconnect signals, free GPU resources |
+| `finalize` | After `dispose`, when refcount is permanently 0 — **runs exactly once** | Free raw memory allocations (`g_free`); do **not** call `g_object_ref` here |
+| `set_property` | On `g_object_set()` / `g_object_new()` property args | Store the `GValue` into the instance and invalidate/redraw |
+| `get_property` | On `g_object_get()` | Copy instance state into the `GValue` |
+| `notify` | After any property changes and `g_object_notify()` fires | Rarely overridden; watch with `g_signal_connect(obj, "notify::prop", ...)` instead |
+
+```c
+static void
+meter_widget_dispose (GObject *object)
+{
+    MeterWidget *self = METER_WIDGET (object);
+
+    /* Drop all references to other objects here */
+    g_clear_object (&self->texture);          /* nulls the pointer after unref */
+    g_clear_signal_handler (&self->handler_id, self->model);
+
+    /* Always chain up to parent — GtkWidget's dispose does critical cleanup */
+    G_OBJECT_CLASS (meter_widget_parent_class)->dispose (object);
+}
+
+static void
+meter_widget_finalize (GObject *object)
+{
+    MeterWidget *self = METER_WIDGET (object);
+
+    g_free (self->label_text);    /* free raw allocations */
+
+    /* Chain up last */
+    G_OBJECT_CLASS (meter_widget_parent_class)->finalize (object);
+}
+
+static void
+meter_widget_constructed (GObject *object)
+{
+    MeterWidget *self = METER_WIDGET (object);
+
+    /* All properties passed to g_object_new() are already applied here */
+    self->animation = adw_timed_animation_new (GTK_WIDGET (self),
+                          0.0, self->fraction, 300, self->target);
+
+    G_OBJECT_CLASS (meter_widget_parent_class)->constructed (object);
+}
+```
+
+**`meter_widget_parent_class`** is the static pointer set by `G_DEFINE_TYPE`. It points to a `GtkWidgetClass` (the parent's class struct, not `MeterWidgetClass`), so casting it through `G_OBJECT_CLASS()` yields the `GObjectClass` vtable of `GtkWidget`'s registered class. This is the standard chain-up idiom throughout GTK.
+
+### 9.5 GtkWidgetClass Vtable: snapshot, measure, size_allocate
+
+`GtkWidgetClass` extends `GObjectClass` with the widget lifecycle and rendering vtable. The most-overridden entries: [Source](https://docs.gtk.org/gtk4/class.Widget.html)
+
+| Field | Signature | When called |
+|---|---|---|
+| `snapshot` | `void (GtkWidget*, GtkSnapshot*)` | Each dirty frame; populate the render node tree |
+| `measure` | `void (GtkWidget*, GtkOrientation, int for_size, int *min, int *nat, int *min_baseline, int *nat_baseline)` | Size negotiation; return minimum and natural size |
+| `size_allocate` | `void (GtkWidget*, int width, int height, int baseline)` | Final size assigned by parent; re-layout children |
+| `realize` | `void (GtkWidget*)` | Window system resources available; allocate GPU objects |
+| `unrealize` | `void (GtkWidget*)` | Window gone; free GPU objects |
+| `map` / `unmap` | `void (GtkWidget*)` | Widget becomes visible / invisible |
+| `focus` | `gboolean (GtkWidget*, GtkDirectionType)` | Keyboard focus traversal into this widget |
+| `grab_focus` | `void (GtkWidget*)` | Unconditional focus request |
+| `css_changed` | `void (GtkWidget*, GtkCssStyleChange*)` | CSS property values changed; re-snapshot typically happens automatically |
+| `state_flags_changed` | `void (GtkWidget*, GtkStateFlags old)` | Hover/active/focus/disabled state changed |
+| `root` / `unroot` | `void (GtkWidget*)` | Widget inserted into / removed from the widget tree |
+
+A minimal custom widget overriding `measure` and `snapshot`:
+
+```c
+static void
+meter_widget_measure (GtkWidget *widget, GtkOrientation orientation,
+                      int for_size,
+                      int *min, int *nat, int *min_baseline, int *nat_baseline)
+{
+    /* Natural size 200×24; minimum 40×16 */
+    if (orientation == GTK_ORIENTATION_HORIZONTAL) {
+        *min = 40;  *nat = 200;
+    } else {
+        *min = 16;  *nat = 24;
+    }
+    /* Baselines are only relevant for text-containing widgets */
+    *min_baseline = *nat_baseline = -1;
+}
+
+static void
+meter_widget_snapshot (GtkWidget *widget, GtkSnapshot *snapshot)
+{
+    MeterWidget *self = METER_WIDGET (widget);
+    int w = gtk_widget_get_width  (widget);
+    int h = gtk_widget_get_height (widget);
+
+    /* Track */
+    gtk_snapshot_append_color (snapshot,
+        &(GdkRGBA){0.2f, 0.2f, 0.2f, 1.0f},
+        &GRAPHENE_RECT_INIT (0, 0, w, h));
+    /* Fill */
+    gtk_snapshot_append_color (snapshot,
+        &self->fill_color,
+        &GRAPHENE_RECT_INIT (0, 0, (float)w * self->fraction, h));
+
+    /* Chain up so GTK can snapshot child widgets, focus rings, etc. */
+    GTK_WIDGET_CLASS (meter_widget_parent_class)->snapshot (widget, snapshot);
+}
 
 static void
 meter_widget_class_init (MeterWidgetClass *klass)
 {
-    GObjectClass   *object_class = G_OBJECT_CLASS (klass);
     GtkWidgetClass *widget_class = GTK_WIDGET_CLASS (klass);
-    object_class->dispose  = meter_widget_dispose;   /* release refs / GPU objs */
-    object_class->finalize = meter_widget_finalize;  /* free C memory, runs once */
-    widget_class->snapshot = meter_widget_snapshot;
+    widget_class->measure      = meter_widget_measure;
+    widget_class->snapshot     = meter_widget_snapshot;
+    gtk_widget_class_set_css_name (widget_class, "meter");
+}
+```
+
+### 9.6 Properties
+
+Properties are named, typed, introspectable slots declared with a `GParamSpec` in `class_init` and accessed generically with `g_object_get()` / `g_object_set()`. They are the mechanism through which `g_object_new()` keyword-argument construction, CSS animation, and language bindings set state. [Source](https://docs.gtk.org/gobject/class.ParamSpec.html)
+
+```c
+enum { PROP_0, PROP_FRACTION, PROP_FILL_COLOR, N_PROPS };
+static GParamSpec *props[N_PROPS];
+
+static void
+meter_widget_class_init (MeterWidgetClass *klass)
+{
+    GObjectClass *object_class = G_OBJECT_CLASS (klass);
+    object_class->set_property = meter_widget_set_property;
+    object_class->get_property = meter_widget_get_property;
+
+    props[PROP_FRACTION] =
+        g_param_spec_double ("fraction",
+                             NULL, NULL,           /* nick, blurb (rarely used now) */
+                             0.0, 1.0, 0.0,        /* min, max, default */
+                             G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+    props[PROP_FILL_COLOR] =
+        g_param_spec_boxed ("fill-color", NULL, NULL,
+                            GDK_TYPE_RGBA,         /* boxed type for GdkRGBA */
+                            G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+    g_object_class_install_properties (object_class, N_PROPS, props);
 }
 
 static void
-meter_widget_init (MeterWidget *self) { self->fraction = 0.0; }
+meter_widget_set_property (GObject *object, guint prop_id,
+                           const GValue *value, GParamSpec *pspec)
+{
+    MeterWidget *self = METER_WIDGET (object);
+    switch (prop_id) {
+    case PROP_FRACTION:
+        self->fraction = g_value_get_double (value);
+        gtk_widget_queue_draw (GTK_WIDGET (self));
+        break;
+    case PROP_FILL_COLOR:
+        self->fill_color = *(GdkRGBA *) g_value_get_boxed (value);
+        gtk_widget_queue_draw (GTK_WIDGET (self));
+        break;
+    default:
+        G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+    }
+}
+
+static void
+meter_widget_get_property (GObject *object, guint prop_id,
+                           GValue *value, GParamSpec *pspec)
+{
+    MeterWidget *self = METER_WIDGET (object);
+    switch (prop_id) {
+    case PROP_FRACTION:   g_value_set_double (value, self->fraction);                 break;
+    case PROP_FILL_COLOR: g_value_set_boxed  (value, &self->fill_color);             break;
+    default:              G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+    }
+}
 ```
 
-Releasing GPU or referenced resources belongs in `dispose` (which may run more than once) and freeing owned memory in `finalize` (which runs exactly once) — a distinction that matters because another object can briefly re-ref during teardown.
+`G_PARAM_STATIC_STRINGS` signals that the name/nick/blurb strings are `static const` and don't need copying — mandatory for all new code. `G_PARAM_CONSTRUCT` allows the property to be set via `g_object_new()`. `G_PARAM_CONSTRUCT_ONLY` additionally disables setting after construction. After a `set_property` call, GObject automatically emits the `notify::fraction` signal — the mechanism that drives property bindings and CSS animation.
 
-**Signals.** GObject signals are typed, named hooks registered at runtime in class-init with `g_signal_new()` and fired with `g_signal_emit()`:
+### 9.7 Signals
+
+GObject signals are runtime-registered, typed hooks that any code can connect to and that the object emits at defined points. Unlike Qt's compile-time `moc` mechanism, GObject signals are registered with a string name and a marshaller that validates argument types at emission. [Source](https://docs.gtk.org/gobject/concepts.html#signals)
 
 ```c
-signals[VALUE_CHANGED] =
-    g_signal_new ("value-changed", G_TYPE_FROM_CLASS (klass),
-                  G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
-                  G_TYPE_NONE, 1, G_TYPE_DOUBLE);   /* one double argument */
+enum { SIG_VALUE_CHANGED, SIG_LEVEL_WARNING, N_SIGNALS };
+static guint signals[N_SIGNALS];
+
+/* In class_init: */
+signals[SIG_VALUE_CHANGED] =
+    g_signal_new ("value-changed",
+                  G_TYPE_FROM_CLASS (klass),       /* which GType owns this signal */
+                  G_SIGNAL_RUN_LAST,               /* emission order: RUN_FIRST | RUN_LAST | RUN_CLEANUP */
+                  G_STRUCT_OFFSET (MeterWidgetClass, value_changed), /* default handler offset in class struct; 0 if none */
+                  NULL, NULL,                      /* accumulator, accumulator_data */
+                  NULL,                            /* marshaller; NULL = auto-generated */
+                  G_TYPE_NONE,                     /* return type */
+                  1, G_TYPE_DOUBLE);               /* 1 argument of type gdouble */
+
+signals[SIG_LEVEL_WARNING] =
+    g_signal_new ("level-warning",
+                  G_TYPE_FROM_CLASS (klass),
+                  G_SIGNAL_RUN_FIRST,
+                  0, NULL, NULL, NULL,
+                  G_TYPE_NONE, 0);                 /* no arguments */
 ```
 
-Connections are dynamic: `g_signal_connect(obj, "value-changed", G_CALLBACK(cb), data)`. `G_CALLBACK` is a cast that silences the mismatch between the concrete handler signature and `GCallback`; unlike Qt's `moc`-checked connections there is no compile-time type check, but the marshaller validates argument count and types at emission.
+**Emission flags:**
+- `G_SIGNAL_RUN_FIRST` — default class handler runs before user-connected handlers.
+- `G_SIGNAL_RUN_LAST` — class handler runs after user handlers (default for most GTK signals; lets user handlers "see" the signal before the class handles it).
+- `G_SIGNAL_ACTION` — signal is synchronous and may be emitted from key bindings.
+- `G_SIGNAL_DETAILED` — signal carries a detail string (e.g. `notify::fraction` is `notify` with detail `fraction`).
 
-**Properties.** Properties are named, typed, introspectable slots declared with a `GParamSpec` in class-init and accessed with `g_object_get()` / `g_object_set()`:
+**Emitting a signal:**
 
 ```c
-props[PROP_FRACTION] =
-    g_param_spec_double ("fraction", NULL, NULL,
-                         0.0, 1.0, 0.0,
-                         G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
-g_object_class_install_properties (object_class, N_PROPS, props);
-/* Elsewhere: */
-g_object_set (meter, "fraction", 0.75, NULL);
+/* Emit value-changed with the new fraction value */
+static void
+meter_widget_set_fraction (MeterWidget *self, gdouble fraction)
+{
+    if (self->fraction == fraction) return;
+    self->fraction = fraction;
+    gtk_widget_queue_draw (GTK_WIDGET (self));
+    g_signal_emit (self, signals[SIG_VALUE_CHANGED], 0 /* detail */, fraction);
+    g_object_notify_by_pspec (G_OBJECT (self), props[PROP_FRACTION]);
+}
 ```
 
-GTK's CSS animation engine and libadwaita's `AdwPropertyAnimationTarget` both drive animations by setting properties; the `notify::` signal that fires on change triggers a re-snapshot.
+**Connecting to a signal:**
 
-**Reference counting and floating refs.** GObjects are heap-allocated and refcounted (`g_object_ref` / `g_object_unref`; zero invokes `dispose` then `finalize`). `GskRenderNode` and `GtkWidget` derive from `GInitiallyUnowned` and begin with a *floating* reference that the first `g_object_ref_sink()` (or container adoption) claims — which is why you can pass a freshly created widget straight into a container without an explicit ref.
+```c
+static void on_value_changed (MeterWidget *meter, gdouble value, gpointer user_data) {
+    g_print ("meter: %.2f\n", value);
+}
 
-**GObject Introspection.** `g-ir-scanner` parses annotated GTK headers into `.gir` XML, compiled to binary `.typelib` files. These typelibs are what let non-C languages call GTK without hand-written bindings — the same C ABI is projected into each language at runtime. This is the mechanism behind GTK's Python, JavaScript, and Rust bindings. [Source](https://gi.readthedocs.io/en/latest/)
+gulong handler_id = g_signal_connect (meter, "value-changed",
+                                      G_CALLBACK (on_value_changed), NULL);
+
+/* Disconnect later: */
+g_signal_handler_disconnect (meter, handler_id);
+/* Or disconnect all matching: */
+g_signal_handlers_disconnect_by_func (meter, on_value_changed, NULL);
+```
+
+`G_CALLBACK` is a `(GCallback)` cast that silences the function-pointer type mismatch between the concrete handler signature and the generic `void (*GCallback)(void)`. The GObject marshaller validates the actual argument types at emission time in debug builds.
+
+### 9.8 G_DEFINE_TYPE Variants and GInterfaces
+
+**Macro variants** cover common specialisations: [Source](https://docs.gtk.org/gobject/func.type_register_static.html)
+
+```c
+/* Non-instantiable abstract base */
+G_DEFINE_ABSTRACT_TYPE (GskRenderer, gsk_renderer, G_TYPE_OBJECT)
+
+/* With a code block executed inside get_type() — used to implement interfaces */
+G_DEFINE_TYPE_WITH_CODE (MeterWidget, meter_widget, GTK_TYPE_WIDGET,
+    G_IMPLEMENT_INTERFACE (GTK_TYPE_ACCESSIBLE, meter_widget_accessible_iface_init)
+    G_IMPLEMENT_INTERFACE (GTK_TYPE_ORIENTABLE, meter_widget_orientable_iface_init))
+
+/* With private instance data hidden from the header (GLib ≥ 2.38) */
+G_DEFINE_TYPE_WITH_PRIVATE (MeterWidget, meter_widget, GTK_TYPE_WIDGET)
+/* Private data accessed via the generated helper: */
+MeterWidgetPrivate *priv = meter_widget_get_instance_private (self);
+
+/* Prevent subclassing — enforced at registration (GTK 4.12+) */
+G_DEFINE_FINAL_TYPE (MeterWidget, meter_widget, GTK_TYPE_WIDGET)
+```
+
+**Implementing a GInterface.** GObject interfaces (`GTypeInterface`) are declared similarly to abstract classes but carry only virtual function pointers and no instance data. Implementing one requires:
+
+```c
+/* 1. Declare the interface init function (implement all required vfuncs) */
+static void
+meter_widget_accessible_iface_init (GtkAccessibleInterface *iface)
+{
+    iface->get_at_context       = meter_widget_get_at_context;
+    iface->get_platform_state   = meter_widget_get_platform_state;
+    iface->get_accessible_parent = meter_widget_get_accessible_parent;
+    iface->get_first_accessible_child = meter_widget_get_first_accessible_child;
+    iface->get_next_accessible_sibling = meter_widget_get_next_accessible_sibling;
+}
+
+/* 2. Register the implementation in get_type() via G_IMPLEMENT_INTERFACE */
+G_DEFINE_TYPE_WITH_CODE (MeterWidget, meter_widget, GTK_TYPE_WIDGET,
+    G_IMPLEMENT_INTERFACE (GTK_TYPE_ACCESSIBLE, meter_widget_accessible_iface_init))
+
+/* 3. Use the interface from calling code */
+GtkAccessible *accessible = GTK_ACCESSIBLE (meter);  /* upcast through the interface */
+gtk_accessible_update_state (accessible, GTK_ACCESSIBLE_STATE_BUSY, TRUE, -1);
+```
+
+`G_IMPLEMENT_INTERFACE` inside the `_WITH_CODE` block calls `g_type_add_interface_static()`, registering the interface for this type and providing the vtable. At query time, `G_TYPE_CHECK_INSTANCE_TYPE(obj, GTK_TYPE_ACCESSIBLE)` traverses the interface list to confirm the cast is valid.
+
+### 9.9 Reference Counting and Floating References
+
+GObjects are heap-allocated and reference-counted: `g_object_ref()` increments, `g_object_unref()` decrements. When the count reaches zero, `dispose` is called (clearing references and potentially triggering re-reference), then, once the count is permanently zero, `finalize` runs (freeing memory). [Source](https://docs.gtk.org/gobject/method.Object.unref.html)
+
+`GInitiallyUnowned` (the parent of `GtkWidget`) adds a **floating reference**: a freshly created `GInitiallyUnowned` has a refcount of 1 but its floating flag is set. The first `g_object_ref_sink()` call — which container adoption performs automatically — clears the floating flag and claims ownership. This is why you can write:
+
+```c
+gtk_box_append (GTK_BOX (box), gtk_label_new ("Hello"));
+/* ↑ gtk_label_new returns a floating ref; gtk_box_append sinks it — no leak */
+```
+
+Without floating references you would need an explicit `g_object_unref()` after every widget construction, or an intermediate variable to hold the ref until the container adopts it. `g_object_ref_sink()` on a non-floating object simply increments the count, so it is safe to call unconditionally. `g_clear_object(&ptr)` is `g_object_unref(*ptr); *ptr = NULL` — the standard `dispose` pattern that nulls the pointer after releasing.
+
+### 9.10 GObject Introspection and Language Bindings
+
+**GObject Introspection (GI)** makes GTK's C API reachable from other languages without hand-written binding code. `g-ir-scanner` reads annotated GTK headers (the `(transfer full)`, `(nullable)`, `(element-type T)`, `(scope notified)` GIR annotations) and produces `.gir` XML. `g-ir-compiler` compiles that to binary `.typelib` files installed alongside the library. At runtime, any GI-capable language loads the typelib and constructs calls through the C ABI without an intermediate C layer. [Source](https://gi.readthedocs.io/en/latest/)
 
 ```mermaid
 graph LR
@@ -829,11 +1327,11 @@ graph LR
     Scanner --> Gir[".gir XML"]
     Gir --> Typelib[".typelib (binary)"]
     Typelib --> PyGObject["PyGObject (Python)"]
-    Typelib --> GJS["GJS (JavaScript)"]
-    Headers --> gtkrs["gtk4-rs (Rust, generated)"]
+    Typelib --> GJS["GJS (JavaScript / GNOME Shell)"]
+    Headers --> gtkrs["gtk4-rs (Rust, generated from .gir)"]
 ```
 
-**Python (PyGObject).** PyGObject reads the typelibs at runtime via `gi.repository`: [Source](https://pygobject.gnome.org/)
+**Python (PyGObject).** Reads typelibs at runtime via `gi.repository`. Property names use Python's `keyword=value` convention in constructors: [Source](https://pygobject.gnome.org/)
 
 ```python
 import gi
@@ -851,7 +1349,7 @@ app.connect("activate", on_activate)
 app.run(None)
 ```
 
-**JavaScript (GJS).** GJS embeds the SpiderMonkey engine and binds the same typelibs; it is the language GNOME Shell extensions are written in: [Source](https://gjs.guide/)
+**JavaScript (GJS).** Embeds SpiderMonkey; the language GNOME Shell extensions are written in: [Source](https://gjs.guide/)
 
 ```javascript
 import Gtk from 'gi://Gtk?version=4.0';
@@ -866,7 +1364,7 @@ app.connect('activate', () => {
 app.run([]);
 ```
 
-**Rust (gtk4-rs).** The `gtk4` crate wraps the C library with a safe, idiomatic Rust API generated from the GIR data; signals become closures and refcounting is expressed through `clone!`-style handles: [Source](https://gtk-rs.org/)
+**Rust (gtk4-rs).** Generated from the `.gir` data at the gtk4-rs crate-build time; signals become typed closures and properties become strongly-typed setter/getter methods. Section §12 covers the gtk4-rs ecosystem in depth. [Source](https://gtk-rs.org/)
 
 ```rust
 use gtk4::prelude::*;
@@ -984,6 +1482,164 @@ g_subprocess_communicate_utf8_async (proc, NULL, NULL, on_ls_done, NULL);
 
 Data containers: `GHashTable` (open addressing, configurable hash/equal/free functions), `GList`/`GSList` (doubly/singly linked), `GQueue` (double-ended queue), `GArray`/`GPtrArray`/`GByteArray` (typed growable arrays), `GBytes` (immutable reference-counted byte array), `GString` (mutable string builder). Regex: `GRegex` (PCRE2). Date/time: `GDateTime` (timezone-aware, gregorian), `GDate` (calendar-only). [Source](https://docs.gtk.org/glib/)
 
+### 10.5 Strings, Paths, and Internationalisation
+
+GLib provides string utilities that avoid common C pitfalls around allocation and encoding. [Source](https://docs.gtk.org/glib/)
+
+```c
+/* Formatted allocation — always allocates, never truncates */
+char *msg = g_strdup_printf ("frame %d / %d (%.1f%%)", cur, total, pct);
+g_free (msg);
+
+/* Platform-neutral path construction */
+char *path = g_build_filename (g_get_user_data_dir (), "myapp", "cache.db", NULL);
+char *base = g_path_get_basename (path);   /* "cache.db" */
+char *dir  = g_path_get_dirname  (path);   /* ".../myapp" */
+g_free (path); g_free (base); g_free (dir);
+
+/* Prefix / suffix tests (no allocations) */
+if (g_str_has_prefix (filename, "tmp_")) { /* ... */ }
+if (g_str_has_suffix (filename, ".gresource")) { /* ... */ }
+
+/* Split and rejoin */
+char **parts  = g_str_split (csv_line, ",", -1);  /* -1 = unlimited fields */
+char  *rejoin = g_strjoinv  ("|", parts);          /* "a|b|c" */
+g_strfreev (parts);
+g_free (rejoin);
+
+/* Mutable string builder */
+GString *sb = g_string_new ("Hello");
+g_string_append (sb, ", ");
+g_string_append_printf (sb, "world #%d", 42);
+char *result = g_string_free (sb, FALSE);  /* hand off the buffer, free the GString shell */
+g_free (result);
+
+/* Unicode validation and length (in characters, not bytes) */
+if (!g_utf8_validate (user_input, -1, NULL))
+    return;
+glong n_chars = g_utf8_strlen (user_input, -1);
+```
+
+**Internationalisation.** GLib integrates with `gettext`. Mark translatable strings with `_()` and string-literal constants with `N_()` (extracted by `xgettext` but not translated at that point). `g_dngettext()` handles plural forms:
+
+```c
+#include <glib/gi18n.h>
+/* In main() before first use: */
+bindtextdomain ("com.example.myapp", LOCALEDIR);
+bind_textdomain_codeset ("com.example.myapp", "UTF-8");
+textdomain ("com.example.myapp");
+
+const char *label = _("Open File");                                   /* translated */
+const char *fmt   = g_dngettext (NULL, "%d item", "%d items", count);
+char       *msg   = g_strdup_printf (fmt, count);
+g_free (msg);
+```
+
+### 10.6 Logging and Diagnostics
+
+GLib's logging infrastructure replaces raw `fprintf(stderr)`. Log levels have defined severity and — at `G_LOG_LEVEL_ERROR` — fatal behaviour: [Source](https://docs.gtk.org/glib/func.log.html)
+
+```c
+/* Set G_LOG_DOMAIN in CFLAGS: -DG_LOG_DOMAIN=\"com.example.myapp\" */
+g_message  ("Loaded %s in %d ms", path, elapsed);    /* informational */
+g_info     ("Cache hit ratio: %.0f%%", ratio * 100); /* less urgent than message */
+g_debug    ("Frame %d: %d nodes", frame, n_nodes);   /* only if G_MESSAGES_DEBUG matches */
+g_warning  ("Icon not found: %s", icon_name);        /* non-fatal */
+g_critical ("Internal state inconsistent at %s", func); /* non-fatal but alarming */
+g_error    ("Cannot open display: %s", err->message);   /* FATAL — calls abort() */
+```
+
+`G_MESSAGES_DEBUG=all` (or a space-separated list of log domains) enables `g_debug()` and `g_info()`. **Structured logging** passes key-value pairs consumed by systemd-journald:
+
+```c
+g_log_structured (G_LOG_DOMAIN, G_LOG_LEVEL_MESSAGE,
+    "CODE_FILE",    __FILE__,
+    "CODE_LINE",    G_STRINGIFY (__LINE__),
+    "MESSAGE",      "frame rendered in %d ms", elapsed_ms);
+```
+
+Custom handlers registered via `g_log_set_handler()` can route to syslog, a JSON sink, or a test-capture buffer.
+
+### 10.7 Command-Line Parsing: GOptionContext
+
+`GOptionContext` provides GNU-compatible argument parsing with automatic `--help` generation and type coercion. [Source](https://docs.gtk.org/glib/struct.OptionContext.html)
+
+```c
+static gchar   *output_file = NULL;
+static gint     quality     = 90;
+static gboolean verbose     = FALSE;
+
+static const GOptionEntry entries[] = {
+    /* long,     short, flags, arg-type,               dest,         description,     arg-name */
+    { "output",  'o', 0, G_OPTION_ARG_FILENAME, &output_file, "Output file", "FILE" },
+    { "quality", 'q', 0, G_OPTION_ARG_INT,      &quality,     "JPEG quality (1-100)", "N" },
+    { "verbose", 'v', 0, G_OPTION_ARG_NONE,     &verbose,     "Verbose output", NULL },
+    G_OPTION_ENTRY_NULL
+};
+
+int main (int argc, char **argv)
+{
+    GError         *err = NULL;
+    GOptionContext *ctx = g_option_context_new ("[INPUT-FILE...]");
+    g_option_context_add_main_entries (ctx, entries, NULL /* gettext domain */);
+    g_option_context_add_group (ctx, gtk_get_option_group (TRUE));  /* add GTK flags */
+    if (!g_option_context_parse (ctx, &argc, &argv, &err)) {
+        g_printerr ("option parsing failed: %s\n", err->message);
+        return 1;
+    }
+    g_option_context_free (ctx);
+    /* argv[1..argc-1] are remaining positional arguments */
+}
+```
+
+For GTK4 applications the preferred entry point is `g_application_add_main_option_entries()`, which registers options processed before the `startup` signal — avoiding the need to call `gtk_get_option_group()` manually.
+
+### 10.8 Threading and Synchronisation
+
+GLib provides POSIX-like primitives that integrate with the main loop. [Source](https://docs.gtk.org/glib/struct.Thread.html)
+
+```c
+/* Basic mutex and condition variable */
+GMutex mtx;   g_mutex_init (&mtx);
+GCond  cond;  g_cond_init  (&cond);
+
+g_mutex_lock (&mtx);
+while (!data_ready)
+    g_cond_wait (&cond, &mtx);   /* atomically releases mutex and blocks */
+g_mutex_unlock (&mtx);
+
+/* Elsewhere (producer thread): */
+g_mutex_lock (&mtx);
+data_ready = TRUE;
+g_cond_signal (&cond);
+g_mutex_unlock (&mtx);
+
+/* Read-write lock (many readers, one writer) */
+GRWLock rw;   g_rw_lock_init (&rw);
+g_rw_lock_reader_lock   (&rw);  /* ... read shared data ... */
+g_rw_lock_reader_unlock (&rw);
+g_rw_lock_writer_lock   (&rw);  /* ... mutate ... */
+g_rw_lock_writer_unlock (&rw);
+
+/* Named thread */
+GThread *t = g_thread_new ("loader", loader_func, user_data);
+gpointer result = g_thread_join (t);  /* blocks; returns loader_func() return value */
+
+/* Thread pool for parallel work items */
+GThreadPool *pool = g_thread_pool_new (process_item, NULL,
+                                       4 /* max threads */, TRUE /* exclusive */, NULL);
+for (int i = 0; i < n_items; i++)
+    g_thread_pool_push (pool, items[i], NULL);
+g_thread_pool_free (pool, FALSE /* do not cancel pending */, TRUE /* wait */);
+
+/* Lock-free atomic operations */
+gint counter = 0;
+g_atomic_int_inc (&counter);
+gboolean was_one = g_atomic_int_compare_and_exchange (&counter, 1, 0);
+```
+
+For GTK4 applications, prefer `GTask` (§10.2) or `gio::spawn_blocking()` in Rust (§12.5) over raw threads: they marshal results back to the GLib main context automatically. When raw threads must call back into GTK, use `g_main_context_invoke(NULL, callback, data)` to schedule the callback on the main thread. The `G_LOCK_DEFINE` / `G_LOCK` / `G_UNLOCK` macros wrap `GMutex` with compile-time-identifier safety for simple global guards.
+
 ---
 
 ## 11. GIO: Files, Settings, and D-Bus
@@ -1068,57 +1724,594 @@ g_dbus_connection_register_object (bus, "/com/example/obj",
 
 ---
 
-## 12. Language Bindings
+## 12. Language Bindings and Rust Support
 
-The GObject type system (§9) and GObject Introspection generate typelibs consumed by language bindings. The three primary bindings for GTK4 are already demonstrated in §9 (Python/PyGObject, JavaScript/GJS, Rust/gtk4-rs). This section adds notes on async patterns and Rust subclassing.
+The GObject type system (§9) and GObject Introspection generate typelibs consumed by language bindings. The three primary bindings are demonstrated in §9 (Python/PyGObject, JavaScript/GJS, Rust/gtk4-rs). This section covers async patterns for Python and a deep treatment of the gtk4-rs Rust bindings, which are the focus of the plan.md scope. [Source](https://gtk-rs.org/)
 
-**PyGObject async with GLib.** GLib's main loop integrates with Python's `asyncio` via `gbulb` or `GLib.idle_add()`:
+### 12.1 PyGObject: Async Patterns
+
+GLib's main loop integrates with Python's `asyncio` via `GLib.idle_add()` or the `gbulb` package that installs a GLib event loop as the `asyncio` runner. The standard GIO-async idiom without external dependencies:
 
 ```python
 from gi.repository import GLib, Gio
 
-def load_file_async(path, callback):
+def load_file_async(path, on_done):
     f = Gio.File.new_for_path(path)
-    f.load_contents_async(None, lambda src, res: callback(
+    f.load_contents_async(None, lambda src, res: on_done(
         src.load_contents_finish(res)[1].decode()))
 
 load_file_async("/etc/hostname", lambda text: print("hostname:", text.strip()))
 GLib.MainLoop().run()
 ```
 
-**gtk4-rs subclassing.** The `glib::subclass` module enables defining new GObject types in Rust with full trait dispatch:
+### 12.2 The gtk4-rs Crate Ecosystem
+
+The gtk4-rs project publishes safe, idiomatic Rust bindings for the entire GTK4 + GLib stack as a family of crates that mirror the C namespace hierarchy. [Source](https://gtk-rs.org/)
+
+| Crate | Wraps | Key types |
+|---|---|---|
+| `glib` | GLib + GObject | `MainContext`, `GString`, `Variant`, `Object`, `subclass` |
+| `gio` | GIO | `File`, `Settings`, `DBusConnection`, `Task`, `Cancellable` |
+| `gdk4` | GDK | `Display`, `Surface`, `Texture`, `RGBA`, `FrameClock` |
+| `gsk4` | GSK | `RenderNode` and subtypes (rarely used directly) |
+| `gtk4` | GTK widgets | `Widget`, `Application`, `Snapshot`, `Builder`, `ListModel` |
+| `libadwaita` | libadwaita | `Application`, `StyleManager`, `Animation`, `BreakpointBin` |
+
+```toml
+# Cargo.toml
+[dependencies]
+gtk4       = { version = "0.9", features = ["v4_16"] }
+libadwaita = { version = "0.7", features = ["v1_6"] }
+```
+
+The `v4_16` / `v1_6` feature flags gate APIs added in those library versions and enable compile-time rejection of calls to unavailable functions. A minimal hello-world from §9 reproduced for reference:
+
+```rust
+use gtk4::prelude::*;
+use gtk4::{Application, ApplicationWindow, Label};
+
+fn main() {
+    let app = Application::builder()
+        .application_id("com.example.Rs")
+        .build();
+    app.connect_activate(|app| {
+        ApplicationWindow::builder()
+            .application(app)
+            .child(&Label::new(Some("Hello from gtk4-rs")))
+            .build()
+            .present();
+    });
+    app.run();
+}
+```
+
+### 12.3 Object Handles and the clone! Macro
+
+gtk4-rs wraps every GObject in a reference-counted handle (`glib::Object`). Handles are `Clone + Send + Sync` and `Deref` into the concrete widget type; cloning is `g_object_ref()` under the hood — cheap and pointer-sized. The canonical pattern for signal callbacks is to clone handles before moving them into the closure:
+
+```rust
+let button = gtk4::Button::with_label("Click me");
+let label  = gtk4::Label::new(Some("waiting…"));
+
+let label_clone = label.clone();   // cheap: just bumps the GObject refcount
+button.connect_clicked(move |_| {
+    label_clone.set_text("clicked!");
+});
+```
+
+The `glib::clone!` macro eliminates the boilerplate and provides explicit strong/weak capture semantics: [Source](https://gtk-rs.org/gtk4-rs/stable/latest/docs/glib/macro.clone.html)
+
+```rust
+use glib::clone;
+
+// #[weak] downgrades to a Weak reference in the closure; auto-upgraded on entry.
+// The guard expression `return` runs if the upgrade fails (object was finalized).
+button.connect_clicked(clone!(
+    #[weak] label,
+    #[weak] window,
+    move |_| {
+        label.set_text("clicked!");
+        window.set_title(Some("done"));
+    }
+));
+
+// #[strong] captures a strong clone (the default before the macro was available).
+button.connect_clicked(clone!(
+    #[strong] model,
+    move |_| model.append(&new_item()),
+));
+```
+
+Prefer `#[weak]` for long-lived signal handlers (objects that outlive the closure) to avoid reference cycles. `#[strong]` is appropriate for short-lived closures whose captured object must not be finalized mid-call.
+
+### 12.4 Properties and Property Bindings in Rust
+
+The gtk4-rs generator creates strongly-typed accessor methods for every GObject property, plus `connect_*_notify()` helpers. [Source](https://gtk-rs.org/gtk4-rs/stable/latest/docs/gtk4/prelude/trait.WidgetExt.html)
+
+```rust
+// Typed property accessors
+let visible: bool = widget.is_visible();
+widget.set_visible(false);
+widget.set_opacity(0.5);
+
+// Listen for property changes
+label.connect_label_notify(|lbl| println!("label changed to: {}", lbl.label()));
+
+// GObject property binding: keeps label text synchronised with entry text
+let binding = entry
+    .bind_property("text", &label, "label")
+    .bidirectional()      // changes propagate in both directions
+    .sync_create()        // immediately copies source value to target
+    .build();
+// binding.unbind() to release; also auto-released when either object is finalized.
+```
+
+`bind_property()` calls `g_object_bind_property()` and returns a `glib::Binding` handle. Use `transform_to` / `transform_from` closures on the builder for type-converting or filtering bindings.
+
+### 12.5 Async Rust with GLib
+
+GLib's `MainContext` is the native async executor for gtk4-rs. `MainContext::default().spawn_local()` drives a `Future` on the current GLib main loop — there is no separate async runtime; Tokio or async-std are not needed for GTK4 applications. [Source](https://gtk-rs.org/gtk4-rs/stable/latest/docs/glib/struct.MainContext.html)
+
+```rust
+use glib::MainContext;
+
+fn load_and_display(file: gio::File, label: gtk4::Label) {
+    MainContext::default().spawn_local(async move {
+        match file.load_contents_future().await {
+            Ok((bytes, _etag)) => {
+                let text = String::from_utf8_lossy(&bytes);
+                label.set_text(&text[..text.len().min(200)]);
+            }
+            Err(e) => label.set_text(&format!("Error: {e}")),
+        }
+    });
+}
+```
+
+The convention `g_file_load_contents_async()` → `gio::File::load_contents_future()` is uniform: every GIO async function `foo_async()` has a corresponding `foo_future()` method that returns an `impl Future`. Background work that must not block the UI thread:
+
+```rust
+// spawn_blocking submits to a thread pool and returns a Future on the main context.
+let handle = gio::spawn_blocking(|| {
+    std::fs::read_to_string("/etc/os-release")  // blocking I/O — safe on worker thread
+});
+let contents = handle.await.unwrap();  // awaited on the main context
+```
+
+`GCancellable` integrates with async: `cancellable.cancel()` propagates a `Cancelled` error to any in-flight `_future()` call that accepted it.
+
+### 12.6 Custom Widgets and Composite Templates in Rust
+
+**Subclassing a widget.** The `glib::subclass` module enables defining new GObject types in Rust, including GObject properties and signals:
 
 ```rust
 use gtk4::glib;
 use gtk4::subclass::prelude::*;
+use std::cell::Cell;
 
 #[derive(Default)]
-pub struct MeterWidget { fraction: std::cell::Cell<f64> }
+pub struct MeterWidget {
+    fraction: Cell<f64>,
+}
 
 #[glib::object_subclass]
 impl ObjectSubclass for MeterWidget {
-    const NAME: &'static str = "MeterWidget";
-    type Type = super::MeterWidget;
+    const NAME: &'static str = "MeterWidget";   // globally unique in the process
+    type Type = super::MeterWidget;              // the public handle type
     type ParentType = gtk4::Widget;
 }
-impl ObjectImpl for MeterWidget {}
+
+impl ObjectImpl for MeterWidget {
+    fn properties() -> &'static [glib::ParamSpec] {
+        static PROPS: std::sync::OnceLock<Vec<glib::ParamSpec>> = std::sync::OnceLock::new();
+        PROPS.get_or_init(|| vec![
+            glib::ParamSpecDouble::builder("fraction")
+                .minimum(0.0).maximum(1.0).default_value(0.0)
+                .build(),
+        ])
+    }
+    fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
+        match pspec.name() {
+            "fraction" => {
+                self.fraction.set(value.get::<f64>().unwrap());
+                self.obj().queue_draw();
+            }
+            _ => unimplemented!(),
+        }
+    }
+    fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
+        match pspec.name() {
+            "fraction" => self.fraction.get().to_value(),
+            _          => unimplemented!(),
+        }
+    }
+}
+
 impl WidgetImpl for MeterWidget {
     fn snapshot(&self, snapshot: &gtk4::Snapshot) {
-        let w = self.obj().width() as f32;
-        let h = self.obj().height() as f32;
+        let w    = self.obj().width()  as f32;
+        let h    = self.obj().height() as f32;
         let frac = self.fraction.get() as f32;
+        snapshot.append_color(
+            &gdk4::RGBA::new(0.2, 0.2, 0.2, 1.0),
+            &graphene::Rect::new(0.0, 0.0, w, h));
         snapshot.append_color(
             &gdk4::RGBA::new(0.2, 0.55, 0.95, 1.0),
             &graphene::Rect::new(0.0, 0.0, w * frac, h));
     }
 }
+
+// Public GObject handle — the type the rest of the crate uses.
+glib::wrapper! {
+    pub struct MeterWidget(ObjectSubclass<imp::MeterWidget>) @extends gtk4::Widget;
+}
+impl MeterWidget {
+    pub fn new() -> Self { glib::Object::new() }
+    pub fn set_fraction(&self, v: f64) { self.set_property("fraction", v); }
+}
 ```
 
-The `#[glib::object_subclass]` macro generates the `get_type()` function; `ObjectImpl`/`WidgetImpl` traits map to the GObject class-init vtable. [Source](https://gtk-rs.org/gtk4-rs/stable/latest/docs/gtk4/index.html)
+The `#[glib::object_subclass]` procedural macro generates the `get_type()` registration. `ObjectImpl`/`WidgetImpl` traits correspond to the C class-init vtable overrides.  [Source](https://gtk-rs.org/gtk4-rs/stable/latest/docs/gtk4/index.html)
+
+**Composite templates.** The `CompositeTemplate` derive macro wires `#[template_child]` fields to named ids in a `.ui` file, calling `bind_template()` and `init_template()` at the correct lifecycle points: [Source](https://gtk-rs.org/gtk4-rs/stable/latest/docs/gtk4/subclass/widget/trait.CompositeTemplate.html)
+
+```rust
+use gtk4::{glib, CompositeTemplate};
+use gtk4::subclass::prelude::*;
+
+#[derive(Default, CompositeTemplate)]
+#[template(resource = "/com/example/myapp/window.ui")]
+pub struct MyWindow {
+    #[template_child]
+    pub header_bar:  TemplateChild<libadwaita::HeaderBar>,
+    #[template_child]
+    pub count_label: TemplateChild<gtk4::Label>,
+    #[template_child]
+    pub open_button: TemplateChild<gtk4::Button>,
+}
+
+#[glib::object_subclass]
+impl ObjectSubclass for MyWindow {
+    const NAME: &'static str = "MyWindow";
+    type Type = super::MyWindow;
+    type ParentType = libadwaita::ApplicationWindow;
+
+    fn class_init(klass: &mut Self::Class) {
+        klass.bind_template();
+        // Optionally bind template callbacks declared in the .ui file
+        klass.bind_template_callbacks();
+    }
+    fn instance_init(obj: &glib::subclass::InitializingObject<Self>) {
+        obj.init_template();
+    }
+}
+impl ObjectImpl   for MyWindow { fn constructed(&self) { self.parent_constructed(); } }
+impl WidgetImpl   for MyWindow {}
+impl WindowImpl   for MyWindow {}
+impl ApplicationWindowImpl for MyWindow {}
+impl AdwApplicationWindowImpl for MyWindow {}
+```
+
+The `TemplateChild<T>` field is a smart pointer that panics if accessed before `init_template()` — which fires during `g_object_new()`, so by the time `ObjectImpl::constructed()` runs it is safe to access all children.
+
+### 12.7 relm4: The Elm Architecture for GTK4
+
+**relm4** is an independently maintained crate that layers an Elm/Redux message-passing architecture over gtk4-rs: a component declares its state model, an `update()` function handling typed messages, and a `view!` macro that generates widget construction + property wiring. [Source](https://relm4.org/)
+
+```rust
+use relm4::prelude::*;
+
+struct App { counter: u8 }
+
+#[derive(Debug)]
+enum Msg { Increment, Decrement }
+
+#[relm4::component]
+impl SimpleComponent for App {
+    type Init   = u8;
+    type Input  = Msg;
+    type Output = ();
+
+    view! {
+        gtk4::Window {
+            set_title: Some("relm4 counter"),
+            set_default_size: (300, 100),
+
+            gtk4::Box {
+                set_orientation: gtk4::Orientation::Vertical,
+                set_spacing: 8,
+                set_margin_all: 16,
+
+                gtk4::Label {
+                    #[watch] set_label: &format!("Counter: {}", model.counter),
+                },
+                gtk4::Button::with_label("+") {
+                    connect_clicked => Msg::Increment,
+                },
+                gtk4::Button::with_label("−") {
+                    connect_clicked => Msg::Decrement,
+                },
+            }
+        }
+    }
+
+    fn init(init: u8, root: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
+        let model   = App { counter: init };
+        let widgets = view_output!();
+        ComponentParts { model, widgets }
+    }
+
+    fn update(&mut self, msg: Msg, _sender: ComponentSender<Self>) {
+        match msg {
+            Msg::Increment => self.counter = self.counter.saturating_add(1),
+            Msg::Decrement => self.counter = self.counter.saturating_sub(1),
+        }
+    }
+}
+
+fn main() {
+    let app = RelmApp::new("com.example.relm4");
+    app.run::<App>(0);
+}
+```
+
+The `#[watch]` annotation re-evaluates the expression each time `update()` returns and calls `queue_draw()`; property setters that are not `#[watch]`-annotated run only during `init`. relm4 `Worker` components run `update()` on a background thread — suitable for compute-heavy logic — while `AsyncComponent` uses an async update loop driven by `glib::MainContext`. The macro expands to gtk4-rs calls, so relm4 is a zero-overhead ergonomic layer, not a separate rendering path.
 
 ---
 
-## 13. WebKitGTK: Embedding Web Content
+## 13. GTK4 Application Programming Guide
+
+This section covers the project-level infrastructure a production GTK4 application needs: the Meson build system, GResource asset bundling, the Blueprint UI language, GSettings schemas, and Flatpak packaging.
+
+### 13.1 Project Structure and Meson Build
+
+GTK4 projects use **Meson** as the canonical build system. The GNOME Meson module (`import('gnome')`) provides helpers for GResource compilation, GSettings schema compilation, GIR generation, and Blueprint transpilation. A minimal layout: [Source](https://mesonbuild.com/GNOME-module.html)
+
+```
+my-app/
+├── meson.build
+├── data/
+│   ├── com.example.MyApp.gschema.xml
+│   └── resources/
+│       ├── my-app.gresource.xml
+│       ├── window.blp          (Blueprint source)
+│       └── style.css
+├── po/                         (translation files)
+└── src/
+    ├── main.c
+    ├── my-window.c
+    └── my-window.h
+```
+
+```meson
+# meson.build
+project('my-app', 'c',
+  version: '1.0.0',
+  default_options: ['c_std=c17', 'warning_level=2'])
+
+gnome  = import('gnome')
+cc     = meson.get_compiler('c')
+
+gtk4_dep = dependency('gtk4',        version: '>= 4.14')
+adw_dep  = dependency('libadwaita-1', version: '>= 1.5')
+
+# Compile GResource bundle (embeds assets into a C translation unit)
+resources = gnome.compile_resources(
+  'my-app-resources',
+  'data/resources/my-app.gresource.xml',
+  source_dir: 'data/resources',
+  c_name: 'my_app',
+)
+
+# Compile GSettings schemas for development (installed separately via install_data)
+gnome.compile_schemas(
+  depend_files: 'data/com.example.MyApp.gschema.xml')
+
+executable('my-app',
+  sources: ['src/main.c', 'src/my-window.c', resources],
+  dependencies: [gtk4_dep, adw_dep],
+  install: true,
+)
+
+install_data('data/com.example.MyApp.gschema.xml',
+  install_dir: get_option('datadir') / 'glib-2.0' / 'schemas')
+```
+
+Building:
+
+```bash
+meson setup _build --prefix=/usr
+ninja -C _build
+GSETTINGS_SCHEMA_DIR=_build/data ninja -C _build run   # dev run with local schemas
+```
+
+**Rust projects** use `cargo` directly or the `meson-cargo` integration. The most common pattern is a `build.rs` script that calls `blueprint-compiler` and `glib-compile-resources`; alternatively, the GNOME Meson module can wrap a Cargo build target.
+
+### 13.2 GResource: Bundling Assets
+
+GResource embeds application assets (UI files, CSS, icons, shader sources) into the binary as a read-only section, eliminating runtime file-system dependency and making the application relocatable. [Source](https://docs.gtk.org/gio/struct.Resource.html)
+
+```xml
+<!-- data/resources/my-app.gresource.xml -->
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/com/example/MyApp">
+    <file preprocess="xml-stripblanks">window.ui</file>  <!-- strip whitespace from XML -->
+    <file compressed="true">style.css</file>             <!-- zlib-compress at build time -->
+    <file>icons/app-icon.svg</file>
+  </gresource>
+</gresources>
+```
+
+`glib-compile-resources` (invoked by `gnome.compile_resources()`) processes the XML and produces a C source file containing a `g_resources_register()` call at library-init time. At runtime, resources are accessed via the `resource://` URI scheme or the API directly:
+
+```c
+/* Load a resource as bytes */
+GBytes *css_bytes = g_resources_lookup_data (
+    "/com/example/MyApp/style.css", G_RESOURCE_LOOKUP_FLAGS_NONE, NULL);
+
+/* Install bundled CSS */
+GtkCssProvider *prov = gtk_css_provider_new ();
+gtk_css_provider_load_from_resource (prov, "/com/example/MyApp/style.css");
+gtk_style_context_add_provider_for_display (
+    gdk_display_get_default (), GTK_STYLE_PROVIDER (prov),
+    GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+
+/* GtkBuilder loads .ui from a resource URI */
+GtkBuilder *builder = gtk_builder_new_from_resource ("/com/example/MyApp/window.ui");
+```
+
+In Rust, `gio::resources_register_include!("my-app-resources.gresource")` (generated by `build.rs`) embeds the compiled resource bundle as a `&'static [u8]` and registers it at startup.
+
+### 13.3 Blueprint: Ergonomic UI Description
+
+**Blueprint** (`.blp`) is a modern, concise alternative to the raw XML `.ui` format. The Blueprint compiler (`blueprint-compiler`) transpiles `.blp` to `.ui` at build time; the output is identical to hand-written XML and is consumed by `GtkBuilder` unchanged. Blueprint has a typed schema of GTK's property/signal system, so typos in property names or mismatched signal signatures are caught at compile time — not at runtime. [Source](https://jwestman.pages.gitlab.gnome.org/blueprint-compiler/)
+
+```blp
+// window.blp
+using Gtk 4.0;
+using Adw 1;
+
+template $MyWindow : Adw.ApplicationWindow {
+  title: _("My App");
+  default-width: 800;
+  default-height: 600;
+
+  Adw.ToolbarView {
+    [top]
+    Adw.HeaderBar {
+      [end]
+      Button open_button {
+        label: _("Open…");
+        styles ["suggested-action"]
+      }
+    }
+
+    content: Adw.StatusPage {
+      title: _("Welcome");
+      description: _("Open a file to get started.");
+      icon-name: "document-open-symbolic";
+    };
+  }
+}
+```
+
+Integrate Blueprint in the Meson build:
+
+```meson
+blueprint_compiler = find_program('blueprint-compiler')
+
+blueprints = custom_target('blueprints',
+  input:   files('data/resources/window.blp'),
+  output:  'window.ui',
+  command: [blueprint_compiler, 'compile', '--output', '@OUTPUT@', '@INPUT@'],
+)
+
+# Pass blueprints as a dependency of compile_resources so Meson orders them correctly.
+resources = gnome.compile_resources(
+  'my-app-resources',
+  'data/resources/my-app.gresource.xml',
+  source_dir:   'data/resources',
+  dependencies: blueprints,
+)
+```
+
+Blueprint supports `styles`, `bind` expressions (one-way property binding in the UI file), `Gtk.Expression`-based bindings, signal connections, child type annotations (`[top]`, `[end]`, `[overlay]`), and translation markup (`_("…")`). The GNOME Builder IDE provides Blueprint syntax highlighting and completion.
+
+### 13.4 GSettings Schema
+
+GSettings provides type-safe, validated, schema-backed application configuration stored in `dconf`. The schema file is installed to `$datadir/glib-2.0/schemas/` and compiled with `glib-compile-schemas`. [Source](https://docs.gtk.org/gio/class.Settings.html)
+
+```xml
+<!-- com.example.MyApp.gschema.xml -->
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="com.example.MyApp" path="/com/example/my-app/">
+    <key name="window-width"  type="i">
+      <default>800</default>
+      <summary>Window width</summary>
+    </key>
+    <key name="window-height" type="i">
+      <default>600</default>
+    </key>
+    <key name="show-toolbar"  type="b">
+      <default>true</default>
+    </key>
+    <key name="sort-order" enum="com.example.MyApp.SortOrder">
+      <default>'name'</default>
+    </key>
+  </schema>
+  <enum id="com.example.MyApp.SortOrder">
+    <value nick="name" value="0"/>
+    <value nick="date" value="1"/>
+  </enum>
+</schemalist>
+```
+
+Use the schema from C:
+
+```c
+GSettings *s = g_settings_new ("com.example.MyApp");
+
+/* Typed read/write */
+int width = g_settings_get_int (s, "window-width");
+g_settings_set_int (s, "window-width", gtk_widget_get_width (GTK_WIDGET (window)));
+
+/* Two-way binding to a widget property */
+g_settings_bind (s, "show-toolbar",
+                 toolbar, "visible",
+                 G_SETTINGS_BIND_DEFAULT);
+
+/* React to external changes (e.g. gsettings set … from another process) */
+g_signal_connect (s, "changed::sort-order",
+                  G_CALLBACK (on_sort_changed), self);
+```
+
+During development, `GSETTINGS_SCHEMA_DIR=_build/data` makes the uninstalled schema visible. `gsettings get com.example.MyApp window-width` inspects values from the CLI; `dconf watch /com/example/my-app/` streams live changes.
+
+### 13.5 Flatpak Packaging
+
+Most GNOME applications are distributed as **Flatpaks** using the `org.gnome.Platform` runtime, which bundles GTK4, libadwaita, GLib, WebKitGTK, and the GNOME stack. [Source](https://docs.flatpak.org/en/latest/)
+
+```yaml
+# com.example.MyApp.yml
+app-id: com.example.MyApp
+runtime: org.gnome.Platform
+runtime-version: '48'
+sdk: org.gnome.Sdk
+command: my-app
+
+finish-args:
+  - --share=ipc
+  - --socket=wayland          # Wayland socket access
+  - --socket=fallback-x11     # XWayland fallback for non-Wayland desktops
+  - --device=dri              # /dev/dri/* for GPU rendering
+  - --filesystem=home         # user home directory access
+
+modules:
+  - name: my-app
+    buildsystem: meson
+    config-opts:
+      - -Dbuildtype=release
+    sources:
+      - type: dir
+        path: .
+```
+
+`--device=dri` grants `openat("/dev/dri/renderD128")` through the Flatpak portal, required for `GskVulkanRenderer` and `GskNglRenderer`. The Flatpak sandbox intercepts the system call and forwards it. `--filesystem=home` can be narrowed to `--filesystem=xdg-documents` or `--filesystem=xdg-download` for least-privilege access; the `org.freedesktop.portal.FileChooser` portal (Ch111) provides sandboxed file picker access without `--filesystem`.
+
+Build and test a Flatpak locally:
+
+```bash
+flatpak-builder --user --install --force-clean _flatpak-build com.example.MyApp.yml
+flatpak run com.example.MyApp
+```
+
+**Rust applications** replace the Meson module with a Cargo module in the Flatpak manifest, using `buildsystem: simple` and a `build-commands` section that runs `cargo build --release` with the Flatpak SDK's Rust toolchain or a pre-downloaded cargo sources extension.
+
+---
+
+## 14. WebKitGTK: Embedding Web Content
 
 **WebKitGTK** is the GTK port of the WebKit engine — the primary way to embed live HTML/CSS/JavaScript in a native GTK application. Its consumers include GNOME Web (Epiphany), Geary, Evolution, and Tauri's Linux backend (Ch193). From GTK4's perspective the `WebKitWebView` is an ordinary `GtkWidget`; behind it sits a full multi-process browser with its own GPU compositor.
 
@@ -1153,7 +2346,7 @@ webkit_web_view_load_uri (view, "https://gnome.org/");
 
 ---
 
-## 14. Font and Text Rendering
+## 15. Font and Text Rendering
 
 GTK4 routes all text through **Pango**, which layers over the shared FreeType/HarfBuzz/Fontconfig stack covered in depth in Ch105. The pipeline for a paragraph:
 
@@ -1181,7 +2374,7 @@ graph LR
 
 ---
 
-## 15. Performance and Debugging
+## 16. Performance and Debugging
 
 GTK4's render pipeline is unusually observable, because the node tree is a first-class serialisable object and every stage is gated behind a debug flag.
 
@@ -1206,10 +2399,10 @@ GDK_DEBUG=dmabuf,vulkan myapp         # trace dmabuf import and Vulkan surface s
 
 ---
 
-## 16. Integrations
+## 17. Integrations
 
 - **Ch2 (KMS Atomic API and Overlay Planes)** — `GskSubsurfaceNode` (§4.6) drives `wl_subsurface` promotion to KMS overlay planes via `TEST_ONLY` atomic commits, the same zero-copy scanout mechanism used for video and terminal graphics.
-- **Ch4 (GPU Memory Management)** — the GEM/DMA-BUF/GBM and DRM-format-modifier primitives; `GdkDmabufTextureBuilder` (§6.4) imports GBM-allocated dmabufs and negotiates modifiers, and the WebKit content process (§9) exports frames the same way.
+- **Ch4 (GPU Memory Management)** — the GEM/DMA-BUF/GBM and DRM-format-modifier primitives; `GdkDmabufTextureBuilder` (§6.4) imports GBM-allocated dmabufs and negotiates modifiers, and the WebKit content process (§14) exports frames the same way.
 - **Ch150 (EGL Architecture and DMA-BUF Integration)** — the EGL Wayland platform (`wl_egl_window`, `eglSwapBuffers`) behind the GL path (§4.2) and the `EGL_LINUX_DMA_BUF_EXT` import used to turn a dmabuf into a GL texture (§6.4).
 - **Ch14 (NIR Shader IR) / Ch16 (Mesa Vulkan Common, WSI)** — `GskVulkanRenderer`'s build-time SPIR-V (§3.2) feeds Mesa Vulkan drivers and NIR; WSI explicit sync underpins §4.4.
 - **Ch18 (Mesa Vulkan Drivers)** — `GskVulkanRenderer` is a client of ANV/RADV/NVK; `GskNglRenderer` and WebKit's content process use Mesa's OpenGL/GLES state trackers.
@@ -1219,7 +2412,7 @@ GDK_DEBUG=dmabuf,vulkan myapp         # trace dmabuf import and Vulkan surface s
 - **Ch45 (Terminal Integration with the Compositor Stack)** — VTE (the GNOME terminal widget) is a GTK4 widget rendering through this exact GSK pipeline; shares the overlay-plane path of §4.6.
 - **Ch105 (Font Rendering — FreeType2, HarfBuzz, and the Text Pipeline)** — the text primitives beneath Pango (§10); glyph-atlas management is shared conceptual ground with Skia and terminal renderers.
 - **Ch75 (Explicit GPU Synchronisation)** — `wp_linux_drm_syncobj_v1` (§4.4) in the broader context of DRM timeline syncobjs.
-- **Ch193 (Tauri)** — embeds WebKitGTK (§9) as its Linux WebView; tracks the `webkit2gtk-4.1` → `webkitgtk-6.0` migration.
+- **Ch193 (Tauri)** — embeds WebKitGTK (§14) as its Linux WebView; tracks the `webkit2gtk-4.1` → `webkitgtk-6.0` migration.
 
 ---
 
@@ -1264,3 +2457,14 @@ GDK_DEBUG=dmabuf,vulkan myapp         # trace dmabuf import and Vulkan surface s
 - GtkDragSource — https://docs.gtk.org/gtk4/class.DragSource.html
 - GtkEventController — https://docs.gtk.org/gtk4/class.EventController.html
 - gtk4-rs (Rust bindings) — https://gtk-rs.org/gtk4-rs/stable/latest/docs/gtk4/index.html
+- gtk4-rs glib::clone! macro — https://gtk-rs.org/gtk4-rs/stable/latest/docs/glib/macro.clone.html
+- gtk4-rs glib::MainContext — https://gtk-rs.org/gtk4-rs/stable/latest/docs/glib/struct.MainContext.html
+- gtk4-rs CompositeTemplate — https://gtk-rs.org/gtk4-rs/stable/latest/docs/gtk4/subclass/widget/trait.CompositeTemplate.html
+- relm4 — https://relm4.org/
+- Blueprint compiler — https://jwestman.pages.gitlab.gnome.org/blueprint-compiler/
+- GLib option context — https://docs.gtk.org/glib/struct.OptionContext.html
+- GLib logging — https://docs.gtk.org/glib/func.log.html
+- GLib threading — https://docs.gtk.org/glib/struct.Thread.html
+- GLib GResource — https://docs.gtk.org/gio/struct.Resource.html
+- Meson GNOME module — https://mesonbuild.com/GNOME-module.html
+- Flatpak documentation — https://docs.flatpak.org/en/latest/
