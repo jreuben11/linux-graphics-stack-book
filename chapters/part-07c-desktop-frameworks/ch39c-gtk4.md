@@ -804,6 +804,160 @@ graph TD
 
 Every GTK4 type — `GtkWidget`, `GskRenderer`, `GdkTexture`, `AdwApplication` — is a **GObject**. GObject is GLib's runtime type system for C: single inheritance, interfaces, reference counting, signals, and introspectable properties, with zero preprocessor dependency beyond a handful of registration macros. Understanding its mechanics is required to read GTK internals, write custom widgets, implement GInterfaces, or understand how language bindings project the C API into other languages. [Source](https://docs.gtk.org/gobject/)
 
+**GTK4 widget type hierarchy — overview.** The diagram below maps the major `GtkWidget` subclasses and sibling GObject families (GDK, GSK, GDK textures). Every node is a GObject subclass unless marked otherwise.
+
+```mermaid
+classDiagram
+    direction TB
+    class GTypeInstance {
+        +GTypeClass* g_class
+    }
+    class GObject {
+        +gint ref_count
+        +GData* qdata
+    }
+    class GInitiallyUnowned {
+        floating ref on construction
+    }
+    class GtkWidget {
+        -GtkWidgetPrivate* priv
+    }
+
+    GObject --|> GTypeInstance : embeds (first member)
+    GInitiallyUnowned --|> GObject : embeds (first member)
+    GtkWidget --|> GInitiallyUnowned : embeds (first member)
+
+    GtkBox --|> GtkWidget
+    GtkGrid --|> GtkWidget
+    GtkStack --|> GtkWidget
+    GtkOverlay --|> GtkWidget
+    GtkScrolledWindow --|> GtkWidget
+    GtkPaned --|> GtkWidget
+    GtkFlowBox --|> GtkWidget
+
+    GtkButton --|> GtkWidget
+    GtkToggleButton --|> GtkButton
+    GtkCheckButton --|> GtkButton
+    GtkMenuButton --|> GtkWidget
+
+    GtkLabel --|> GtkWidget
+    GtkImage --|> GtkWidget
+    GtkPicture --|> GtkWidget
+    GtkEntry --|> GtkWidget
+    GtkTextView --|> GtkWidget
+    GtkScale --|> GtkWidget
+    GtkSwitch --|> GtkWidget
+    GtkDropDown --|> GtkWidget
+
+    GtkListView --|> GtkWidget
+    GtkGridView --|> GtkWidget
+    GtkColumnView --|> GtkWidget
+
+    GtkGLArea --|> GtkWidget
+    GtkVideo --|> GtkWidget
+
+    GtkWindow --|> GtkWidget
+    GtkApplicationWindow --|> GtkWindow
+    AdwApplicationWindow --|> GtkApplicationWindow
+    AdwWindow --|> GtkWindow
+    AdwDialog --|> GtkWidget
+```
+
+**Key sibling GObject families (not GtkWidget).** These types are GObject subclasses used by the GTK rendering pipeline but are not widgets themselves.
+
+```mermaid
+classDiagram
+    direction TB
+    class GObject
+    class GdkDisplay {
+        get_default()$
+        get_monitors()
+        get_clipboard()
+        get_default_seat()
+    }
+    class GdkWaylandDisplay {
+        get_wl_display()
+        get_wl_compositor()
+    }
+    class GdkX11Display {
+        get_xdisplay()
+    }
+    class GdkSurface {
+        get_width()
+        get_height()
+        get_scale()
+        queue_render()
+    }
+    class GdkFrameClock {
+        get_frame_time()
+        request_phase()
+        begin_updating()
+    }
+    class GdkDrawContext {
+        <<abstract>>
+        get_display()
+        get_surface()
+        begin_frame()
+        end_frame()
+    }
+    class GdkGLContext {
+        realize()
+        make_current()
+    }
+    class GdkVulkanContext {
+        get_device()
+        get_queue()
+    }
+    class GdkTexture {
+        <<abstract>>
+        get_width()
+        get_height()
+        get_format()
+        download()
+    }
+    class GdkGLTexture {
+        get_context()
+        get_id()
+    }
+    class GdkVulkanTexture {
+        get_image()
+    }
+    class GdkDmabufTexture {
+        get_dmabuf()
+    }
+    class GdkMemoryTexture {
+        new_from_data()$
+    }
+    class GskRenderer {
+        <<abstract>>
+        realize()
+        unrealize()
+        render()
+        render_texture()
+    }
+    class GskVulkanRenderer
+    class GskNglRenderer
+    class GskCairoRenderer
+
+    GdkDisplay --|> GObject
+    GdkWaylandDisplay --|> GdkDisplay
+    GdkX11Display --|> GdkDisplay
+    GdkSurface --|> GObject
+    GdkFrameClock --|> GObject
+    GdkDrawContext --|> GObject
+    GdkGLContext --|> GdkDrawContext
+    GdkVulkanContext --|> GdkDrawContext
+    GdkTexture --|> GObject
+    GdkGLTexture --|> GdkTexture
+    GdkVulkanTexture --|> GdkTexture
+    GdkDmabufTexture --|> GdkTexture
+    GdkMemoryTexture --|> GdkTexture
+    GskRenderer --|> GObject
+    GskVulkanRenderer --|> GskRenderer
+    GskNglRenderer --|> GskRenderer
+    GskCairoRenderer --|> GskRenderer
+```
+
 ### 9.1 Instance and Class Struct Layout
 
 GObject implements single inheritance through **C struct embedding**: the first member of every instance struct must be its parent's instance struct, and the first member of every class struct must be its parent's class struct. Because C guarantees a struct's address equals the address of its first member, a pointer to a subtype can be safely cast to a pointer to any ancestor type — no offset adjustment required.
@@ -871,6 +1025,147 @@ struct _MeterWidgetClass {
 ```
 
 The hierarchy of embedded structs forms a **linear prefix**: any `MeterWidget *` is simultaneously a valid `GtkWidget *`, `GObject *`, and `GTypeInstance *` by C's pointer-to-first-member rule. The casting macros (§9.3) validate and document these casts.
+
+**GLib type system core machinery.** The three structs that everything builds on. Every instance struct starts with `GTypeInstance`; every class (vtable) struct starts with `GTypeClass`; every interface vtable struct starts with `GTypeInterface`.
+
+```mermaid
+classDiagram
+    direction LR
+    class GTypeClass {
+        +GType g_type
+    }
+    class GTypeInstance {
+        +GTypeClass* g_class
+    }
+    class GTypeInterface {
+        +GType g_type
+        +GType g_instance_type
+    }
+    GTypeInstance --> GTypeClass : g_class points to shared vtable
+    note for GTypeClass "First field of every class struct\nG_TYPE_FROM_CLASS(klass) reads .g_type\ng_type_class_ref() pins the class in memory"
+    note for GTypeInstance "First field of every instance struct\nG_TYPE_FROM_INSTANCE(obj) = obj→g_class→g_type"
+    note for GTypeInterface "First field of every interface vtable\ng_type_add_interface_static() registers it"
+```
+
+**Instance struct embedding chain** — the C pseudo-inheritance model from `GTypeInstance` down to a custom widget.
+
+```mermaid
+classDiagram
+    direction TB
+    class GTypeInstance {
+        +GTypeClass* g_class
+    }
+    class GObject {
+        +GTypeInstance g_type_instance
+        +volatile gint ref_count
+        +GData* qdata
+    }
+    class GInitiallyUnowned {
+        +GObject parent_instance
+        floating-ref flag set at construction
+        g_object_ref_sink clears flag
+    }
+    class GtkWidget {
+        +GInitiallyUnowned parent_instance
+        -GtkWidgetPrivate* priv
+    }
+    class GtkWindow {
+        +GtkWidget parent_instance
+    }
+    class GtkApplicationWindow {
+        +GtkWindow parent_instance
+    }
+    class AdwApplicationWindow {
+        +GtkApplicationWindow parent_instance
+    }
+    class GtkBox {
+        +GtkWidget parent_instance
+    }
+    class GtkButton {
+        +GtkWidget parent_instance
+    }
+    class MeterWidget {
+        +GtkWidget parent_instance
+        +gdouble fraction
+        +GdkRGBA fill_color
+    }
+
+    GObject --|> GTypeInstance : first member
+    GInitiallyUnowned --|> GObject : first member
+    GtkWidget --|> GInitiallyUnowned : first member
+    GtkWindow --|> GtkWidget : first member
+    GtkApplicationWindow --|> GtkWindow : first member
+    AdwApplicationWindow --|> GtkApplicationWindow : first member
+    GtkBox --|> GtkWidget : first member
+    GtkButton --|> GtkWidget : first member
+    MeterWidget --|> GtkWidget : first member
+```
+
+**Class struct (vtable) embedding chain** — the parallel chain of shared class structs, one per type registered in the type system.
+
+```mermaid
+classDiagram
+    direction TB
+    class GTypeClass {
+        +GType g_type
+    }
+    class GObjectClass {
+        +GTypeClass g_type_class
+        +GType value_type
+        constructor()
+        set_property()
+        get_property()
+        dispose()
+        finalize()
+        notify()
+        constructed()
+    }
+    class GInitiallyUnownedClass {
+        +GObjectClass parent_class
+        no new vtable slots
+    }
+    class GtkWidgetClass {
+        +GInitiallyUnownedClass parent_class
+        snapshot()
+        measure()
+        size_allocate()
+        realize()
+        unrealize()
+        map()
+        unmap()
+        root()
+        unroot()
+        focus()
+        grab_focus()
+        css_changed()
+        state_flags_changed()
+        get_request_mode()
+        compute_expand()
+    }
+    class GtkWindowClass {
+        +GtkWidgetClass parent_class
+        activate_focus()
+        activate_default()
+        keys_changed()
+        enable_debugging()
+        close_request()
+    }
+    class GtkBoxClass {
+        +GtkWidgetClass parent_class
+        no new vtable slots
+    }
+    class MeterWidgetClass {
+        +GtkWidgetClass parent_class
+        value_changed()
+    }
+
+    GObjectClass --|> GTypeClass : first member
+    GInitiallyUnownedClass --|> GObjectClass : first member
+    GtkWidgetClass --|> GInitiallyUnownedClass : first member
+    GtkWindowClass --|> GtkWidgetClass : first member
+    GtkBoxClass --|> GtkWidgetClass : first member
+    MeterWidgetClass --|> GtkWidgetClass : first member
+```
 
 ### 9.2 G_DEFINE_TYPE: What the Macro Generates
 
@@ -1008,6 +1303,47 @@ The very first field of every class struct is a `GTypeClass` which contains the 
 ```
 
 `G_TYPE_CHECK_INSTANCE_CAST` performs a **downcast**: it asserts (in debug builds) that `obj->g_type_instance.g_class->g_type` is `METER_TYPE_WIDGET` or a descendant. `IS_METER_WIDGET` is the corresponding `instanceof` check. `METER_WIDGET_GET_CLASS` recovers the class pointer from an instance — useful when a virtual method override needs to read class-level data.
+
+**Runtime instance ↔ class pointer relationship.** Each instance carries `g_type_instance.g_class`, a pointer to the **single shared class struct** for that type. All `GtkBox` instances share the same `GtkBoxClass` vtable object in memory. Up-casting a class pointer (e.g. `G_OBJECT_CLASS(klass)`) is safe because class structs embed their parent as the first member.
+
+```mermaid
+classDiagram
+    direction LR
+    class box1 {
+        <<GtkBox instance>>
+        GtkWidget parent_instance
+        priv data
+    }
+    class box2 {
+        <<GtkBox instance>>
+        GtkWidget parent_instance
+        priv data
+    }
+    class GtkBoxClass {
+        <<shared vtable — one per process>>
+        GtkWidgetClass parent_class
+        no new vtable slots
+    }
+    class GtkWidgetClass {
+        <<shared vtable>>
+        snapshot()
+        measure()
+        size_allocate()
+    }
+    class GObjectClass {
+        <<shared vtable>>
+        dispose()
+        finalize()
+        constructed()
+    }
+
+    box1 --> GtkBoxClass : g_class
+    box2 --> GtkBoxClass : g_class
+    GtkBoxClass --|> GtkWidgetClass : parent_class (first member)
+    GtkWidgetClass --|> GObjectClass : parent_class (first member)
+
+    note for GtkBoxClass "G_TYPE_FROM_CLASS(klass)\n  → ((GTypeClass*)klass)->g_type\nG_OBJECT_CLASS(klass)\n  → upcast to GObjectClass*\nGTK_WIDGET_CLASS(klass)\n  → upcast to GtkWidgetClass*"
+```
 
 ### 9.4 GObjectClass Vtable: constructed, dispose, finalize, set_property
 
@@ -1304,6 +1640,100 @@ gtk_accessible_update_state (accessible, GTK_ACCESSIBLE_STATE_BUSY, TRUE, -1);
 
 `G_IMPLEMENT_INTERFACE` inside the `_WITH_CODE` block calls `g_type_add_interface_static()`, registering the interface for this type and providing the vtable. At query time, `G_TYPE_CHECK_INSTANCE_TYPE(obj, GTK_TYPE_ACCESSIBLE)` traverses the interface list to confirm the cast is valid.
 
+**GtkWidget interface implementations.** `GtkWidget` implements three base interfaces unconditionally; concrete subclasses add more depending on their semantics.
+
+```mermaid
+classDiagram
+    direction TB
+    class GtkAccessible {
+        <<interface>>
+        get_at_context()
+        get_platform_state()
+        get_accessible_parent()
+        get_first_accessible_child()
+        get_next_accessible_sibling()
+        update_state()
+        update_property()
+        update_relation()
+        reset_state()
+        reset_property()
+        reset_relation()
+    }
+    class GtkBuildable {
+        <<interface>>
+        get_id()
+        set_id()
+        add_child()
+        set_buildable_property()
+        parser_finished()
+        get_internal_child()
+    }
+    class GtkConstraintTarget {
+        <<interface>>
+        no methods — marker interface
+    }
+    class GtkOrientable {
+        <<interface>>
+        get_orientation()
+        set_orientation()
+    }
+    class GtkScrollable {
+        <<interface>>
+        get_hadjustment()
+        set_hadjustment()
+        get_vadjustment()
+        set_vadjustment()
+        get_border()
+    }
+    class GtkEditable {
+        <<interface>>
+        get_text()
+        set_text()
+        get_position()
+        set_position()
+        select_region()
+        delete_selection()
+        get_selection_bounds()
+    }
+    class GtkActionable {
+        <<interface>>
+        get_action_name()
+        set_action_name()
+        get_action_target_value()
+        set_action_target_value()
+    }
+    class GtkWidget {
+        ALL widgets implement the three base interfaces
+    }
+    class GtkBox
+    class GtkGrid
+    class GtkListBase
+    class GtkScrolledWindow
+    class GtkViewport
+    class GtkEntry
+    class GtkText
+    class GtkSearchEntry
+    class GtkButton
+    class GtkToggleButton
+    class GtkCheckButton
+
+    GtkWidget ..|> GtkAccessible
+    GtkWidget ..|> GtkBuildable
+    GtkWidget ..|> GtkConstraintTarget
+    GtkBox ..|> GtkOrientable
+    GtkGrid ..|> GtkOrientable
+    GtkListBase ..|> GtkOrientable
+    GtkListBase ..|> GtkScrollable
+    GtkScrolledWindow ..|> GtkScrollable
+    GtkViewport ..|> GtkScrollable
+    GtkEntry ..|> GtkEditable
+    GtkText ..|> GtkEditable
+    GtkSearchEntry ..|> GtkEditable
+    GtkButton ..|> GtkActionable
+    GtkToggleButton ..|> GtkActionable
+    GtkCheckButton ..|> GtkActionable
+```
+
 ### 9.9 Reference Counting and Floating References
 
 GObjects are heap-allocated and reference-counted: `g_object_ref()` increments, `g_object_unref()` decrements. When the count reaches zero, `dispose` is called (clearing references and potentially triggering re-reference), then, once the count is permanently zero, `finalize` runs (freeing memory). [Source](https://docs.gtk.org/gobject/method.Object.unref.html)
@@ -1383,6 +1813,127 @@ fn main() {
     });
     app.run();
 }
+```
+
+**GskRenderNode type hierarchy.** `GskRenderNode` is registered as a GType but is **not** a `GObject` — it uses its own reference counting via `gsk_render_node_ref()`/`gsk_render_node_unref()`. Every node type has a corresponding `GskRenderNodeType` enum value returned by `gsk_render_node_get_node_type()`. [Source](https://docs.gtk.org/gsk4/class.RenderNode.html)
+
+```mermaid
+classDiagram
+    direction TB
+    class GskRenderNode {
+        <<GTypeInstance — NOT GObject>>
+        +GskRenderNodeType node_type
+        ref()
+        unref()
+        get_node_type()
+        get_bounds()
+        serialize()
+        write_to_file()
+    }
+    class GskContainerNode {
+        get_n_children()
+        get_child()
+    }
+    class GskColorNode {
+        get_color()
+    }
+    class GskTextureNode {
+        get_texture()
+    }
+    class GskTextureScaleNode {
+        get_texture()
+        get_filter()
+    }
+    class GskLinearGradientNode {
+        get_start()
+        get_end()
+        get_n_color_stops()
+        get_color_stops()
+    }
+    class GskRadialGradientNode {
+        get_center()
+        get_hradius()
+        get_vradius()
+    }
+    class GskTransformNode {
+        get_transform()
+        get_child()
+    }
+    class GskOpacityNode {
+        get_opacity()
+        get_child()
+    }
+    class GskBlurNode {
+        get_radius()
+        get_child()
+    }
+    class GskShadowNode {
+        get_n_shadows()
+        get_shadow()
+        get_child()
+    }
+    class GskRoundedClipNode {
+        get_clip()
+        get_child()
+    }
+    class GskClipNode {
+        get_clip()
+        get_child()
+    }
+    class GskTextNode {
+        get_font()
+        get_glyphs()
+        get_color()
+        get_offset()
+    }
+    class GskBorderNode {
+        get_outline()
+        get_widths()
+        get_colors()
+    }
+    class GskSubsurfaceNode {
+        get_child()
+        delegates to wl_subsurface or KMS plane
+    }
+    class GskCairoNode {
+        get_draw_context()
+        CPU rasterisation fallback
+    }
+    class GskGLShaderNode {
+        get_shader()
+        get_n_children()
+        get_args()
+    }
+    class GskMaskNode {
+        get_source()
+        get_mask()
+        get_mask_mode()
+    }
+    class GskBlendNode {
+        get_bottom_child()
+        get_top_child()
+        get_blend_mode()
+    }
+
+    GskContainerNode --|> GskRenderNode
+    GskColorNode --|> GskRenderNode
+    GskTextureNode --|> GskRenderNode
+    GskTextureScaleNode --|> GskRenderNode
+    GskLinearGradientNode --|> GskRenderNode
+    GskRadialGradientNode --|> GskRenderNode
+    GskTransformNode --|> GskRenderNode
+    GskOpacityNode --|> GskRenderNode
+    GskBlurNode --|> GskRenderNode
+    GskShadowNode --|> GskRenderNode
+    GskRoundedClipNode --|> GskRenderNode
+    GskClipNode --|> GskRenderNode
+    GskTextNode --|> GskRenderNode
+    GskBorderNode --|> GskRenderNode
+    GskSubsurfaceNode --|> GskRenderNode
+    GskCairoNode --|> GskRenderNode
+    GskGLShaderNode --|> GskRenderNode
+    GskMaskNode --|> GskRenderNode
+    GskBlendNode --|> GskRenderNode
 ```
 
 ---
