@@ -40,7 +40,8 @@
   - [8.1 Build System: CMake and flutter build linux](#81-build-system-cmake-and-flutter-build-linux)
   - [8.2 Packaging: Snap, AppImage, and Flatpak](#82-packaging-snap-appimage-and-flatpak)
 - [9. Performance and Debugging](#9-performance-and-debugging)
-- [10. Integrations](#10-integrations)
+- [10. Roadmap and Release Cadence](#10-roadmap-and-release-cadence)
+- [11. Integrations](#11-integrations)
 - [References](#references)
 
 ---
@@ -526,7 +527,32 @@ These annotations appear in both the DevTools timeline and any `perf`/`systrace`
 
 ---
 
-## 10. Integrations
+## 10. Roadmap and Release Cadence
+
+Flutter ships multiple stable releases per year on a continuous-delivery model. Flutter 3.44 (May 18, 2026), bundling Dart 3.12, is the current stable release. No Flutter 4 has been announced; the 3.x line continues as the active development branch. [[Source](https://en.wikipedia.org/wiki/Flutter_(software))]
+
+| Area | Status (mid-2026) |
+|------|-------------------|
+| Linux desktop label | Stable |
+| Default renderer on Linux | Skia |
+| Impeller — iOS / modern Android | Default |
+| Impeller — Linux (Vulkan) | In active development; not yet default |
+| Multi-window on Linux | In progress (Canonical partnership) |
+| Skia removal on Android 10+ | 2026 roadmap target |
+| Material/Cupertino extraction | In progress (3.44+) |
+| WebAssembly as default (web) | In progress for 2026 |
+
+**Impeller on Linux.** The official 2026 Flutter roadmap targets bringing Impeller to all three desktop platforms — macOS (Metal), Windows and Linux (Vulkan) — working toward a single unified rendering engine that eliminates the Skia maintenance burden. As of Flutter 3.44, Skia remains the default renderer on Linux desktop; the Linux Vulkan Impeller backend is in active development. Impeller is already the default on iOS (since Flutter 3.10) and modern Android. [[Source](https://flutter.dev/blog/flutter-darts-2026-roadmap)]
+
+**Multi-window.** The most significant functionality gap on Linux desktop is multi-window support — the ability to open multiple independent top-level windows from a single application. Canonical is the named partner driving this work. Single-window Flutter applications run without gaps on Linux; document-editor and IDE-panel workflows are the primary target for multi-window.
+
+**Dart language.** Dart 3 introduced sound null safety (required since 3.0), patterns, records, and sealed classes. Dart 3.12 continues with incremental language and compiler improvements. No Dart 4 is announced.
+
+**Material and Cupertino extraction.** The 3.44 release begins separating the Material Design and Cupertino widget libraries from the `flutter` monorepo core into independently versioned packages. This reduces startup cost for single-design-system applications and enables faster independent widget-library releases.
+
+**Skia removal on Android.** The 2026 roadmap targets removing legacy Skia from Android 10+ builds once Impeller coverage is sufficient. This is Android-specific and has no effect on the Linux timeline.
+
+## 11. Integrations
 
 - **Chapter 18 (Mesa Vulkan)** — Impeller's Vulkan backend is a standard Vulkan client: it calls `vkCreateInstance`, selects a physical device from Mesa's RADV, ANV, or NVK, and submits `VkCommandBuffer`s through `vkQueueSubmit`. The shader pipeline (SPIR-V compiled at build time, loaded as byte arrays) enters Mesa's NIR through `vk_spirv_to_nir()` exactly as described in Ch18.
 - **Chapter 20 (Wayland Protocol Fundamentals)** — the GTK embedder reaches the Wayland compositor through GDK's Wayland backend; flutter-elinux binds `wl_compositor` and `vkCreateWaylandSurfaceKHR` directly. Explicit sync (`wp_linux_drm_syncobj_v1`) will be wired through the embedder's `FlutterCompositor` callbacks as compositors enable it.

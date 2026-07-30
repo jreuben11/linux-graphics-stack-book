@@ -65,7 +65,8 @@
 - [14. KGlobalAccel — Global Shortcuts](#14-kglobalaccel--global-shortcuts)
 - [15. Additional Kirigami Components](#15-additional-kirigami-components)
 - [16. Performance and Debugging](#16-performance-and-debugging)
-- [17. Integrations](#17-integrations)
+- [17. Roadmap and Release Cadence](#17-roadmap-and-release-cadence)
+- [18. Integrations](#18-integrations)
 - [References](#references)
 
 ---
@@ -1198,7 +1199,33 @@ The general debugging philosophy across the Plasma stack is uniform because it i
 
 ---
 
-## 17. Integrations
+## 17. Roadmap and Release Cadence
+
+KDE Plasma ships on a four-month cycle — roughly three feature releases per year — with bugfix point releases throughout each series. The current stable series is Plasma 6.7 (June 2026). No LTS designation exists in the Plasma 6 line; all releases receive the same support window.
+
+| Release | Date | Milestone |
+|---------|------|-----------|
+| 6.5 | Oct 2025 | Automatic light/dark theme switching; modernised KMenuEdit |
+| 6.6 | Feb 2026 | Simultaneous HDR + night light; per-screen virtual desktops; improved drawing-tablet settings |
+| 6.7 | Jun 2026 | Simultaneous HDR + ICC profiles; KF 6.26 dependency (Qt 6.9) |
+| **6.8** | **Oct 2026** | **Wayland-only; X11 session removed; Qt 6.11, KF 6.30** |
+| 6.9 | Feb 2027 | Qt 6.12, KF 6.34 |
+
+[[Source: KDE Schedules](https://community.kde.org/Schedules/Plasma_6)]
+
+The 6.8 milestone is the most significant architectural transition in the Plasma 6 series: the X11 window-manager code path is removed entirely, and all users must be on Wayland. Plasma 6.7.7 (January 2027) marks the formal end of X11 window-manager support in point releases. As of Plasma 6.7, approximately 95% of Plasma users are already running Wayland sessions.
+
+**KWin Vulkan renderer.** The foundational Vulkan infrastructure for KWin — covering the DRM/KMS backend and a generic multi-GPU copy swapchain — landed experimentally in March 2026. Performance on tested hardware (AMD iGPU + eGPU, Intel iGPU + Nvidia dGPU) is roughly comparable to OpenGL. The renderer is not yet the default; remaining work includes porting KWin effects and plugins from OpenGL to Vulkan, completing additional backend coverage, and unlocking performance with Nvidia as the primary GPU. [[Source](https://www.phoronix.com/news/KDE-KWin-Vulkan-First-Step)]
+
+**HDR and color management.** Plasma 6.7 achieved simultaneous HDR display output and ICC color profiles — previously mutually exclusive. The 6.6 series added HDR calibration tooling and improved HDR metadata handling for Windows-HDR applications running under XWayland. KDE's HDR and VRR implementation is among the most complete of any Linux compositor. See §2.8 for technical details.
+
+**KDE Frameworks cadence.** KF 6 ships monthly. The version paired with each Plasma release is fixed in the schedule (Plasma 6.8 → KF 6.30 with Qt 6.11, Plasma 6.9 → KF 6.34 with Qt 6.12). Each KF release advances framework APIs in a backwards-compatible manner within the KF 6.x series; major widget additions such as the new `FormLayout` and `Badge` components in Kirigami arrived in KF 6.26.
+
+**Plasma Mobile.** Plasma Mobile tracks the main Plasma release series. Active 2026 development targets making the Plasma Setup workflow fully Kirigami-adaptive across phone and tablet form factors, tested on PinePhone and Snapdragon-based community devices running postmarketOS.
+
+**Plasma 7.** No timeline or design plans have been announced for Plasma 7. The Plasma 6 line continues indefinitely; the KDE 30th-anniversary window (October 2026) aligns with the Plasma 6.8 Wayland-only release.
+
+## 18. Integrations
 
 This chapter sits within a broader narrative about how a desktop is assembled from the graphics stack up. Key related chapters:
 

@@ -20,6 +20,7 @@
   - [7.4 Animation with Time Subscriptions](#74-animation-with-time-subscriptions)
 - [8. Accessibility](#8-accessibility)
 - [9. Performance and Debugging](#9-performance-and-debugging)
+- [Roadmap](#roadmap)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -846,6 +847,18 @@ Because the backend is `wgpu`, all of wgpu's diagnostics apply. Setting `WGPU_BA
 For frame-level profiling, an iced application built on wgpu can be captured with **RenderDoc** (its Vulkan submissions are ordinary `vkQueueSubmit` calls) to inspect per-pass timing and pipeline state. CPU-side, the **puffin** and **tracy** profilers integrate through `tracing` spans to attribute time across layout, tessellation, and the render passes. The combination — RenderDoc for the GPU timeline, tracy for the CPU timeline — localises whether a performance problem lives in the application's `view`/layout, in iced's batching, or in the driver.
 
 ---
+
+## Roadmap
+
+iced follows a feature-driven release cycle without fixed dates. Version 0.14.0 shipped December 7, 2025, and is described as the last experimental release before 1.0. [[Source](https://github.com/iced-rs/iced/releases/tag/0.14.0)]
+
+**Toward 1.0.** The 0.14 series was a comprehensive foundation-building release: reactive rendering, hot reloading, time-travel debugging, and headless testing landed alongside a family of new widgets — `table`, `grid`, `sensor`, `float`, `pin`. The canvas API gained `draw_with_bounds` and image drawing. The `Shader` widget (introduced in 0.12) provides direct access to custom wgpu shaders within iced layouts. IME (input-method) support with per-window customisation arrived in 0.14. The 1.0 release targets a stable public API with no further breaking changes; specific remaining blockers are tracked in the project roadmap diagram linked from the repository.
+
+**Renderer.** `iced_wgpu` is the default native renderer and is mature; the 0.14 release added concurrent image decode and upload and primitive culling for large widget trees. A `tiny_skia`-based software renderer provides a fallback for environments without GPU access. The wgpu renderer is not a 1.0 blocker.
+
+**Accessibility.** iced's accessibility integration routes through AccessKit, which provides an AT-SPI2 bridge on Linux and native bridges on Windows and macOS. The current status of the AccessKit integration should be verified against the repository for production deployments.
+
+**Platform.** The primary Wayland targets are the `iced_sctk` and `iced_layershell` backends (see §4). X11 support is available through winit's X11 path.
 
 ## Integrations
 

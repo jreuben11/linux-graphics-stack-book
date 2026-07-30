@@ -46,7 +46,8 @@
   - [11.3 ImGuizmo](#113-imguizmo)
   - [11.4 imgui_club](#114-imgui_club)
   - [11.5 Tracy Profiler](#115-tracy-profiler)
-- [12. Integrations](#12-integrations)
+- [12. Roadmap](#12-roadmap)
+- [13. Integrations](#13-integrations)
 
 ---
 
@@ -698,7 +699,19 @@ The profiling instrumentation in the application does not add an ImGui dependenc
 
 ---
 
-## 12. Integrations
+## 12. Roadmap
+
+Dear ImGui does not maintain a versioned public roadmap. Development is feature-driven and tracked through GitHub issues and the `TODO.txt` file in the repository. The 1.90+ release series (current as of mid-2026) represents a mature, stable state of the library; the major structural work (docking, tables, multi-viewport) is complete.
+
+**Recent milestones.** The docking and multi-viewport subsystems, long developed on separate branches, merged into the main release in the 1.89.x series. Tables — a flexible grid and spreadsheet widget — stabilised in 1.80 and are now part of the core API. The 1.90+ series has focused on correctness, performance on large widget trees, and reducing friction for backend authors rather than introducing new user-facing features.
+
+**Known development areas.** The `TODO.txt` file identifies areas of continued investment: navigation and gamepad/keyboard input (improving the experience for controller-based applications and games); `InputText` reliability and UTF-8 edge cases; drag-and-drop behaviour in complex scenarios; and platform-backend API clarification for multi-viewport window management. None of these carry version or date commitments.
+
+**ImGui v2.** No v2.0 has been announced. The project explicitly avoids breaking changes wherever possible; any future major version would represent a fundamental re-architecture rather than an incremental API cleanup.
+
+**Versioning and vendoring policy.** Dear ImGui uses a flat `IMGUI_VERSION` constant (e.g. `"1.91.0"`) rather than semantic versioning. Minor API additions are documented in `CHANGELOG.md`; deprecations receive multi-release notice before removal. The `imgui_impl_*` backends are considered part of the public surface and receive the same compatibility care as the core headers. The library is designed to be vendored — the source is intentionally self-contained in a small number of files precisely so that multi-year vendoring is stable and predictable.
+
+## 13. Integrations
 
 - **Ch18 (Mesa Vulkan — ANV, RADV, NVK)**: `ImGui_ImplVulkan_RenderDrawData()` submits draw calls through `vkCmdDrawIndexed` into the application's command buffer. The vertex and fragment shaders compiled from embedded SPIR-V bytecode enter Mesa's NIR compiler pipeline (Ch14) on ANV, RADV, and NVK. The sampled-image + sampler descriptor pair (since v1.92.8) interacts with Mesa's descriptor heap management.
 

@@ -34,6 +34,7 @@
 - [7. cosmic-settings: Anatomy of a Real COSMIC App](#7-cosmic-settings-anatomy-of-a-real-cosmic-app)
 - [8. XWayland and Legacy Application Support](#8-xwayland-and-legacy-application-support)
 - [9. Comparison: COSMIC vs GNOME vs KDE vs elementary](#9-comparison-cosmic-vs-gnome-vs-kde-vs-elementary)
+- [Roadmap](#roadmap)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -843,6 +844,18 @@ Native GTK3/GTK4 and Qt5/Qt6 applications generally run as Wayland clients direc
 The COSMIC-specific rows are the ones that matter for this book. Its compositor renders through GLES while its applications render through wgpu/Vulkan (§2.6) — a split none of the other three share, since GNOME and KDE use one toolkit's renderer end to end. Its configuration is human-readable RON files with per-application file watching (§5, §6.3) rather than a binary/keyed database like dconf or an INI store like KConfig. And auto-tiling is a first-class, built-in window-management mode rather than an extension or script. What COSMIC does *not* yet have, relative to GNOME and KDE, is a decade of ecosystem maturity: the API is explicitly unstable, the third-party application set is young, and some polish and accessibility work is ongoing as the 1.0.x series matures.
 
 ---
+
+## Roadmap
+
+COSMIC Desktop reached its stable **Epoch 1** release on December 11, 2025, concluding approximately one year of public alpha and beta testing. It shipped as the default desktop environment in Pop!_OS 24.04 LTS (also December 2025), which bundles Linux kernel 6.16, Mesa 25.1.5, and NVIDIA driver 580. [[Source](https://www.phoronix.com/news/Pop-OS-24.04-In-December)]
+
+**Post-launch point releases.** System76 ships rolling point updates to Epoch 1. The 1.0.2 release (January 2026) added configurable window shadow and rounded corner radii, network paths in the COSMIC Files application, and accessibility improvements. Point releases through 1.0.13 (May 2026) continue this pattern of feature polish and stability fixes. [[Source](https://system76.com/blog/post/cosmic-epoch-1-updates)]
+
+**Accessibility.** Accessibility is an active focus. The built-in screen reader became enabled by default in the COSMIC Initial Setup wizard as of 1.0.2, toggled at runtime with Super+Alt+S. COSMIC targets AT-SPI2 on Linux via the AccessKit bridge (the same mechanism used by iced — see Ch39e §8). Accessibility coverage is early but functional as of Epoch 1.
+
+**Compositor.** `cosmic-comp`, the Smithay-based Wayland compositor described in §2, shipped as part of the stable Epoch 1 release. It implements `xdg-shell`, `layer-shell`, `wlr-screencopy`, `wlr-output-management`, and XWayland support, with a plugin-friendly architecture designed for extension by the COSMIC session manager.
+
+**Epoch 2 and beyond.** System76 has not published a detailed Epoch 2 roadmap as of mid-2026. Development continues on HDR display support, additional COSMIC application polish, and expanding the libcosmic widget set. The Rust-first architecture positions COSMIC to adopt emerging Wayland protocols — color management, explicit sync, fractional scaling — as they stabilise upstream in Smithay and wlroots.
 
 ## Integrations
 

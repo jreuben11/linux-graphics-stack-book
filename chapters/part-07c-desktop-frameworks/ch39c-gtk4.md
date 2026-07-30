@@ -83,7 +83,8 @@
 - [14. WebKitGTK: Embedding Web Content](#14-webkitgtk-embedding-web-content)
 - [15. Font and Text Rendering](#15-font-and-text-rendering)
 - [16. Performance and Debugging](#16-performance-and-debugging)
-- [17. Integrations](#17-integrations)
+- [17. Roadmap and Release Cadence](#17-roadmap-and-release-cadence)
+- [18. Integrations](#18-integrations)
 - [References](#references)
 
 ---
@@ -3470,7 +3471,31 @@ GDK_DEBUG=dmabuf,vulkan myapp         # trace dmabuf import and Vulkan surface s
 
 ---
 
-## 17. Integrations
+## 17. Roadmap and Release Cadence
+
+GTK 4 releases in lock-step with GNOME: a stable even-minor release ships with each GNOME cycle in March and September. GTK 4.22 shipped with GNOME 50 (March 2026); GTK 4.24 is the current development target for GNOME 51 (September 2026). GLib follows the same cadence (GLib 2.88 paired with GNOME 50).
+
+| GTK Version | GNOME | Date | Highlights |
+|-------------|-------|------|------------|
+| 4.16 | 47 | Sep 2024 | `GskGpuRenderer` default — Vulkan on Wayland, `ngl` on X11/other |
+| 4.18 | 48 | Mar 2025 | AccessKit a11y backend (Windows/macOS); AT-SPI2 remains default on Linux |
+| 4.20 | 49 | Sep 2025 | GSK renderer refactoring; libadwaita 1.8 (`AdwShortcutsDialog`) |
+| 4.22 | 50 | Mar 2026 | GSK profiling; stateful animated symbolic icons; libadwaita 1.9 (`AdwSidebar`) |
+| **4.24** | **51** | **Sep 2026** | SVG filter CSS; AT-SPI collection interface; C11 baseline; libadwaita 1.10 |
+
+**GskGpuRenderer is the default.** Since GTK 4.16 the unified GPU renderer selects the Vulkan backend when available (Wayland sessions) and falls back to the `ngl` (new GL) backend on X11, Windows, and macOS. The legacy `gl` and `cairo` renderers remain only as environment-variable overrides (`GSK_RENDERER=gl` / `GSK_RENDERER=cairo`). GTK 4.22 added GSK profiling hooks and continued the renderer refactoring. [[Source](https://www.phoronix.com/news/GTK-4.16-Released)]
+
+**Planned for GTK 4.24.** The active development cycle targets: SVG filter support in CSS (via `rsvg`), the AT-SPI collection interface (bulk accessibility-tree queries required by LibreOffice), deferred session saving, and bumping the minimum C standard from C99 to C11 to exploit standard atomics. [[Source](https://blogs.gnome.org/gtk/2026/02/06/gtk-hackfest-2026-edition/)]
+
+**GTK 5.** No release date or development branch exists as of mid-2026. GTK 5 is being prepared through deliberate API deprecations in the 4.x line. Confirmed removals include: the X11 and Broadway (HTML5) backends; cell-based widgets (`GtkTreeView`, `GtkIconView`, `GtkComboBox`) in favour of list/column/grid views and `GtkDropDown`; `GtkDialog` and `GtkMessageDialog` in favour of `GtkAlertDialog`; `GdkPixbuf` in favour of `GdkTexture` and `GdkPaintable`; and CSS colour-manipulation functions (`lighter()`, `darker()`, `shade()`, `alpha()`, `mix()`) in favour of CSS custom properties. [[Source](https://docs.gtk.org/gtk4/migrating-4to5.html)]
+
+**libadwaita.** The 1.9 release (March 2026, GNOME 50) introduced `AdwSidebar` — a generic sidebar with section grouping, search filtering, context menus, and a mobile-adaptive page-collapse mode — and `AdwViewSwitcherSidebar` replacing `GtkStackSidebar`. The 1.8 release (September 2025) added `AdwShortcutsDialog` replacing the deprecated `GtkShortcutsWindow`. libadwaita 1.10 targets GNOME 51.
+
+**Accessibility.** The AccessKit backend merged in GTK 4.18, providing real accessibility support on Windows and macOS for the first time. On Linux, AT-SPI2 remains the default; AccessKit on Linux is opt-in via `GTK_A11Y=accesskit`. Near-term work targets the AT-SPI collection interface and improved feature negotiation between applications and assistive technology services. A reduced-motion support option shipped in GTK 4.22.
+
+**Blueprint.** The Blueprint declarative UI compiler remains pre-1.0 (breaking changes possible) but is now distributed in the GNOME SDK and has language-server support in GNOME Builder, Workbench, and KDE Kate. No 1.0 stabilisation date has been announced. See §13.3 for the Blueprint syntax reference.
+
+## 18. Integrations
 
 - **Ch2 (KMS Atomic API and Overlay Planes)** — `GskSubsurfaceNode` (§4.6) drives `wl_subsurface` promotion to KMS overlay planes via `TEST_ONLY` atomic commits, the same zero-copy scanout mechanism used for video and terminal graphics.
 - **Ch4 (GPU Memory Management)** — the GEM/DMA-BUF/GBM and DRM-format-modifier primitives; `GdkDmabufTextureBuilder` (§6.4) imports GBM-allocated dmabufs and negotiates modifiers, and the WebKit content process (§14) exports frames the same way.
