@@ -1850,6 +1850,172 @@ fn main() {
 }
 ```
 
+#### The `.gir` XML Format
+
+A `.gir` file is the machine-readable description of a GLib/GObject-based library's public API. It is installed alongside the library (e.g. `/usr/share/gir-1.0/Gtk-4.0.gir`) and is the source of truth that `g-ir-compiler` converts to the binary `.typelib`. The root element is `<repository>`; inside it, each library is a `<namespace>`. Types, functions, signals, and properties are all described as XML elements with rich metadata attributes. [Source](https://gi.readthedocs.io/en/latest/annotations/gir-format.html)
+
+```xml
+<?xml version="1.0"?>
+<!-- Simplified excerpt from Gtk-4.0.gir -->
+<repository version="1.2"
+            xmlns="http://www.gtk.org/introspection/core/1.0"
+            xmlns:c="http://www.gtk.org/introspection/c/1.0"
+            xmlns:glib="http://www.gtk.org/introspection/glib/1.0">
+  <include name="GObject" version="2.0"/>
+  <include name="Gdk"     version="4.0"/>
+
+  <namespace name="Gtk" version="4.0"
+             c:identifier-prefixes="Gtk"
+             c:symbol-prefixes="gtk">
+
+    <class name="Label"
+           c:type="GtkLabel"
+           abstract="0"
+           parent="GObject.InitiallyUnowned"
+           glib:type-name="GtkLabel"
+           glib:get-type="gtk_label_get_type"
+           glib:type-struct="LabelClass">
+
+      <!-- Constructor — annotated nullable parameter -->
+      <constructor name="new" c:identifier="gtk_label_new">
+        <parameters>
+          <parameter name="str" nullable="1" transfer-ownership="none">
+            <type name="utf8" c:type="const char*"/>
+          </parameter>
+        </parameters>
+        <return-value transfer-ownership="none">
+          <type name="Widget" c:type="GtkWidget*"/>
+        </return-value>
+      </constructor>
+
+      <!-- Regular method -->
+      <method name="set_text" c:identifier="gtk_label_set_text">
+        <parameters>
+          <instance-parameter name="self" transfer-ownership="none">
+            <type name="Label" c:type="GtkLabel*"/>
+          </instance-parameter>
+          <parameter name="str" transfer-ownership="none">
+            <type name="utf8" c:type="const char*"/>
+          </parameter>
+        </parameters>
+        <return-value transfer-ownership="none">
+          <type name="none"/>
+        </return-value>
+      </method>
+
+      <!-- Property -->
+      <property name="label" writable="1" transfer-ownership="none">
+        <type name="utf8" c:type="const char*"/>
+      </property>
+
+      <!-- Signal -->
+      <glib:signal name="activate-link">
+        <parameters>
+          <parameter name="uri" transfer-ownership="none">
+            <type name="utf8" c:type="const char*"/>
+          </parameter>
+        </parameters>
+        <return-value transfer-ownership="none">
+          <type name="gboolean" c:type="gboolean"/>
+        </return-value>
+      </glib:signal>
+
+    </class>
+
+    <!-- Standalone function — out-parameter example -->
+    <function name="init" c:identifier="gtk_init">
+      <return-value transfer-ownership="none">
+        <type name="none"/>
+      </return-value>
+    </function>
+
+    <!-- Enum -->
+    <enumeration name="Orientation" c:type="GtkOrientation"
+                 glib:type-name="GtkOrientation"
+                 glib:get-type="gtk_orientation_get_type">
+      <member name="horizontal" value="0" c:identifier="GTK_ORIENTATION_HORIZONTAL"/>
+      <member name="vertical"   value="1" c:identifier="GTK_ORIENTATION_VERTICAL"/>
+    </enumeration>
+
+  </namespace>
+</repository>
+```
+
+Key XML elements: `<class>` for GObject subtypes, `<interface>` for GInterfaces, `<record>` for plain C structs (boxed types), `<enumeration>` / `<bitfield>` for enums/flags, `<function>` for module-level functions, `<callback>` for function pointer typedefs, `<constant>` for `#define` constants. Each carries a `c:type` attribute giving the verbatim C type name and a `glib:*` family of attributes linking to the GType registration.
+
+#### GIR Annotation Reference
+
+Annotations appear in gtk-doc comments in GTK source headers and are consumed by `g-ir-scanner`. They control how the binding generator represents each parameter or return value. [Source](https://gi.readthedocs.io/en/latest/annotations/giannotations.html)
+
+```c
+/**
+ * gtk_label_new:
+ * @str: (nullable): the text, or %NULL for an empty label
+ *
+ * Returns: (transfer none): a new #GtkLabel widget
+ */
+GtkWidget *gtk_label_new (const gchar *str);
+
+/**
+ * g_list_copy_deep:
+ * @list: (element-type utf8): list of strings
+ * @func: (scope call) (closure user_data): copy function
+ * @user_data: (closure): data for @func
+ *
+ * Returns: (transfer full) (element-type utf8): deep-copied list
+ */
+GList *g_list_copy_deep (GList *list, GCopyFunc func, gpointer user_data);
+```
+
+| Annotation | Meaning |
+|---|---|
+| `(transfer none)` | Callee borrows the value; caller retains ownership and must free |
+| `(transfer full)` | Ownership passes: callee must free a parameter; caller must free a return value |
+| `(transfer container)` | Outer container transfers but elements do not (e.g. `GList*` where the list is new but string elements are borrowed) |
+| `(nullable)` | This pointer parameter or return value may be `NULL` |
+| `(not nullable)` | Explicitly asserts the pointer is never `NULL` (overrides default inference) |
+| `(optional)` | An out-parameter may be `NULL` to indicate the caller doesn't want the value |
+| `(out)` | Parameter is an output pointer; the binding generates an out-variable or tuple element |
+| `(out caller-allocates)` | The caller allocates storage and passes a pointer; callee writes into it |
+| `(inout)` | Parameter is both read on entry and written before return |
+| `(array)` | Parameter is a C array (length inferred or zero-terminated) |
+| `(array length=n)` | C array; companion parameter at index `n` is the element count |
+| `(array zero-terminated=1)` | C array terminated by a `NULL` or zero sentinel |
+| `(array fixed-size=n)` | C array of exactly `n` elements |
+| `(element-type T)` | Collection element type (`GList*`, `GPtrArray*`, `GHashTable*` values) |
+| `(element-type K V)` | Key and value types for `GHashTable` |
+| `(scope call)` | Callback is only valid for the duration of the function call; binding may use a stack-allocated closure |
+| `(scope async)` | Callback is valid until the async operation completes |
+| `(scope notified)` | Callback is valid until the companion `GDestroyNotify` fires; binding must keep the closure alive |
+| `(closure n)` | Parameter at index `n` is the `user_data` for the callback at another index |
+| `(destroy n)` | Parameter at index `n` is the `GDestroyNotify` for the closure |
+| `(skip)` | Exclude this symbol entirely from the generated binding |
+| `(constructor)` | This method is a constructor even if its name doesn't start with `new` |
+| `(type T)` | Override the inferred GI type with type `T` (for opaque pointers or forward-declared types) |
+| `(allow-none)` | Deprecated alias for `(nullable)` on parameters; still seen in older GTK headers |
+
+#### Meson Integration for GIR Generation
+
+The Meson GNOME module can generate and install `.gir`/`.typelib` pairs for project libraries:
+
+```meson
+# Generate GIR for a library target
+gnome = import('gnome')
+
+my_lib_gir = gnome.generate_gir(my_lib,
+  sources:             my_lib_sources + my_lib_headers,
+  namespace:           'MyApp',
+  nsversion:           '1.0',
+  identifier_prefix:   'MyApp',
+  symbol_prefix:       'my_app',
+  includes:            ['GObject-2.0', 'Gtk-4.0'],
+  install:             true,
+  install_dir_gir:     get_option('datadir') / 'gir-1.0',
+  install_dir_typelib: get_option('libdir') / 'girepository-1.0',
+)
+# my_lib_gir[0] is the .gir target, my_lib_gir[1] is the .typelib target
+```
+
 **GskRenderNode type hierarchy.** `GskRenderNode` is registered as a GType but is **not** a `GObject` — it uses its own reference counting via `gsk_render_node_ref()`/`gsk_render_node_unref()`. Every node type has a corresponding `GskRenderNodeType` enum value returned by `gsk_render_node_get_node_type()`. [Source](https://docs.gtk.org/gsk4/class.RenderNode.html)
 
 ```mermaid
@@ -2840,6 +3006,288 @@ resources = gnome.compile_resources(
 ```
 
 Blueprint supports `styles`, `bind` expressions (one-way property binding in the UI file), `Gtk.Expression`-based bindings, signal connections, child type annotations (`[top]`, `[end]`, `[overlay]`), and translation markup (`_("…")`). The GNOME Builder IDE provides Blueprint syntax highlighting and completion.
+
+#### Signal Connections
+
+Signal handlers are declared with `=>` and refer to template methods using the `$` prefix, or to named object methods. The binding is validated at compile time against the signal's parameter types.
+
+```blp
+using Gtk 4.0;
+using Adw 1;
+
+template $MyWindow : Adw.ApplicationWindow {
+  Button open_button {
+    label: _("Open…");
+    // $on_open_clicked = method on the MyWindow template class
+    clicked => $on_open_clicked();
+  }
+
+  SearchEntry search_entry {
+    // search-changed passes the SearchEntry as first arg — Blueprint checks this
+    search-changed => $on_search_changed();
+    // stop-search takes no extra args
+    stop-search    => $on_search_stopped();
+  }
+
+  // GtkDropTarget signal: drop passes (GValue, x, y) — return gboolean
+  DropTarget drop_target {
+    actions: copy;
+    gtypes [typeof<Gio.File>];
+    drop => $on_drop();
+  }
+}
+```
+
+In the template's C implementation, the handler signatures must exactly match the signal:
+
+```c
+/* Connected to SearchEntry::search-changed — (GtkSearchEntry*) */
+static void
+my_window_on_search_changed (MyWindow *self, GtkSearchEntry *entry)
+{
+    const char *text = gtk_editable_get_text (GTK_EDITABLE (entry));
+    /* … filter model … */
+}
+```
+
+#### `bind` Expressions
+
+`bind` introduces a **one-way `GtkExpression` binding** — the target property updates whenever the source expression value changes. The source chain walks GObject property names separated by `.`; `self` refers to the template object. [Source](https://jwestman.pages.gitlab.gnome.org/blueprint-compiler/reference/expressions.html)
+
+```blp
+using Gtk 4.0;
+
+template $StatusRow : Gtk.ListBoxRow {
+  // Simple property chain: label mirrors the entry's current text
+  Gtk.Label mirror {
+    label: bind name_entry.text;
+  }
+
+  // Bind from template self
+  Gtk.Label title_label {
+    label: bind template.title;
+  }
+
+  // Bind with a closure expression calling a C function
+  Gtk.Label word_count {
+    label: bind template.document transform-to $format_word_count();
+    //         ┗━━ source ━━━━━━━━━━━━━━ transform-to ━━━━━━━━━━━━━┛
+    // format_word_count(GBinding*, GValue* from, GValue* to, gpointer)
+  }
+
+  // Bidirectional binding requires g_object_bind_property in C;
+  // Blueprint's bind is always one-way (source → target).
+}
+```
+
+The bound property updates on every `notify::` of the source property. Cycles are not detected; avoid binding A → B → A.
+
+#### Menu Models
+
+Blueprint can define `GMenuModel` trees inline. The result is a `GtkBuilder`-managed `GMenu` that can be attached to a `GtkMenuButton`, `GtkPopoverMenu`, or `AdwApplicationWindow`. [Source](https://jwestman.pages.gitlab.gnome.org/blueprint-compiler/reference/menus.html)
+
+```blp
+using Gtk 4.0;
+using Adw 1;
+
+menu primary_menu {
+  section {
+    item {
+      label:  _("New Window");
+      action: "app.new-window";
+    }
+  }
+  section {
+    item {
+      label:  _("Preferences");
+      action: "app.preferences";
+    }
+    item {
+      label:  _("Keyboard Shortcuts");
+      action: "win.show-help-overlay";
+    }
+    item {
+      label:  _("About My App");
+      action: "app.about";
+    }
+  }
+}
+
+template $MyWindow : Adw.ApplicationWindow {
+  Adw.HeaderBar {
+    [end]
+    Gtk.MenuButton {
+      icon-name:  "open-menu-symbolic";
+      menu-model: primary_menu;
+      primary:    true;
+    }
+  }
+}
+```
+
+Submenus are `submenu { label: "…"; … }` blocks. `item` elements also accept `icon` for a named icon.
+
+#### String Lists and Combo Rows
+
+`StringList` is a `GListModel` of strings; it is the lightest way to populate a `GtkDropDown` or `AdwComboRow` when the options are static.
+
+```blp
+using Gtk 4.0;
+using Adw 1;
+
+template $PrefsPage : Adw.PreferencesPage {
+  Adw.PreferencesGroup {
+    title: _("Appearance");
+
+    // GtkDropDown with a static StringList model
+    Adw.ActionRow {
+      title: _("Theme");
+      [suffix]
+      Gtk.DropDown theme_drop {
+        valign: center;
+        model: Gtk.StringList {
+          strings [_("System"), _("Light"), _("Dark")]
+        };
+      }
+    }
+
+    // AdwComboRow — higher-level, includes a built-in list model
+    Adw.ComboRow font_size_row {
+      title: _("Font Size");
+      model: Gtk.StringList {
+        strings ["Small", "Medium", "Large", "Huge"]
+      };
+    }
+  }
+}
+```
+
+#### `AdwAlertDialog` Responses
+
+`Adw.AlertDialog` (Adwaita 1.5+) declares its button set with a `responses` block. Each response has an id (an identifier, not a string), a label, and optional modifiers `destructive` or `suggested`. [Source](https://gnome.pages.gitlab.gnome.org/libadwaita/doc/main/class.AlertDialog.html)
+
+```blp
+using Adw 1;
+
+Adw.AlertDialog discard_dialog {
+  heading: _("Discard Changes?");
+  body:    _("All unsaved changes will be permanently lost.");
+
+  responses [
+    cancel:  _("Cancel"),
+    discard: _("Discard") destructive,
+  ]
+
+  default-response: "cancel";
+  close-response:   "cancel";
+}
+```
+
+Connect to `response` in the template:
+
+```blp
+  discard_dialog {
+    response => $on_discard_response();
+  }
+```
+
+The `response` signal delivers the response id as a `const char *`; your handler switches on it:
+
+```c
+static void
+my_window_on_discard_response (MyWindow *self, const char *response,
+                               AdwAlertDialog *dialog)
+{
+    if (g_str_equal (response, "discard"))
+        my_window_do_discard (self);
+}
+```
+
+#### Accessibility Annotations
+
+Blueprint can attach `GtkAccessible` role and relation metadata directly in the UI description, replacing `gtk_accessible_update_property()` calls for static attributes.
+
+```blp
+using Gtk 4.0;
+
+template $SearchBar : Gtk.Box {
+  Gtk.SearchEntry search_entry {
+    placeholder-text: _("Search…");
+    accessibility {
+      label:       _("Search files");
+      // Override the default button role inferred from the widget type:
+      // role: search-box;
+    }
+  }
+
+  Gtk.Button clear_button {
+    icon-name: "edit-clear-symbolic";
+    accessibility {
+      label:        _("Clear search");
+      // labelled-by: [search_entry];
+    }
+  }
+}
+```
+
+#### Translation Markup
+
+Blueprint offers three translation variants for string properties:
+
+```blp
+// Standard gettext — wraps in _()
+label: _("Open File");
+
+// Gettext with disambiguation context — wraps in C_()
+label: C_("verb", "File");
+
+// Numeric plural forms — wraps in ngettext()
+label: ngettext("One item", "{} items", n_items);
+
+// No translation (default when no wrapper is used)
+label: "internal-only-string";
+```
+
+#### Blueprint File Structure Reference
+
+A complete `.blp` file follows this layout:
+
+```blp
+// 1. Namespace declarations (required; sets the GtkBuilder version constraints)
+using Gtk 4.0;
+using Adw 1;
+
+// 2. Top-level menu definitions (optional; can be referenced by id)
+menu app_menu { … }
+
+// 3. Template declaration (the root widget class this file defines)
+template $MyWindow : Adw.ApplicationWindow {
+  // 4. Properties
+  title: _("My Application");
+  default-width:  900;
+  default-height: 600;
+
+  // 5. Child widgets — anonymous or with an id
+  Adw.ToolbarView {
+    // 6. Child type annotations for positional slots
+    [top]
+    Adw.HeaderBar header_bar {
+      [end]
+      Gtk.MenuButton {
+        menu-model: app_menu;
+        icon-name: "open-menu-symbolic";
+      }
+    }
+
+    // 7. Named content slot
+    content: Gtk.ScrolledWindow {
+      Gtk.ListView list_view { … }
+    };
+  }
+}
+```
+
+Widgets without an id are anonymous and inaccessible from C via `gtk_widget_get_template_child()`; give a widget an id only when the implementation code needs to reach it directly.
 
 ### 13.4 GSettings Schema
 
