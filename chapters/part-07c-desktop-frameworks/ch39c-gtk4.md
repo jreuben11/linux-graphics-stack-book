@@ -2238,6 +2238,59 @@ There is no equivalent to GObject's per-object signal connection table or Qt's p
 
 The conceptual through-line is **reference counting for lifetime** (all three), **embedding for composition** (GObject struct-in-struct, kobject in device), and **separate notification mechanisms** (GObject signals vs Qt signals-and-slots vs kernel notifier chains). The most practically significant difference for application developers is the code-generation split: GObject's runtime-only approach enables dynamic language bindings at the cost of compile-time type safety on signal connections, while QObject's `moc`-generated metadata enables compile-time checking at the cost of a build step and the absence of automatic cross-language binding.
 
+#### Design Philosophy and Tradeoffs
+
+Each system reflects the constraints and goals of its context. Understanding why each was designed as it was explains the bugs each makes easy to write and the capabilities each makes easy to add.
+
+**GObject: maximum portability and bindability, at the cost of type safety**
+
+GObject's core design decision is to do everything at runtime in C. This was the right choice for GTK in the mid-1990s: C was the common denominator for the GNOME platform, C++ compilers were inconsistent, and language bindings (Python, Perl, Java) were a priority from the beginning. The tradeoff is that the C type system cannot enforce correctness at the GObject API boundary. `g_signal_connect(obj, "clicked", G_CALLBACK(handler), data)` compiles without error regardless of whether `handler`'s parameter types match the `clicked` signal's actual parameters — the mismatch is a runtime crash or silent misbehaviour. Property names are strings; a typo is silent until `g_object_get` returns `NULL`. GObject's verbosity is also a consequence of its C heritage: expressing a single-level subclass requires `G_DEFINE_TYPE`, an instance struct, a class struct, `instance_init`, `class_init`, overridden vtable slots, and `GParamSpec` descriptors — tens of lines for what Rust or Python achieves in three.
+
+The two-phase teardown (`dispose`/`finalize`) is an elegant solution to a subtle problem. Reference cycles — two objects each holding a ref to the other — are the most common GObject memory bug. `dispose()` is the place to break cycles: drop refs to other objects, disconnect signal handlers (which themselves hold refs). After `dispose()`, the object is logically dead but its memory is still valid. `finalize()` frees the memory. Separating the two phases means that a signal callback firing during teardown sees a dead-but-valid object rather than freed memory. The discipline required is real: forgetting to disconnect a signal in `dispose()` is a use-after-free waiting to happen.
+
+The floating reference (`GInitiallyUnowned`) is ergonomic for widget construction. Without it, `gtk_box_append(box, gtk_button_new())` would leak the button: `gtk_button_new()` returns a ref, `gtk_box_append` takes ownership, and the caller's ref is never released. With floating refs, the button starts with a floating ref that `gtk_box_append` sinks — the caller's logical "I created this" intention is consumed by the ownership transfer with no explicit `g_object_unref` needed.
+
+**QObject: compile-time safety and cross-thread transparency, at the cost of C++ purity**
+
+Qt's `moc` is a deliberate departure from standard C++. In 1991 when Qt was designed, C++ had no reflection, no standard introspection, and template metaprogramming was not yet practical. Qt needed signals and slots that were type-safe, cross-thread transparent, and usable from scripting languages. The choices were: use macros (error-prone), use virtual dispatch (no introspection), or use a code generator. They chose the code generator and have paid the maintenance cost ever since.
+
+`moc`'s main practical limitations:
+- **Templates and `Q_OBJECT` don't mix.** A class template cannot itself use `Q_OBJECT`; only a fully specialised concrete class can. Workarounds exist but are ugly.
+- **Build system coupling.** Every build system must run `moc` before compiling. CMake's `automoc` handles this, but it adds latency and occasional dependency-graph confusion.
+- **Multiple inheritance.** `QObject` must be first in a multiple-inheritance list. Having two `QObject`-derived bases in one class is not supported — a design constraint that occasionally forces awkward composition patterns.
+
+The parent/child ownership tree elegantly handles the 90% case — a widget tree where the window owns everything — but breaks down at the edges. A `QObject` that outlives its parent (stored in a `QVector`, returned from a factory, passed across a thread boundary) requires either `setParent(nullptr)` or a `QSharedPointer`. Forgetting either results in a double-delete (parent deletes the child, then the `QSharedPointer` also releases it) or a dangling pointer (parent deletes the child, QSharedPointer now points to freed memory). The Qt documentation addresses this extensively because it is a genuine frequent mistake.
+
+Cross-thread signal delivery is Qt's most elegant feature: `emit signal()` in a sender thread automatically becomes a `QMetaCallEvent` queued on the receiver's `QEventLoop` when sender and receiver live in different threads. The programmer declares thread affinity (`QObject::moveToThread()`), not locking discipline. This is substantially easier to reason about than manual mutex usage for the common producer/consumer pattern.
+
+**kobject: zero-overhead bookkeeping, at the cost of safety guarantees**
+
+kobject's design is shaped by one constraint: it runs in kernel context. That means no `malloc` failure handling beyond returning `-ENOMEM`, no C++ exceptions, no garbage collector, and extreme caution around locking because some code paths run in atomic context (interrupt handlers, RCU read-side sections) where sleeping is forbidden.
+
+`container_of` is zero-overhead — it compiles to a single pointer subtraction with no indirection — but it is also the system's main footgun. The macro trusts the programmer that the field name and containing type are correct. There is no runtime tag, no type identifier, and no check: `container_of(ptr, struct wrong_type, kobj)` compiles silently and produces undefined behaviour at runtime. This is acceptable in kernel code because the call sites are controlled and reviewed, but it means that new kobject-embedded subsystems require careful auditing.
+
+The `release` callback discipline is the kobject equivalent of GObject's `dispose`/`finalize` pair. The rules are:
+1. Every kobject that is initialized with `kobject_init()` must eventually call `kobject_put()` exactly once on every reference acquired with `kobject_get()`.
+2. The `release` callback must free the enclosing structure — not just the kobject field — because the kobject is embedded, not heap-allocated independently.
+3. `release` may not be called from atomic context because `kfree` can sleep.
+Violating rule 2 leaks the enclosing struct while freeing nothing (the kobject field is embedded, so `kfree(kobj)` would free the wrong address). Violating rule 3 causes a `might_sleep()` assertion in debug kernels.
+
+The sysfs attribute model is deliberately minimal: a file, a `show` function, a `store` function. This simplicity is a feature — a new driver attribute is ten lines — but it limits expressiveness. Attributes have a 4 KB page limit per read (the kernel's page size), making them unsuitable for large data. Complex subsystems work around this with binary attributes (`bin_attribute`) or by using debugfs instead.
+
+**The moc decision in retrospect**
+
+`moc` was a pragmatic solution to a 1991 problem. C++26 reflection will make it technically unnecessary — a sufficiently advanced C++26 compiler could generate `QMetaObject` data from class declarations without a separate tool. The Qt project is aware of this; experimental work on a moc-replacement using C++20 concepts and C++26 reflection has been prototyped. GObject took the opposite path (no codegen, maximum runtime flexibility) and was rewarded with automatic language bindings — a capability Qt has never matched without a dedicated binding generator (Shiboken, cxx-qt). With hindsight, both were correct given their goals: Qt prioritised C++ developer ergonomics and compile-time correctness; GObject prioritised ecosystem reach across languages.
+
+kobject made no such tradeoff because it was never trying to be a general-purpose OOP system. Its design is the correct one for its domain: a minimal refcount + sysfs-directory primitive that composes into the device model. Adding GObject-style signals or QObject-style metadata to kobject would add overhead to every device object in the kernel for capabilities that kernel code doesn't need.
+
+| | GObject | QObject | kobject |
+|---|---|---|---|
+| **Primary design goal** | OOP + language bindings for C | Type-safe signals + reflection for C++ | Refcount + sysfs for kernel C |
+| **Worst common bug** | Signal/slot type mismatch (silent runtime) | Ownership confusion (double-free / dangling ptr) | `container_of` wrong type (UB); release from atomic context |
+| **Most elegant feature** | GIR → automatic N-language bindings | Cross-thread signal queuing is transparent | `kref` + `container_of` = zero-overhead lifetime for any struct |
+| **Biggest design tax** | Boilerplate for subclassing; no compile-time signal safety | `moc` build step; template+Q_OBJECT incompatibility | No type safety; 4 KB sysfs attribute limit |
+| **Future direction** | gtk-rs / GIR-Rust reduces boilerplate; AccessKit bridges a11y | C++26 reflection may eventually replace moc | Stable; no planned redesign |
+
 ---
 
 ## 10. GLib: The Foundation Library
