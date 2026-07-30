@@ -310,6 +310,190 @@ export default class ExampleExtension extends Extension {
 
 Preferences live in `prefs.js` as a class extending **`ExtensionPreferences`** (imported from `resource:///org/gnome/Shell/Extensions/prefs.js`), which builds an Adw/GTK4 dialog — notably, `prefs.js` runs in a *separate* GTK process, not in the Shell, so it may use GTK freely while `extension.js` must not. The `disable()` contract is strict: because extensions are disabled whenever the screen locks, `disable()` must release every actor, signal handler, and timeout, or the extension will leak into the lock screen and be rejected in review. The distribution channel is `extensions.gnome.org` (EGO), whose review guidelines forbid, among other things, leaking objects across enable/disable cycles and importing GTK into `extension.js`. [Source](https://gjs.guide/extensions/review-guidelines/review-guidelines.html)
 
+#### St: The Shell Toolkit (Clutter, not GTK)
+
+**St (Shell Toolkit) is not a GTK extension — it is a completely separate widget library built on Clutter.** GTK widgets are Wayland-client objects; they live in the *application* process and present pixel surfaces to the compositor. St widgets are Clutter actors; they live *inside the compositor process* (`gnome-shell`) and are drawn directly on the compositor's scene graph. Extension code in `extension.js` runs in this same compositor process, which is why importing GTK there is forbidden — GTK requires its own display connection and main loop, which conflicts with the compositor's. `prefs.js` is intentionally isolated in a separate process so it can use GTK/Adw freely. [Source](https://gjs.guide/extensions/development/creating.html#ui-toolkit)
+
+The St class hierarchy:
+
+```
+Clutter.Actor              (base for everything on the compositor stage)
+  └─ St.Widget             (adds CSS theming: style_class, add_css_class(), get_theme_node())
+       ├─ St.BoxLayout     (horizontal or vertical linear container)
+       ├─ St.Label         (text; text property, clutter_text for advanced editing)
+       ├─ St.Icon          (named icon from the theme; icon_name, icon_size)
+       ├─ St.Button        (clickable; clicked signal, child for content)
+       ├─ St.Entry         (single-line text input; text is a ClutterText actor)
+       ├─ St.ScrollView    (scrollable container; hscrollbar_policy, vscrollbar_policy)
+       ├─ St.DrawingArea   (Cairo drawing surface; repaint signal)
+       └─ St.Bin           (single-child container with alignment; x_align, y_align)
+```
+
+Styling uses CSS class names resolved against the Shell's theme:
+
+```javascript
+import St from 'gi://St';
+import Clutter from 'gi://Clutter';
+
+// A status area box: icon left, label right, vertically centred
+const box = new St.BoxLayout({
+    style_class: 'panel-status-menu-box',
+    vertical: false,
+});
+box.add_child(new St.Icon({
+    icon_name: 'weather-clear-symbolic',
+    style_class: 'system-status-icon',   // sets icon size via theme
+}));
+box.add_child(new St.Label({
+    text: '23 °C',
+    y_align: Clutter.ActorAlign.CENTER,
+}));
+
+// Inline CSS overrides (use sparingly; prefer style_class for theme compatibility)
+const badge = new St.Label({
+    text: '3',
+    style: 'background-color: red; border-radius: 8px; padding: 2px 6px;',
+});
+```
+
+Custom CSS in `stylesheet.css` is loaded automatically by the extension manager:
+
+```css
+/* stylesheet.css */
+.my-indicator-label {
+    font-weight: bold;
+    font-size: 0.9em;
+    color: #cccccc;
+    margin: 0 4px;
+}
+.my-indicator-label:hover {
+    color: white;
+}
+```
+
+#### Popup Menus
+
+Panel indicators use `PanelMenu.Button`, which owns a `PopupMenu.PopupMenu` automatically. The menu system provides labelled items, separators, toggles, and submenus: [Source](https://gjs.guide/extensions/topics/popup-menu.html)
+
+```javascript
+import St from 'gi://St';
+import Gio from 'gi://Gio';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
+import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
+
+export default class WeatherExtension extends Extension {
+    enable() {
+        this._indicator = new PanelMenu.Button(0.0, this.metadata.name, false);
+
+        this._indicator.add_child(new St.Icon({
+            icon_name: 'weather-overcast-symbolic',
+            style_class: 'system-status-icon',
+        }));
+
+        // Plain clickable item
+        this._condItem = new PopupMenu.PopupMenuItem('Fetching…');
+        this._condItem.connect('activate', () => this._refresh());
+        this._indicator.menu.addMenuItem(this._condItem);
+
+        this._indicator.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        // Toggle/switch item
+        this._notifSwitch = new PopupMenu.PopupSwitchMenuItem('Notifications', false);
+        this._notifSwitch.connect('toggled', (_item, state) => {
+            this.getSettings().set_boolean('show-notifications', state);
+        });
+        this._indicator.menu.addMenuItem(this._notifSwitch);
+
+        // Submenu
+        const unitMenu = new PopupMenu.PopupSubMenuMenuItem('Units');
+        for (const unit of ['Celsius', 'Fahrenheit', 'Kelvin']) {
+            const item = new PopupMenu.PopupMenuItem(unit);
+            item.connect('activate', () => {
+                this.getSettings().set_string('unit', unit.toLowerCase());
+            });
+            unitMenu.menu.addMenuItem(item);
+        }
+        this._indicator.menu.addMenuItem(unitMenu);
+
+        Main.panel.addToStatusArea(this.uuid, this._indicator);
+    }
+
+    disable() {
+        this._indicator?.destroy();   // destroys menu items too
+        this._indicator = null;
+        this._condItem = null;
+        this._notifSwitch = null;
+    }
+
+    _refresh() {
+        this._condItem.label.set_text('21 °C, partly cloudy');
+    }
+}
+```
+
+Key popup menu types: `PopupMenuItem` (label + optional ornament), `PopupSeparatorMenuItem`, `PopupSwitchMenuItem` (toggle), `PopupSubMenuMenuItem` (nested menu), `PopupImageMenuItem` (icon + label).
+
+#### GSettings Schema for Extensions
+
+Extensions declare their settings in `schemas/org.gnome.shell.extensions.<uuid>.gschema.xml`. During development, compile with `glib-compile-schemas schemas/`; EGO's installer compiles on deployment.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.weather-indicator"
+          path="/org/gnome/shell/extensions/weather-indicator/">
+
+    <key name="show-notifications" type="b">
+      <default>true</default>
+      <summary>Show weather notifications</summary>
+    </key>
+
+    <key name="unit" type="s">
+      <default>'celsius'</default>
+      <choices>
+        <choice value="celsius"/>
+        <choice value="fahrenheit"/>
+        <choice value="kelvin"/>
+      </choices>
+      <summary>Temperature unit</summary>
+    </key>
+
+    <key name="refresh-interval" type="i">
+      <range min="5" max="60"/>
+      <default>15</default>
+      <summary>Refresh interval in minutes</summary>
+    </key>
+
+    <!-- Keybinding stored as an array of accelerator strings -->
+    <key name="toggle-indicator" type="as">
+      <default>["&lt;Super&gt;F10"]</default>
+      <summary>Toggle indicator keybinding</summary>
+    </key>
+  </schema>
+</schemalist>
+```
+
+Reading and watching in `extension.js`:
+
+```javascript
+const settings = this.getSettings();
+
+// Read
+const unit     = settings.get_string('unit');
+const interval = settings.get_int('refresh-interval');
+
+// Watch for changes — store handler id for cleanup
+this._settingsId = settings.connect('changed::unit', () => {
+    this._applyUnit(settings.get_string('unit'));
+});
+
+// In disable():
+settings.disconnect(this._settingsId);
+this._settingsId = null;
+```
+
 ### 3.6 Session D-Bus Interfaces
 
 The Shell exports several session-bus interfaces on the name `org.gnome.Shell`:
@@ -568,6 +752,214 @@ export default class ExamplePrefs extends ExtensionPreferences {
     }
 }
 ```
+
+#### Keybinding Registration
+
+Custom global keybindings are declared in the GSettings schema as `type="as"` keys and registered with `Main.wm` in `enable()`. [Source](https://gjs.guide/extensions/topics/keyboard-shortcuts.html)
+
+```javascript
+import Meta from 'gi://Meta';
+import Shell from 'gi://Shell';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+
+enable() {
+    // 'toggle-indicator' must be a key of type "as" in the GSettings schema
+    Main.wm.addKeybinding(
+        'toggle-indicator',
+        this.getSettings(),
+        Meta.KeyBindingFlags.NONE,          // or IGNORE_AUTOREPEAT
+        Shell.ActionMode.NORMAL |
+        Shell.ActionMode.OVERVIEW,          // active modes
+        () => this._toggleIndicator()
+    );
+}
+
+disable() {
+    Main.wm.removeKeybinding('toggle-indicator');
+    // … rest of cleanup
+}
+```
+
+`Shell.ActionMode` flags control when the binding fires:
+
+| Flag | Active when |
+|---|---|
+| `NORMAL` | Normal desktop with windows |
+| `OVERVIEW` | Activities overview is open |
+| `POPUP` | A Shell popup or modal is open |
+| `LOCK_SCREEN` | Lock screen (avoid — extensions are disabled on lock anyway) |
+| `ALL` | All modes |
+
+#### Window Actor Interaction
+
+Every mapped window is a `Meta.WindowActor` (a `Clutter.Actor` subclass) on the compositor stage. Extensions enumerate them via `global.get_window_actors()`, read `Meta.Window` metadata, and can animate the actor directly with Clutter. [Source](https://gjs.guide/extensions/topics/windows.html)
+
+```javascript
+import Meta from 'gi://Meta';
+import Clutter from 'gi://Clutter';
+
+// Enumerate all mapped window actors
+for (const actor of global.get_window_actors()) {
+    const win = actor.meta_window;
+
+    // Filter to normal application windows
+    if (win.get_window_type() !== Meta.WindowType.NORMAL) continue;
+    if (win.minimized) continue;
+
+    console.log(win.get_title(), win.get_wm_class(), win.get_pid());
+
+    // Read position and size
+    const rect = win.get_frame_rect();
+    console.log(`  ${rect.width}×${rect.height} at (${rect.x},${rect.y})`);
+
+    // Animate the Clutter actor (e.g. a wobble on focus)
+    actor.ease({
+        scale_x: 0.95,
+        scale_y: 0.95,
+        duration: 100,
+        mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+        onComplete: () => actor.ease({
+            scale_x: 1.0,
+            scale_y: 1.0,
+            duration: 150,
+            mode: Clutter.AnimationMode.EASE_OUT_BOUNCE,
+        }),
+    });
+}
+```
+
+Useful `Meta.Window` members:
+
+| Member | Description |
+|---|---|
+| `get_title()` | Window title |
+| `get_wm_class()` | `WM_CLASS` application identifier |
+| `get_pid()` | PID of the owning process |
+| `get_frame_rect()` | `Meta.Rectangle` including decorations |
+| `get_buffer_rect()` | `Meta.Rectangle` of the client buffer |
+| `minimized` | Boolean; `minimize()` / `unminimize()` |
+| `maximized_horizontally/vertically` | Maximise state; `maximize(Meta.MaximizeFlags.*)` |
+| `get_workspace()` | `Meta.Workspace` the window is on |
+| `move_to_workspace(ws)` | Move to another workspace |
+| `activate(timestamp)` | Raise and focus; use `global.get_current_time()` |
+| `get_window_type()` | `NORMAL`, `DIALOG`, `DOCK`, `DESKTOP`, etc. |
+
+#### Connecting to Shell and Mutter Signals
+
+```javascript
+enable() {
+    // New window created (fires when a surface maps)
+    this._winCreatedId = global.display.connect(
+        'window-created', (_display, win) => {
+            console.log('[Ext] window created:', win.get_title());
+            // Watch the window's own notify signals
+            this._titleId = win.connect('notify::title', w =>
+                console.log('[Ext] title:', w.get_title()));
+        }
+    );
+
+    // Workspace switch
+    this._wsSwitchId = global.workspace_manager.connect(
+        'workspace-switched', (_mgr, _from, to, _direction) => {
+            const ws = global.workspace_manager.get_workspace_by_index(to);
+            console.log('[Ext] workspace', to,
+                        ws.list_windows().length, 'windows');
+        }
+    );
+
+    // Overview open / close
+    this._ovShownId  = Main.overview.connect('shown',  () => this._pause());
+    this._ovHiddenId = Main.overview.connect('hidden', () => this._resume());
+}
+
+disable() {
+    global.display.disconnect(this._winCreatedId);
+    global.workspace_manager.disconnect(this._wsSwitchId);
+    Main.overview.disconnect(this._ovShownId);
+    Main.overview.disconnect(this._ovHiddenId);
+    this._winCreatedId = this._wsSwitchId = null;
+    this._ovShownId = this._ovHiddenId = null;
+}
+```
+
+Key signal sources:
+
+| Object | Useful signals |
+|---|---|
+| `global.display` | `window-created`, `window-demands-attention`, `focus-window`, `grab-op-begin/end` |
+| `global.workspace_manager` | `workspace-switched`, `workspace-added`, `workspace-removed`, `active-workspace-changed` |
+| `Main.overview` | `showing`, `shown`, `hiding`, `hidden` |
+| `Main.sessionMode` | `updated` — fires on lock/unlock and mode change |
+| `global.stage` | `key-press-event`, `captured-event` — low-level input intercept |
+
+#### Debugging Extensions
+
+**Looking Glass** is the built-in JS REPL and object inspector. Open it with **Alt+F2**, type `lg`, press Enter. In the console:
+
+```javascript
+// Inspect the running extension object
+Main.extensionManager.lookup('example@example.com')
+
+// List window titles
+global.get_window_actors().map(a => a.meta_window.get_title())
+
+// Get focused window
+global.display.focus_window?.get_title()
+
+// Hot-reload during development (without logging out)
+Main.extensionManager.disableExtension('example@example.com');
+Main.extensionManager.enableExtension('example@example.com');
+```
+
+**`gnome-extensions` CLI** for scripted enable/disable:
+
+```bash
+gnome-extensions install --force example@example.com.zip
+gnome-extensions enable  example@example.com
+gnome-extensions disable example@example.com
+
+# Stream only this extension's console.log output
+journalctl -f -o cat GNOME_SHELL_EXTENSION_UUID=example@example.com
+
+# Full Shell log (all extensions + Shell internals)
+journalctl -f /usr/bin/gnome-shell
+```
+
+**Nested Shell** for safe development without risking the host session:
+
+```bash
+# Spawn a nested Wayland compositor in a window
+dbus-run-session -- gnome-shell --nested --wayland &
+# Install and test in the nested session
+WAYLAND_DISPLAY=wayland-1 gnome-extensions install --force example@example.com.zip
+```
+
+#### Packaging and EGO Submission
+
+`gnome-extensions pack` assembles the distribution archive:
+
+```bash
+gnome-extensions pack \
+  --extra-source=stylesheet.css \
+  --schema=schemas/org.gnome.shell.extensions.example.gschema.xml \
+  --podir=po \
+  .
+# Produces: example@example.com.zip
+```
+
+The archive must contain: `metadata.json`, `extension.js`, optionally `prefs.js` and `stylesheet.css`, compiled `.mo` translation files under `locale/`, and `schemas/` with both the raw `.gschema.xml` and the compiled `gschemas.compiled`. EGO's review server validates the schema and recompiles it on install.
+
+EGO automated and human review checks:
+
+| Check | Rule |
+|---|---|
+| No `imports.gi.*` | GNOME 45+ submissions must use `gi://` ESM imports |
+| No GTK in `extension.js` | `import Gtk` / `import Adw` forbidden; must stay in `prefs.js` |
+| Clean `disable()` | Every actor, signal handler, timeout, and GSettings connection must be released |
+| No sync I/O | Blocking calls on the main loop freeze the compositor |
+| No network without consent | User must explicitly opt in to any network access |
+| No shell-version wildcards | `"shell-version": ["*"]` is rejected; list each major version explicitly |
+| No `eval()` | Forbidden as a security requirement |
 
 ### 5.4 Async Programming: The GLib Main Loop
 
