@@ -900,6 +900,48 @@ The table reveals four distinct engineering philosophies. **KDE Plasma** offers 
 
 From a graphics-stack perspective, GNOME and KDE are the reference targets for Wayland protocol adoption — new protocols (color management, explicit sync, input capture) typically land in Mutter or KWin first. COSMIC is a useful stress-test for Smithay maturity and Rust-based compositor development. elementary is a useful reference for a GTK4 app running under a Mutter-derived compositor with minimal extensions.
 
+### Application Development Model: QML+C++ vs GJS-over-C vs Rust
+
+The three major desktops represent three distinct engineering philosophies for how application logic and UI description relate to each other.
+
+#### KDE: C++ core, QML UI layer
+
+The architecture separates application logic (C++) from declarative UI (QML). QML is a JavaScript-syntax language compiled by the Qt QML engine into a scene graph of `QQuickItem` subtypes; the engine uses a JIT-compiled V4 JavaScript runtime, making property bindings and animations fast. The C++ ↔ QML boundary is handled by `Q_PROPERTY` / `Q_INVOKABLE` macros, which the Meta-Object Compiler (`moc`) processes at build time to generate the signal/slot and property-binding machinery.
+
+**Strengths.** QML is purpose-built for declarative UI — property bindings, state machines, and transitions are first-class language features. C++ carries zero FFI overhead for performance-critical code. Qt RHI abstracts Vulkan, Metal, and Direct3D without the application touching GPU code. The same codebase compiles on Linux, Windows, macOS, Android, and iOS. Tooling is mature: Qt Creator, `qmllint`, `qmlformat`, and the QML language server all understand the type system.
+
+**Weaknesses.** QML's JavaScript layer is dynamically typed — `qmllint` catches many errors but compile-time type safety is weaker than Blueprint's GIR-validated schema. The Qt licensing split (LGPLv3 / GPLv2 vs. commercial) creates friction for proprietary applications. `moc` is a pre-compilation step that adds build complexity; it is being incrementally replaced by C++26 reflection. The QML runtime adds approximately 10 MB of baseline memory overhead.
+
+#### GNOME: C GObject core, multiple language bindings via GIR
+
+GTK widgets and the GObject type system are implemented in C. The GObject Introspection (GIR) pipeline — `g-ir-scanner` → `.gir` XML → `g-ir-compiler` → `.typelib` — automatically exposes every annotated GObject type to any language that has a GIR binding. GJS (Mozilla SpiderMonkey embedding) is used in GNOME Shell itself; `gtk-rs` (Rust) is now production-quality and used in core GNOME applications; PyGObject (Python) remains the easiest entry point. Application UI is described in Blueprint (`.blp`) files that compile to GtkBuilder XML, with signal handlers wired via GObject Introspection.
+
+**Strengths.** GIR means the full GTK/GNOME API is available in any binding language without hand-written glue — a library author writes once in C and gets JS, Python, Rust, Lua, and Haskell bindings automatically. GTK4 + libadwaita provides the GNOME platform's native look-and-feel with no configuration. Blueprint adds compile-time type checking for property names and signal signatures. `gtk-rs` macros make Rust-based GNOME apps ergonomic and memory-safe. Flatpak integration and Flathub distribution are the most mature of the four desktops.
+
+**Weaknesses.** GJS/SpiderMonkey is a browser JavaScript engine bolted onto a C object system — the mismatch shows in error messages, reference-cycle debugging, and the requirement to manually disconnect GObject signals to avoid leaks. The underlying GObject type system (`G_DEFINE_TYPE`, `g_signal_connect`, manual reference counting) is verbose C from the late 1990s; even `gtk-rs` inherits its structural complexity. Blueprint handles only the widget tree — bindings between application state and UI state still require GObject property machinery or manual signal connections, unlike QML's built-in reactive bindings.
+
+#### COSMIC: Rust end to end
+
+COSMIC collapses the language boundary entirely: both the compositor (`cosmic-comp`) and applications (`libcosmic`) are written in Rust. The iced runtime provides the reactive Elm-style update loop natively in Rust — no separate scripting layer, no FFI to C, no GIR pipeline. The `wgpu` renderer compiles to SPIR-V for Vulkan at build time. Type safety extends from application logic through widget state into GPU shader uniforms.
+
+**Strengths.** Memory safety is guaranteed by the compiler across the entire stack with no runtime cost. The single-language architecture eliminates the C ↔ scripting-layer impedance mismatch. The iced Elm model (Message enum, update function, view function) is straightforward to reason about and test. `cargo` handles the entire build, including GPU shader compilation.
+
+**Weaknesses.** The API is pre-stable (breaking changes occur between releases). The application ecosystem is small compared to GNOME's Flathub catalogue or KDE's mature app suite. GIR-style automatic multi-language binding does not exist — a non-Rust application cannot easily use libcosmic. Accessibility coverage trails GTK4's AT-SPI2 integration.
+
+#### Practical Guidance
+
+| If you need… | Recommended choice |
+|---|---|
+| Cross-platform (Linux + Windows + Android) from one codebase | KDE / Qt |
+| GNOME platform look-and-feel; Flatpak-first distribution | GNOME / GTK4 |
+| Rust end-to-end; no C FFI boundary | COSMIC / libcosmic |
+| Richest declarative animation and reactive binding model | KDE / QML |
+| Strongest accessibility on Linux, most mature a11y tooling | GNOME / GTK4 |
+| Most mature HDR + VRR display pipeline (mid-2026) | KDE (stable Plasma 6.7) |
+| Most mature Flatpak portal coverage | GNOME |
+
+From the graphics-stack perspective that anchors this book, all three converge at the same point: Qt RHI, GSK, and wgpu each emit Vulkan commands that travel through the same Mesa drivers, the same kernel DRM subsystem, and the same KMS atomic commit path to the display. The compositor differences — Mutter, KWin, cosmic-comp — are the subject of Part IV (Ch20–Ch22). The toolkit rendering differences — Qt RHI, GSK GskGpuRenderer, iced wgpu — map directly to the Vulkan and GL chapters in Part III.
+
 ---
 
 ## Roadmap
