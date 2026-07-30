@@ -55,6 +55,7 @@
   - [9.8 G_DEFINE_TYPE Variants and GInterfaces](#98-g_define_type-variants-and-ginterfaces)
   - [9.9 Reference Counting and Floating References](#99-reference-counting-and-floating-references)
   - [9.10 GObject Introspection and Language Bindings](#910-gobject-introspection-and-language-bindings)
+  - [9.11 GObject vs QObject vs kernel kobject](#911-gobject-vs-qobject-vs-kernel-kobject)
 - [10. GLib: The Foundation Library](#10-glib-the-foundation-library)
   - [10.0 Primitive Type Aliases](#100-primitive-type-aliases-glibtypesh)
   - [10.1 Event Loop: GMainLoop and GMainContext](#101-event-loop-gmainloop-and-gmaincontext)
@@ -2137,6 +2138,105 @@ classDiagram
     GskMaskNode --|> GskRenderNode
     GskBlendNode --|> GskRenderNode
 ```
+
+### 9.11 GObject vs QObject vs kernel kobject
+
+Three major C/C++ systems in the Linux stack solve similar problems — object identity, lifetime management, and event notification — but at different layers and with strikingly different approaches. Understanding where they agree and where they diverge is useful both for reading kernel and toolkit source and for choosing the right abstraction when writing a new subsystem.
+
+#### Origins and Purpose
+
+| | GObject | QObject | `struct kobject` |
+|---|---|---|---|
+| Layer | Userspace — GTK/GNOME toolkit | Userspace — Qt toolkit | Kernel — device model / sysfs |
+| Language | C | C++ | C |
+| Problem solved | OOP, signals, properties for C | Reflection, signals/slots, properties for C++ | Refcounting, sysfs representation, hotplug events |
+| Code generation | None — runtime registration only | `moc` generates `moc_*.cpp` at build time | None |
+
+#### Object Identity and Type Registration
+
+**GObject** registers types at runtime via `g_type_register_static()` — typically invoked once per process by `get_type()` on first use. The type system lives entirely in the GLib heap; no compiler sees it. A `GType` is a `gulong` identifier handed out at registration time. `G_DEFINE_TYPE` (and its variants) generates the `get_type()` function and the `instance_init`/`class_init` boilerplate. Because everything is runtime, the same C library is introspectable from Python, Rust, Lua, or JavaScript without recompilation — only a `.gir` file is needed (§9.10).
+
+**QObject** splits the work: the programmer writes `Q_OBJECT` in the class declaration and `moc` generates a `moc_MyClass.cpp` that defines a `QMetaObject` — a static, compile-time table of methods, properties, signals, enums, and class hierarchy. `qobject_cast<T*>(obj)` performs a safe downcast by walking the `QMetaObject` chain; it is O(depth) and type-checked at compile time via the function-pointer cast. Because the metadata is compiled in, it is not accessible across language boundaries without a binding generator (e.g., Shiboken for Python/Qt or cxx-qt for Rust).
+
+**kobject** has no type system. `struct kobject` is a plain C struct embedded in a larger kernel object (e.g., `struct device`, `struct gendisk`). The embedding type is recovered via `container_of(ptr, struct device, kobj)` — a macro that subtracts the field's offset from the pointer. There is no runtime check; the programmer must know the containing type statically. `struct kobj_type` supplies per-type function pointers (`release`, `sysfs_ops`, `default_groups`) but is attached to the kobject by pointer rather than inheritance.
+
+#### Ownership and Lifetime
+
+**GObject** uses **reference counting** as its primary ownership model. Every GObject has an atomic integer refcount. `g_object_ref()` increments, `g_object_unref()` decrements; when the count reaches zero, `dispose()` runs first (the place to drop references to other objects and disconnect signals), then `finalize()` frees memory. The two-phase teardown prevents use-after-free caused by signal callbacks firing during destruction. `GInitiallyUnowned` adds a **floating reference**: newly constructed objects start with a "floating" ref that `g_object_ref_sink()` converts to a normal ref, allowing `column.append(widget)` to transfer ownership without an explicit unref.
+
+**QObject** uses **parent/child tree ownership** as its primary model. Passing a parent to a QObject constructor transfers ownership; `delete parent` recursively deletes all children in declaration order. This works well for widget trees where a `QWidget` owns its layout and the layout owns its items. When shared or cross-tree ownership is needed, `QSharedPointer<T>` and `QWeakPointer<T>` provide reference-counted smart pointers. The base `QObject` has no refcount — it is owned either by its parent or by the stack/heap directly.
+
+**kobject** uses `kref` — a struct wrapping an `atomic_t` — for reference counting. `kobject_get()` increments the refcount; `kobject_put()` decrements it and, when zero, calls `kobj_type.release(kobj)`. The `release` callback is responsible for freeing the containing structure (via `container_of`). There is no parent/child ownership in the C++ sense: `kobject.parent` builds the sysfs directory hierarchy but does not transfer ownership; a child kobject does not hold a reference to its parent's memory.
+
+```c
+/* kernel kobject embed-and-release pattern */
+struct my_device {
+    struct kobject kobj;     /* must be first for container_of */
+    int            value;
+};
+
+static void my_device_release(struct kobject *kobj)
+{
+    struct my_device *dev = container_of(kobj, struct my_device, kobj);
+    kfree(dev);              /* free the enclosing struct */
+}
+
+static const struct kobj_type my_ktype = {
+    .release   = my_device_release,
+    .sysfs_ops = &kobj_sysfs_ops,
+};
+```
+
+#### Signals and Event Notification
+
+**GObject signals** are fully dynamic. A signal is registered with `g_signal_new()`, specifying its name, parameter types as `GType`s, and a default handler (`class_closure`). Connections are made with `g_signal_connect(object, "signal-name", G_CALLBACK(handler), user_data)` — a string-based lookup that returns a `gulong` handler id for later disconnection. Signal emission calls the default handler then all connected handlers in connection order. Because connections hold a reference to the callback and user_data, disconnecting in `dispose()` before `finalize()` is critical to avoid dangling pointer callbacks.
+
+**QObject signals and slots** are type-safe when connected via the function-pointer syntax introduced in Qt 5:
+
+```cpp
+connect(button, &QPushButton::clicked,
+        this,   &MyWindow::onButtonClicked);
+// Compile error if parameter types don't match — caught by the C++ compiler.
+```
+
+The older string-based `SIGNAL()`/`SLOT()` macros still work but defer type checking to runtime. Qt signals can cross thread boundaries: if sender and receiver live in different threads, Qt queues the signal as a `QMetaCallEvent` on the receiver's event loop — thread safety for free. Qt also supports **lambda slots**:
+
+```cpp
+connect(timer, &QTimer::timeout, this, [this]{ tick(); });
+```
+
+**Kernel notification** uses several independent mechanisms rather than a unified signal system:
+
+- **Notifier chains** (`atomic_notifier_call_chain`, `blocking_notifier_call_chain`): a linked list of callbacks registered with `register_xxx_notifier()`; the caller invokes all registered callbacks synchronously or asynchronously.
+- **sysfs uevents**: when a kobject is added, removed, or changed, `kobject_uevent(kobj, KOBJ_ADD)` broadcasts a netlink message that udev/systemd-udevd receives, triggering hotplug rules.
+- **Completions**: `wait_for_completion()` / `complete()` — single-shot synchronisation between kernel threads.
+- **Work queues**: deferred execution via `schedule_work()` / `queue_work()`.
+
+There is no equivalent to GObject's per-object signal connection table or Qt's per-object slot registration.
+
+#### Properties and Attributes
+
+**GObject properties** are declared as `GParamSpec` descriptors registered with `g_object_class_install_properties()`. A widget subclass overrides `set_property` and `get_property` vtable slots in its `GObjectClass`. Every property change that calls `g_object_notify()` fires a `notify::property-name` signal. This is the basis for `GBinding` (one-way property synchronisation) and Blueprint `bind` expressions (§13.3).
+
+**QObject properties** are declared with the `Q_PROPERTY` macro, which lists getter, setter, and `NOTIFY` signal. `moc` generates the read/write dispatch in `QMetaObject::property()`. Properties are accessible by name as `QVariant` via `QObject::property("name")`, enabling scripting and QML binding. QML's property binding engine (`QQmlBinding`) re-evaluates a binding expression whenever any `NOTIFY` signal it depends on fires.
+
+**kobject attributes** are kernel files in `/sys`. An attribute is a `struct attribute` (name + permissions) paired with `show(kobj, attr, buf)` and `store(kobj, attr, buf, count)` callbacks in `struct sysfs_ops`. Reading `/sys/bus/pci/devices/0000:00:02.0/vendor` calls the `show` callback for the `vendor` attribute. There is no change notification within the kernel — userspace polls or uses inotify on sysfs files, or the driver calls `sysfs_notify()` to wake inotify waiters.
+
+#### Comparison Summary
+
+| Dimension | GObject | QObject | `kobject` |
+|-----------|---------|---------|-----------|
+| Code generation | None; runtime `g_type_register_static()` | `moc` → `QMetaObject` at compile time | None |
+| Ownership model | Reference counting; floating ref for widgets | Parent/child tree; `QSharedPointer` for shared | `kref` atomic refcount; `release()` callback |
+| Teardown | Two-phase: `dispose()` then `finalize()` | C++ destructor; children deleted by parent | `kobj_type.release()` at refcount zero |
+| Inheritance | Single via struct embedding; `GTypeInterface` | Single from `QObject`; no diamond | None — composition via struct embedding |
+| Signal/event system | Dynamic by name; `GClosure`; `gulong` handler id | Typed function-pointer connect; thread-safe queuing; lambda slots | Notifier chains; sysfs uevents; completions; work queues |
+| Properties | `GParamSpec` + `get/set_property` vtable + `notify::` | `Q_PROPERTY` + getter/setter/NOTIFY; `QVariant` dynamic access | `struct attribute` + `show()`/`store()` sysfs files |
+| Type downcast | `G_TYPE_CHECK_INSTANCE_CAST`; GIR for bindings | `qobject_cast<T*>()` via `QMetaObject` | `container_of()` macro; no runtime check |
+| Language bindings | GIR → Python, Rust, JS, Lua without recompile | Requires binding generator (Shiboken, cxx-qt) | N/A — kernel-only |
+| Sysfs / hotplug | None | None | Core feature: kobject = sysfs directory + uevent |
+
+The conceptual through-line is **reference counting for lifetime** (all three), **embedding for composition** (GObject struct-in-struct, kobject in device), and **separate notification mechanisms** (GObject signals vs Qt signals-and-slots vs kernel notifier chains). The most practically significant difference for application developers is the code-generation split: GObject's runtime-only approach enables dynamic language bindings at the cost of compile-time type safety on signal connections, while QObject's `moc`-generated metadata enables compile-time checking at the cost of a build step and the absence of automatic cross-language binding.
 
 ---
 
