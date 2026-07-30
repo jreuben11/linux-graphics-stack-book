@@ -50,7 +50,8 @@
 - [8. Flatpak and GNOME](#8-flatpak-and-gnome)
   - [8.4 AT-SPI2 Accessibility Bridge](#84-at-spi2-accessibility-bridge)
 - [9. Performance and Debugging](#9-performance-and-debugging)
-- [10. Integrations](#10-integrations)
+- [10. Roadmap and Release Cadence](#10-roadmap-and-release-cadence)
+- [11. Integrations](#11-integrations)
 - [References](#references)
 
 ---
@@ -1286,7 +1287,34 @@ graph TD
 
 ---
 
-## 10. Integrations
+## 10. Roadmap and Release Cadence
+
+GNOME follows a strict six-month release cycle: March releases (aligned with GNOME.Asia Summit) and September releases (aligned with GUADEC). Each release is named after the host city of the corresponding conference.
+
+| Release | Name | Date | Key Milestones |
+|---------|------|------|----------------|
+| 48 | Bengaluru | Mar 19, 2025 | First system HDR switch; dynamic triple-buffering in Mutter (5-year effort) |
+| 49 | Brescia | Sep 17, 2025 | HDR wallpapers (Display P3, 16-bit); Papers replaces Evince; Showtime replaces Totem |
+| 50 | Tokyo | Mar 18, 2026 | VRR stable; `wp-color-management-v2`; HDR screen sharing; X11 session removed; Orca redesign |
+| **51** | **A Coruña** | **Sep 12, 2026** | Wayland maturity and performance; in active development |
+
+[[Source: release.gnome.org](https://release.gnome.org/)]
+
+**Wayland transition.** GNOME 49 was the first release not to build or support a GNOME Shell X11 session by default. GNOME 50 completed the transition: the X11 window-manager session is fully removed. XWayland continues to support individual X11 applications under the Wayland compositor in both releases.
+
+**HDR and color management progression.** GNOME 48 introduced the first system-level HDR — an on/off toggle in Display Settings and a luminance slider. GNOME 49 added HDR-optimised wallpapers authored for Display P3 at 16-bit RGB depth, rendered by Mutter, with brightness accessible from Quick Settings. GNOME 50 landed the Wayland color-management protocol v2 (`wp-color-management-v2`), HDR screen sharing (recording and casting HDR content), and SDR-native colour mode for wide-gamut displays.
+
+**Variable refresh rate.** VRR support landed experimentally in GNOME 46 (enabled via a GSettings experimental-features flag, with a per-monitor toggle and auto-activation for fullscreen applications). GNOME 50 promoted VRR to stable with independent low-latency cursor rendering.
+
+**Accessibility.** GNOME 50 included a redesign of the Orca screen reader — new preferences window, global settings, automatic language switching, and improved braille support — and added a system-wide "Reduced Motion" accessibility option. An accessibility menu appeared on the login screen in GNOME 49.
+
+**Mutter.** The dynamic triple-buffering scheduler — enabling the compositor to queue up to three frames when the GPU lags behind the display — landed in GNOME 48 after a five-year development period. GNOME 50's VRR stabilisation required independent low-latency cursor rendering (the cursor pipeline must not stall on the scene-graph render cycle). Future Mutter work centres on colour pipeline correctness (HDR tone mapping, wide-gamut handling) and reducing compositor overhead under sustained load.
+
+**GNOME 51.** The September 12, 2026 release is in active development (alpha June 27, beta August 1, RC August 29). The primary focus is Wayland maturity: fractional-scaling polish, NVIDIA Wayland compatibility improvements, screencast optimisation (fewer stage paints and buffer copies), and input-capture portal improvements. Specific API changes should be verified against GNOME Discourse release posts before citing.
+
+**Phosh / mobile GNOME.** Phosh is the GTK/wlroots-based Wayland shell targeting phones and tablets — distinct from the Mutter-based GNOME Shell. It ships on approximately a monthly cadence; Phosh 0.56 (July 2026) added a top-bar load-meter plugin and per-application grid visibility control.
+
+## 11. Integrations
 
 - **Chapter 39 (Qt and GTK GPU Rendering)**: The GTK4 rendering pipeline this chapter treats as a black box — `GskRenderer`, `GskVulkanRenderer`, the `GskRenderNode` tree, and libadwaita's adaptive widgets and `AdwStyleManager` — is covered end to end there. Read the two chapters together to see both the app-author's platform APIs (here) and the GPU frame path they feed (Ch39).
 
