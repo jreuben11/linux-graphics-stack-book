@@ -257,7 +257,109 @@ Two design points distinguish this from a purely immediate-mode toolkit like **e
 
 ### 2.2 Built-in Widgets
 
-`iced_widget` ships the standard toolkit: `text`, `button`, `text_input`, `checkbox`, `radio`, `toggler`, `slider`, `pick_list`, `combo_box`, `progress_bar`; the layout containers `column`, `row` (with `row::Wrapping` in 0.14), `container`, `scrollable`, `stack`, and `pane_grid`; and the media/vector widgets `image`, `svg`, `canvas`, and `shader`.[^releases] The `column![...]` and `row![...]` macros are ergonomic constructors. Widgets are configured with a builder-style fluent API — `.width(Length::Fill)`, `.padding(10)`, `.spacing(8)`, `.on_press(msg)` — and turned into a type-erased `Element` via `.into()`.
+`iced_widget` ships the standard toolkit: `text`, `button`, `text_input`, `checkbox`, `radio`, `toggler`, `slider`, `pick_list`, `combo_box`, `progress_bar`; the layout containers `column`, `row` (with `row::Wrapping` in 0.14), `container`, `scrollable`, `stack`, and `pane_grid`; and the media/vector widgets `image`, `svg`, `canvas`, and `shader`.[^releases] Widgets are configured with a builder-style fluent API — `.width(Length::Fill)`, `.padding(10)`, `.spacing(8)`, `.on_press(msg)` — and turned into a type-erased `Element` via `.into()`.
+
+#### Layout Macros
+
+The multi-child layout containers — `column`, `row`, and `stack` — each have a corresponding macro that removes the need to call `.into()` on every child. The macro expands to `Container::with_children(vec![...])`, applying `.into()` to each argument automatically:
+
+```rust
+// macro form — each argument is coerced via .into()
+column![
+    button("Increment").on_press(Message::Increment),
+    text(state.value).size(48),
+    button("Decrement").on_press(Message::Decrement),
+]
+
+// equivalent builder form — explicit .push() and .into()
+Column::new()
+    .push(button("Increment").on_press(Message::Increment))
+    .push(text(state.value).size(48))
+    .push(button("Decrement").on_press(Message::Decrement))
+```
+
+The `.into()` coercion is the operative mechanism: any type that implements `Into<Element<'_, Message, Theme, Renderer>>` can appear inside a macro invocation without annotation, which is what makes deeply nested trees readable:
+
+```rust
+column![
+    row![
+        text("Name:").width(80),
+        text_input("Enter name…", &state.name)
+            .on_input(Message::NameChanged),
+    ]
+    .spacing(8),
+    row![
+        text("Age:").width(80),
+        slider(0..=120, state.age, Message::AgeChanged),
+        text(state.age),
+    ]
+    .spacing(8),
+    button("Save")
+        .on_press(Message::Save)
+        .style(button::success),
+]
+.spacing(12)
+.padding(16)
+```
+
+The three multi-child macros differ only in how they arrange their children:
+
+| Macro | Widget | Layout |
+|-------|--------|--------|
+| `column![a, b, c]` | `Column` | Children stacked vertically, top to bottom |
+| `row![a, b, c]` | `Row` | Children placed horizontally, left to right |
+| `stack![a, b, c]` | `Stack` | Children overlaid at the same position (z-ordered, last on top) |
+
+`stack!` is used for tooltips, floating action buttons over a scrollable list, badge overlays on icons, and any other case where widgets must occupy the same screen area. The last child in the macro is rendered on top.
+
+#### The `text!` Formatting Macro
+
+`text!` works like `format!` — it accepts a format string and arguments and produces a `Text` widget displaying the formatted result. It is the ergonomic alternative to `text(format!("…", …))`:
+
+```rust
+// text! — inline formatting
+text!("Score: {} / {}", state.score, state.max_score)
+
+// equivalent without the macro
+text(format!("Score: {} / {}", state.score, state.max_score))
+
+// static string — text() directly, no macro needed
+text("Hello, world!")
+```
+
+#### Single-Child Containers: Builder API Only
+
+Containers that hold exactly one child — `container`, `scrollable`, `mouse_area`, `tooltip`, `responsive` — have no macro form. They use the builder API directly, taking the child as a constructor argument:
+
+```rust
+scrollable(
+    column![
+        /* ... many rows ... */
+    ]
+    .spacing(4),
+)
+.height(Length::Fill)
+.direction(scrollable::Direction::Vertical(
+    scrollable::Scrollbar::new().width(8).scroller_width(6),
+))
+```
+
+`container` adds padding and alignment around a single child; `mouse_area` wraps a child to intercept mouse events without adding visual decoration; `tooltip` attaches a floating label shown on hover. None produce multiple children, so the `push`/vec-constructor pattern does not apply.
+
+#### `Length` and the Builder API
+
+Every layout widget exposes `.width(Length)` and `.height(Length)` (or `.size(Size<Length>)` for `container`). `Length` has four variants that cover the common layout cases:
+
+```rust
+pub enum Length {
+    Fill,           // expand to consume all available space on this axis
+    FillPortion(u16), // expand proportionally — FillPortion(2) takes twice FillPortion(1)
+    Shrink,         // collapse to the minimum size needed by the content
+    Fixed(f32),     // exact pixel size regardless of available space
+}
+```
+
+A `column` divides its available height among children: `Fill` children share the remaining space after `Fixed` and `Shrink` children have taken theirs; `FillPortion` children share in proportion to their weights. The same logic applies on the cross axis (`width`) for a `column`, or `height` for a `row`. The layout pass is a single top-down traversal — see §2.3.
 
 ### 2.3 The Layout Algorithm
 
