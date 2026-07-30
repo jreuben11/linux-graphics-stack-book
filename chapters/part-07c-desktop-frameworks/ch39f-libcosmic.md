@@ -946,6 +946,84 @@ The iced Elm model (a `Message` enum, an `update` function, a `view` function) i
 
 From the graphics-stack perspective that anchors this book, all three converge at the same point: Qt RHI, GSK, and wgpu each emit Vulkan commands that travel through the same Mesa drivers, the same kernel DRM subsystem, and the same KMS atomic commit path to the display. The compositor differences — Mutter, KWin, cosmic-comp — are the subject of Part IV (Ch20–Ch22). The toolkit rendering differences — Qt RHI, GSK GskGpuRenderer, iced wgpu — map directly to the Vulkan and GL chapters in Part III.
 
+### Rust UI Frameworks: iced/libcosmic vs gtk-rs vs cxx-qt
+
+A growing number of Linux desktop applications are written in Rust, but "written in Rust" spans three very different architectural positions. Each framework's Rust code sits at a different layer of the stack, inherits a different legacy surface, and makes different tradeoffs.
+
+#### Framework Overview
+
+| Dimension | iced / libcosmic | gtk-rs | cxx-qt |
+|-----------|-----------------|--------|--------|
+| What is Rust replacing? | Everything — no C or C++ in the stack | The application layer above GTK4 (C stays) | The business-logic layer above Qt (C++ stays) |
+| Rendering engine | wgpu (native Rust → Vulkan/GLES/Metal/DX12) | GSK (C, part of GTK4) | Qt RHI (C++, part of Qt 6) |
+| Widget model | Functional / immutable; Elm Message+update+view | GObject subclassing via `glib::subclass` macros; `CompositeTemplate` + Blueprint | QObject subclassing in Rust via `#[cxx_qt::bridge]`; QML frontend |
+| UI description language | Rust view function (returns `Element` tree) | Blueprint `.blp` → GtkBuilder XML; or programmatic GTK construction | QML (declarative) backed by Rust QObject properties |
+| Type system bridging | Pure Rust traits | GIR → GObject reference-counted pointers wrapped in `glib::Object<T>` smart pointers | `cxx` bridge: Rust struct ↔ Q_PROPERTY; `UniquePtr<QObject>` / `Pin<&mut T>` |
+| Memory model | Rust ownership throughout; no GC | GObject refcounting wrapped by Rust (`clone()` increments refcount); some `unsafe` in bindings | Rust ownership for Rust data; Qt parent/child ownership for QObject tree; cxx handles ABI boundary |
+| Accessibility | AccessKit → AT-SPI2 (Linux), native (Win/macOS) | AT-SPI2 via GTK4 (mature; best on Linux) | AT-SPI2 via Qt Accessibility (moderate) |
+| Platform reach | Linux (Wayland/X11), Windows, macOS, Web (WASM) | Linux (primary), Windows, macOS | Linux, Windows, macOS, Android, iOS (wherever Qt runs) |
+| Build tooling | `cargo` only; SPIR-V shaders compiled via `wgpu`/`naga` | `cargo` + Meson (Blueprint, GResource); `g-ir-scanner` for any new C libraries | `cargo` + CMake; `moc` still required for the Qt side |
+| Maturity | Pre-1.0 (iced); COSMIC Epoch 1 (libcosmic) | Production — used in GNOME core apps (Papers, Loupe, Decoder) | Production — used in KDE apps (KDE Connect, NeoChat, Merkuro) |
+
+#### iced / libcosmic
+
+iced is a pure-Rust reactive UI library with no C or C++ in its stack. The `Widget` trait is a Rust trait; the renderer is `iced_wgpu`, which calls wgpu directly; state management follows the Elm architecture — the entire application state lives in a single Rust struct, every user interaction is a `Message` value, and `update` is a pure function that produces a new state (see Ch39e §1 for the full architecture). libcosmic extends iced with the COSMIC widget set and theming system.
+
+The absence of any C boundary means the borrow checker's guarantees extend all the way from widget layout to GPU command encoding. There are no `Arc<Mutex<_>>` wrappers around widget state to placate a foreign type system, no `unsafe` blocks to call GTK or Qt functions, no GObject refcount cycles to audit. The tradeoff is breadth: iced's widget catalogue is smaller than GTK4's or Qt's, the API is pre-1.0 (breaking changes between releases), and there is no GIR-style automatic binding to expose iced widgets to Python or JavaScript.
+
+#### gtk-rs
+
+gtk-rs is the official Rust binding to GTK4, GLib, GIO, GDK4, and libadwaita, generated from GIR type definitions via the `gir` tool. All GTK4 widgets, GObject signals, and GLib async primitives are available in Rust with idiomatic wrappers.
+
+The binding wraps GObject pointers in `glib::Object<T>` smart pointers that increment/decrement the GObject refcount on `clone`/`drop`. This is safe for ordinary use, but the model is reference-counting rather than Rust ownership — a signal closure that captures a widget clone can keep the widget alive past its logical lifetime, producing a reference cycle. The `glib::subclass` module lets Rust code define new GObject types with proper `impl ObjectImpl`, `impl WidgetImpl`, etc. implementations; `#[derive(CompositeTemplate)]` wires Blueprint-defined template children to Rust struct fields at compile time.
+
+For GNOME-target applications, gtk-rs is the production choice: libadwaita-rs exposes `AdwApplicationWindow`, `AdwPreferencesDialog`, `AdwNavigationSplitView`, and the full Adwaita widget set; Blueprint provides compile-time property and signal validation; `cargo` and Meson cooperate cleanly. The rendering path is GSK → Vulkan (on Wayland) — the same path as a C GTK4 application.
+
+The inherited complexity is the C GObject type system itself. Even with Rust macros smoothing the surface, the concepts underneath — `GType` registration, property `ParamSpec` descriptors, signal marshalling, `GValue` variant containers, `dispose`/`finalize` split — all originate in a C design from the 1990s. A gtk-rs application developer must understand GObject ownership and signal connection semantics that have no parallel in idiomatic Rust.
+
+#### cxx-qt
+
+cxx-qt, built on the `cxx` C++/Rust interop library, allows Rust structs to be exposed as `QObject` subclasses consumable from QML. The Rust side defines a struct annotated with `#[cxx_qt::bridge]`; the macro generates the `moc`-compatible C++ header and the cxx bridge glue. Q_PROPERTY values stored in the Rust struct are readable and writable from QML; Rust methods are invokable via `Q_INVOKABLE`; Qt signals can be emitted from Rust and connected to QML slots.
+
+```rust
+#[cxx_qt::bridge]
+mod ffi {
+    #[cxx_qt::qobject]
+    #[derive(Default)]
+    struct Counter {
+        #[qproperty]
+        count: i32,
+    }
+
+    impl qobject::Counter {
+        #[qinvokable]
+        pub fn increment(self: Pin<&mut Self>) {
+            let new = self.count() + 1;
+            self.set_count(new);
+        }
+    }
+}
+```
+
+The QML frontend consumes `Counter` as a normal `QObject` with a `count` property and an `increment()` invokable — the Rust implementation is invisible to QML. This makes cxx-qt the natural path for KDE teams that want to harden existing QML applications with Rust business logic without rewriting the UI layer.
+
+The tradeoff is that Qt remains a C++ dependency: `moc` still runs, CMake is still required alongside `cargo`, and the cxx bridge introduces `UniquePtr<T>` and `Pin<&mut T>` pointer types at the boundary that have no equivalent in ordinary Rust code. Memory safety holds within the Rust side; the Qt object graph on the C++ side follows Qt's parent/child ownership model, which is managed manually.
+
+#### Choosing Between the Three
+
+| If you are building… | Recommended framework |
+|----------------------|-----------------------|
+| A COSMIC desktop application | iced / libcosmic |
+| A GNOME / Flatpak application targeting Flathub | gtk-rs + libadwaita-rs |
+| A KDE application with existing QML UI | cxx-qt |
+| A cross-platform app (Linux + Windows + Android) in Rust | cxx-qt (via Qt's platform reach) or iced (via winit) |
+| A greenfield app with no desktop integration requirements | iced (smallest dependency surface) |
+| Strongest a11y on Linux today | gtk-rs (GTK4 AT-SPI2 maturity) |
+| Full Rust ownership semantics with no C/C++ boundary | iced / libcosmic |
+| Largest available widget catalogue | gtk-rs (full GTK4 + libadwaita) |
+
+All three rendering paths ultimately converge on the same Mesa Vulkan driver: iced via `wgpu` → `VkCommandBuffer`; gtk-rs via GSK's Vulkan renderer → `VkCommandBuffer`; cxx-qt via Qt RHI → `VkCommandBuffer`. The differentiation is entirely above the Vulkan API boundary.
+
 ---
 
 ## Roadmap
