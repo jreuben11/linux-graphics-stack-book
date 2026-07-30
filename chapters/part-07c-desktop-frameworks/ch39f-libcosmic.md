@@ -828,20 +828,77 @@ Native GTK3/GTK4 and Qt5/Qt6 applications generally run as Wayland clients direc
 
 ## 9. Comparison: COSMIC vs GNOME vs KDE vs elementary
 
-| Dimension | COSMIC | GNOME | KDE Plasma | elementary OS (Pantheon) |
-|---|---|---|---|---|
-| Implementation language | Rust | C (Shell in JS) | C++ | Vala / C |
-| Compositor | cosmic-comp (smithay) | Mutter | KWin | Gala (on Mutter) |
-| Compositor renderer | GLES (`GlowRenderer`) | GL / Vulkan | GL / Vulkan (Qt/KWin) | GL |
-| Widget toolkit | libcosmic (on iced) | GTK4 + libadwaita | Qt6 + Kirigami | GTK4 (Granite) |
-| App GPU rendering | wgpu → Vulkan | GSK (Vulkan/GL) | Qt RHI (Vulkan/GL) | GSK |
-| Config system | cosmic-config (RON files) | GSettings / dconf | KConfig (INI) | GSettings / dconf |
-| Extension model | Separate applets/processes | GNOME Shell JS extensions | Plasmoids (QML) | Limited |
-| Window management | Auto-tiling + floating built in | Floating (extensions for tiling) | Floating (+ scripts) | Floating |
-| Session protocol | Wayland only | Wayland (X11 legacy) | Wayland + X11 | Wayland + X11 |
-| Primary sponsor | System76 | GNOME Foundation | KDE e.V. | elementary, Inc. |
+### Architecture
 
-The COSMIC-specific rows are the ones that matter for this book. Its compositor renders through GLES while its applications render through wgpu/Vulkan (§2.6) — a split none of the other three share, since GNOME and KDE use one toolkit's renderer end to end. Its configuration is human-readable RON files with per-application file watching (§5, §6.3) rather than a binary/keyed database like dconf or an INI store like KConfig. And auto-tiling is a first-class, built-in window-management mode rather than an extension or script. What COSMIC does *not* yet have, relative to GNOME and KDE, is a decade of ecosystem maturity: the API is explicitly unstable, the third-party application set is young, and some polish and accessibility work is ongoing as the 1.0.x series matures.
+| Dimension | COSMIC | GNOME | KDE Plasma | elementary OS (Pantheon) |
+|-----------|--------|-------|------------|--------------------------|
+| Implementation language | Rust | C (Shell in JS) | C++ | Vala / C |
+| Compositor | cosmic-comp (Smithay) | Mutter | KWin | Gala (on Mutter) |
+| Compositor renderer | GLES (`GlowRenderer`) | GL / Vulkan (GSK) | GL / Vulkan (KWin OpenGL/Vulkan) | GL |
+| Widget toolkit | libcosmic (on iced) | GTK4 + libadwaita | Qt 6 + Kirigami | GTK4 (Granite) |
+| App GPU rendering | wgpu → Vulkan / GLES | GSK → Vulkan (Wayland) / GL | Qt RHI → Vulkan / GL | GSK → GL |
+| Config system | cosmic-config (RON files) | GSettings / dconf (binary) | KConfig (INI files) | GSettings / dconf |
+| IPC / shell protocol | D-Bus + Wayland ext. | D-Bus + GNOME-specific ext. | D-Bus + plasma-wayland-protocols | D-Bus + pantheon-wayland |
+| Build system for apps | Cargo + Meson | Meson (Blueprint, GResource) | CMake + ECM | Meson / CMake |
+| Preferred app language | Rust | C / Rust (gtk-rs) / Python / JS | C++ / QML / Rust | Vala / C |
+
+### Display Stack
+
+| Dimension | COSMIC | GNOME | KDE Plasma | elementary OS (Pantheon) |
+|-----------|--------|-------|------------|--------------------------|
+| HDR support | Planned; not yet in Epoch 1 | Stable — HDR switch (GNOME 48), brightness in Quick Settings (49), HDR screen sharing (50) | Stable and mature — simultaneous HDR + ICC profiles since Plasma 6.7 | Not supported |
+| VRR (variable refresh rate) | Basic support in cosmic-comp | Stable since GNOME 50 (experimental from GNOME 46) | Stable since Plasma 6.3; per-monitor toggle | Limited |
+| Fractional scaling | Supported (Wayland) | Stable since GNOME 50; improved Xwayland fractional scaling | Mature on Wayland; per-output in Display Settings | Limited |
+| Color management | Planned (Smithay protocol in progress) | `wp-color-management-v2` (GNOME 50); wide-gamut SDR-native mode | ICC profiles + per-display KCM calibration (Plasma 6.7) | Not supported |
+| Multi-monitor | Supported; arrangement via COSMIC Settings | Full support; per-monitor scale; mirror / extend | Full support via KScreen; per-monitor refresh / scale / rotation | Basic support |
+| Direct scan-out | Via Smithay DRM backend | Via Mutter DRM backend | Via KWin DRM backend | Via Gala/Mutter |
+
+### Accessibility
+
+| Dimension | COSMIC | GNOME | KDE Plasma | elementary OS (Pantheon) |
+|-----------|--------|-------|------------|--------------------------|
+| Accessibility framework | AT-SPI2 via AccessKit (libcosmic) | AT-SPI2 (GTK4 native + AccessKit on Win/macOS) | AT-SPI2 via Qt Accessibility | AT-SPI2 (GTK4) |
+| Screen reader | Early — Orca-compatible via AT-SPI2; enabled by default in Setup since 1.0.2 | Orca (mature; redesigned in GNOME 50 with auto language switching, new prefs UI) | Basic AT-SPI2 compatibility; Orca works but integration is less complete | Basic |
+| Keyboard navigation | Partial; improving in 1.0.x | Mature — full GTK4 focus model; accessible roles on all built-ins | Mature — Qt accessibility with full keyboard navigation | Moderate |
+| Reduced motion | Partial | System-wide option since GNOME 50 | Configurable per-effect in KWin | Not exposed system-wide |
+
+### Portals and Sandboxing
+
+| Dimension | COSMIC | GNOME | KDE Plasma | elementary OS (Pantheon) |
+|-----------|--------|-------|------------|--------------------------|
+| xdg-portal backend | xdg-desktop-portal-cosmic | xdg-desktop-portal-gnome (comprehensive) | xdg-desktop-portal-kde (comprehensive) | xdg-desktop-portal-pantheon (basic) |
+| Flatpak integration | COSMIC Store (Flatpak-first); portal support in progress | GNOME Software + Flathub; mature portal coverage | Discover (PackageKit + Flatpak + Snap); mature portal coverage | AppCenter (curated Flatpak); basic portals |
+| App store / software center | COSMIC Store | GNOME Software | Discover | AppCenter |
+| Sandboxed file access | FileChooser portal (basic) | FileChooser + Documents portal (mature) | FileChooser portal (mature) | FileChooser portal |
+| Remote desktop / screen sharing | Not yet shipped; planned | gnome-remote-desktop (RDP + VNC; PipeWire-backed); hardware-accel in GNOME 50 | KRdp (RDP server); KRfb (VNC); PipeWire screencast | Not supported |
+
+### Customisation and Theming
+
+| Dimension | COSMIC | GNOME | KDE Plasma | elementary OS (Pantheon) |
+|-----------|--------|-------|------------|--------------------------|
+| Theming system | libcosmic themes (RON); accent colors; dark/light variants | libadwaita CSS + accent colors (GNOME 47+); GTK3 theming intentionally restricted | Plasma Themes + KColorScheme + Breeze; per-widget CSS in QML | elementary stylesheet; Granite-based accent |
+| Custom app themes | libcosmic theme API (Rust) | libadwaita CSS custom properties; very limited third-party override | Full Qt stylesheet + QSS override possible | elementary stylesheet fork |
+| Icon themes | Cosmic Icons (XDG icon theme) | Adwaita (symbolic-first) | Breeze (symbolic + full-color) | elementary Icons |
+| Font configuration | COSMIC Settings font panel | GNOME Tweaks / Settings font panel | System Settings → Fonts + KFontConfig | elementary Settings |
+| Shell extensions / plugins | COSMIC Applets (separate Rust processes) | GNOME Shell JS extensions (in-process; EGO review) | Plasmoids (QML in-process) + KWin scripting | Limited (Switchboard plugs only) |
+
+### Platform and Ecosystem
+
+| Dimension | COSMIC | GNOME | KDE Plasma | elementary OS (Pantheon) |
+|-----------|--------|-------|------------|--------------------------|
+| Session protocol | Wayland only | Wayland (X11 session removed in GNOME 50) | Wayland + X11 (X11 session removed in Plasma 6.8) | Wayland + X11 |
+| XWayland | Supported | Supported | Supported | Supported |
+| Mobile / convergent | Not targeting mobile | Phosh (separate GTK/wlroots shell; ~monthly cadence) | Plasma Mobile (active; tracks Plasma releases) | Not targeting mobile |
+| Release cadence | Rolling point releases on Epoch 1 | 6-month (March / September; named releases) | 4-month (~3 releases/year; numbered) | Infrequent major releases |
+| API stability | Unstable (pre-stable API commitment) | Stable (GTK4 / libadwaita LGPLv2.1) | Stable (Qt / KF6 LGPLv3 + GPLv2) | Stable (Granite LGPL) |
+| Primary sponsor | System76 | GNOME Foundation | KDE e.V. | elementary, Inc. |
+| Governance | System76-led; community PRs welcome | Board + Release Team committee; FOSS | Board of KDE e.V.; meritocracy | elementary, Inc.-led |
+
+### Summary
+
+The table reveals four distinct engineering philosophies. **KDE Plasma** offers the deepest configurability and the most mature display stack (HDR, VRR, ICC, multi-monitor all stable) at the cost of a large C++/QML codebase. **GNOME** prioritises coherence and Flatpak-first application distribution, with a rapidly maturing Wayland pipeline (wp-color-management-v2, VRR, hardware-accelerated remote desktop all landing in GNOME 49–50) and the strongest accessibility story. **COSMIC** is the only desktop written entirely in Rust, making memory safety a first-class architectural property; it is also the only one where the compositor renderer (GLES) and the application renderer (wgpu/Vulkan) are architecturally distinct stacks, and the only one with auto-tiling as a built-in mode. Its display stack (HDR, color management) and portal coverage trail GNOME and KDE while the 1.0.x series matures. **elementary OS** targets the most curated and opinionated experience, but its display stack and portal coverage are the least developed of the four.
+
+From a graphics-stack perspective, GNOME and KDE are the reference targets for Wayland protocol adoption — new protocols (color management, explicit sync, input capture) typically land in Mutter or KWin first. COSMIC is a useful stress-test for Smithay maturity and Rust-based compositor development. elementary is a useful reference for a GTK4 app running under a Mutter-derived compositor with minimal extensions.
 
 ---
 
