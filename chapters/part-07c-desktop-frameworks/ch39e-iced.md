@@ -12,6 +12,7 @@
   - [1.7 What is the Elm Architecture?](#17-what-is-the-elm-architecture)
   - [1.8 What is wgpu?](#18-what-is-wgpu)
 - [2. Widget System](#2-widget-system)
+  - [2.7 View Composition and Partial Re-renders](#27-view-composition-and-partial-re-renders)
 - [3. wgpu Rendering Backend](#3-wgpu-rendering-backend)
 - [4. Wayland Integration: winit, iced_layershell, and iced_sctk](#4-wayland-integration-winit-iced_layershell-and-iced_sctk)
 - [5. Custom GPU Shaders in iced](#5-custom-gpu-shaders-in-iced)
@@ -479,6 +480,96 @@ impl<Message> canvas::Program<Message> for Dial {
 ### 2.6 Overlays
 
 The provided `Widget::overlay` method returns an optional `overlay::Element` drawn in a second pass above the normal tree, escaping the parent's clipping and z-order. This is how tooltips, dropdown menus, and `pick_list` popups position themselves over sibling content without the parent container needing to reserve space.[^docs-widget]
+
+### 2.7 View Composition and Partial Re-renders
+
+iced does not have a fine-grained component model where individual subtrees declare themselves dirty. Instead it combines three mechanisms — **`widget::Tree` reconciliation**, the **`lazy` widget**, and **renderer-level primitive culling** — to avoid redundant work without exposing an explicit invalidation API to the programmer.
+
+#### When `view()` runs
+
+`view(&State)` is called exactly once per processed `Message`, not once per frame. An application at rest — no pending messages, no subscriptions firing — calls `view()` zero times and submits zero GPU frames. This is the first and most important efficiency: the view function is only as expensive as the frequency of state changes.
+
+#### `widget::Tree` reconciliation — preserving per-widget state
+
+The runtime maintains a parallel `widget::Tree` of per-widget **internal state** alongside the `Element` tree returned by `view`. Internal state is anything a widget owns that is not part of application state: a `TextInput`'s cursor position and selection range, a `Scrollable`'s scroll offset, an animation's current progress. This state must survive across calls to `view()` even though `view()` constructs fresh widget descriptions each time.
+
+When `view()` returns a new `Element` tree, the runtime reconciles it against the existing `widget::Tree` by calling `Widget::diff(&self, tree: &mut Tree)` on each node. Reconciliation is **positional and type-based**: a widget at position *i* in the tree that has the same `Widget::tag()` as the widget at position *i* in the previous tree retains its internal state. If the type changes — because a conditional swapped one widget type for another — the old state is discarded and the new widget's `Widget::state()` is used to initialise a fresh entry. Container widgets recurse: `Column::diff` calls `diff` on each child in order.
+
+```
+prev tree:  column [ text_input(cursor=5), scrollable(offset=200px), button ]
+                      ─── same tag ───    ─────── same tag ────────   ─────
+next tree:  column [ text_input(...)     , scrollable(...)            , button ]
+                      ↑ cursor=5 kept         ↑ offset=200px kept
+```
+
+The description of the widget changes freely between calls to `view()` — label, placeholder, colour, padding — but the *internal state slot* is reused as long as the positional type identity holds. This is why returning different widget types from a conditional (e.g. toggling between a `text_input` and a `text`) resets internal state, while changing properties does not.
+
+#### `lazy`: skipping subtrees when their inputs are unchanged
+
+`iced::widget::lazy(dependency, view_fn)` is the explicit partial re-render primitive. It stores the result of `view_fn` and **reuses it unchanged** as long as `dependency` compares equal to the value from the previous call (via `PartialEq`). `view_fn` is not called at all when the dependency is stable — the cached `Element` subtree is returned directly, skipping construction, layout, and draw for the entire branch.
+
+```rust
+use iced::widget::{column, lazy, text, button, scrollable};
+
+fn view(state: &State) -> Element<'_, Message> {
+    column![
+        // Always re-renders — depends on state.title which changes often
+        text(&state.title).size(24),
+
+        // Only re-rendered when state.items changes.
+        // Constructing 10 000 row widgets on every keystroke in the
+        // search box would be wasted work; lazy skips it.
+        lazy(&state.items, |items| {
+            scrollable(
+                column(
+                    items.iter().enumerate().map(|(i, item)| {
+                        row![
+                            text(&item.name).width(200),
+                            text(item.score),
+                            button("Remove").on_press(Message::Remove(i)),
+                        ]
+                        .spacing(8)
+                        .into()
+                    })
+                    .collect::<Vec<_>>(),
+                )
+                .spacing(4),
+            )
+        }),
+
+        // Footer re-renders whenever unsaved_changes changes
+        lazy(state.unsaved_changes, |unsaved| {
+            button(if unsaved { "Save*" } else { "Save" })
+                .on_press(Message::Save)
+        }),
+    ]
+    .spacing(12)
+}
+```
+
+`lazy` can be nested — a `lazy` subtree can contain further `lazy` nodes, each with its own dependency key. The dependency type must implement `PartialEq + Clone + 'static`; slices, `Vec`, structs, and tuples of primitives all qualify. A common pattern is to hash a large collection into a `u64` checksum and use that as the dependency rather than cloning the collection itself.
+
+#### Renderer-level primitive culling
+
+Even when `view()` runs and constructs the full `Element` tree, the wgpu renderer skips tessellation and GPU upload for primitives that fall outside the current viewport. A `scrollable` containing ten thousand rows only processes the ~50 rows currently in view during the draw pass; the rest are culled before any GPU work is done. This culling was added in iced 0.14 and is transparent to both widget authors and application code.
+
+The interaction between `lazy` and primitive culling gives iced two complementary efficiency layers: `lazy` skips CPU-side widget construction and layout for stable subtrees; culling skips GPU-side work for off-screen primitives within any subtree that does run.
+
+#### Reactive rendering (0.14)
+
+The 0.14 release introduced **reactive rendering**: the runtime tracks which widgets produced visual changes during the draw pass and accumulates a damage region. On the next frame, only the damaged clip rectangles are re-submitted to the GPU. An application whose top-level toolbar is stable but whose central content animates repaints only the central clip, not the full window surface. This is complementary to `lazy` — reactive rendering operates at the GPU submission layer, while `lazy` operates at the widget construction layer.
+
+#### Comparison with retained-mode toolkits
+
+| | iced | GTK4 | Qt/QML |
+|---|---|---|---|
+| Partial-update primitive | `lazy(dep, view_fn)` | `gtk_widget_queue_draw()` marks subtree dirty | `QQuickItem::update()` marks item dirty |
+| Per-widget internal state | `widget::Tree` (positional, type-keyed) | GObject properties retained in the widget object | `QQuickItem` properties retained in the QObject |
+| Layout granularity | Full pass when tree or size changes; `lazy` skips subtrees | Per-widget layout in response to `size-allocate` | Per-item layout in QML scene graph |
+| Off-screen optimisation | Primitive culling in renderer (0.14) | `GtkListView` / `GtkColumnView` item recycling | `QAbstractItemView` item delegate recycling |
+| View description cost | Rebuilds full tree in Rust; cheap allocation | Tree is persistent; no rebuild | QML engine re-evaluates only changed bindings |
+
+The key insight is that iced's view rebuild is cheap because Rust allocation is fast and widget descriptions are small value types — a `button` description is a handful of fields on the stack. The expensive operations (layout arithmetic, GPU tessellation, GPU upload) are gated behind change detection at the `widget::Tree` reconciliation, `lazy` dependency check, and renderer culling layers respectively.
 
 ---
 
