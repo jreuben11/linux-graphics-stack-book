@@ -42,7 +42,9 @@
 - [9. Performance and Debugging](#9-performance-and-debugging)
 - [10. Roadmap and Release Cadence](#10-roadmap-and-release-cadence)
 - [11. Flutter vs Qt: Platform Comparison](#11-flutter-vs-qt-platform-comparison)
-- [12. Integrations](#12-integrations)
+- [12. Flutter GPU and 3D Rendering](#12-flutter-gpu-and-3d-rendering)
+- [13. Rust Integration via flutter\_rust\_bridge](#13-rust-integration-via-flutter_rust_bridge)
+- [14. Integrations](#14-integrations)
 - [References](#references)
 
 ---
@@ -722,7 +724,376 @@ avoids entirely.
 
 ---
 
-## 12. Integrations
+## 12. Flutter GPU and 3D Rendering
+
+### 12.1 Impeller Is a 2D Renderer
+
+Impeller renders Flutter's widget layer — quads, paths, glyphs, images — as a 2D composition
+pipeline. It has no concept of a 3D scene graph, depth buffer, perspective projection, or mesh
+draw call beyond what is needed for CSS-style widget transforms. The comparison in §11 notes
+"No built-in 3-D" for Flutter; this section explains the two-layer answer Google is building
+toward that limitation.
+
+### 12.2 Flutter GPU
+
+**Flutter GPU** is a low-level Dart API that exposes Impeller's GPU primitives directly to Dart
+code, enabling developers to write custom renderers — including 3D renderers — entirely in Dart
+and GLSL without any native platform code.
+[Source: Flutter GPU design doc](https://github.com/flutter/engine/blob/main/docs/impeller/Flutter-GPU.md)
+
+Flutter GPU communicates with the Flutter engine through Dart FFI, invoking symbols exported from
+`libflutter` with the prefix `InternalFlutterGpu`. Applications import the stable surface
+`package:flutter_gpu` rather than calling those symbols directly.
+
+**Status:** Early preview on Flutter `master` channel only. Requires Impeller to be enabled.
+Shader compilation at build time uses the experimental Dart "Native Assets" feature. API
+stability is not guaranteed; the stable channel does not carry Flutter GPU as of mid-2026.
+
+**API sketch** — a triangle rendered into a `ui.Image` for display via `CustomPainter`:
+
+```dart
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+import 'package:flutter_gpu/gpu.dart' as gpu;
+
+Future<ui.Image> renderTriangle(int width, int height) async {
+  // 1. Allocate a GPU-private texture as the render target.
+  final texture = gpu.gpuContext.createTexture(
+    gpu.StorageMode.devicePrivate,
+    width,
+    height,
+  )!;
+  final renderTarget = gpu.RenderTarget.singleColor(
+    gpu.ColorAttachment(texture: texture),
+  );
+
+  // 2. Load shaders compiled ahead-of-time into a .shaderbundle asset.
+  final shaderLibrary =
+      gpu.ShaderLibrary.fromAsset('shaders/my_shaders.shaderbundle')!;
+  final pipeline = gpu.gpuContext.createRenderPipeline(
+    shaderLibrary['SimpleVertex']!,
+    shaderLibrary['SimpleFragment']!,
+  );
+
+  // 3. Upload vertex data to a device buffer.
+  final vertices = Float32List.fromList([
+     0.0,  0.5,  // top
+    -0.5, -0.5,  // bottom-left
+     0.5, -0.5,  // bottom-right
+  ]);
+  final vertBuffer = gpu.gpuContext
+      .createDeviceBufferWithCopy(ByteData.sublistView(vertices))!;
+
+  // 4. Encode a render pass.
+  final commandBuffer = gpu.gpuContext.createCommandBuffer();
+  final renderPass = commandBuffer.createRenderPass(renderTarget);
+  renderPass.bindPipeline(pipeline);
+  renderPass.bindVertexBuffer(
+    gpu.BufferView(vertBuffer,
+        offsetInBytes: 0,
+        lengthInBytes: vertBuffer.sizeInBytes),
+    3, // vertex count
+  );
+  renderPass.draw();
+  commandBuffer.submit();
+
+  // 5. Convert the GPU texture to a dart:ui Image for display.
+  return texture.asImage();
+}
+```
+
+The resulting `ui.Image` is drawn inside a `CustomPainter.paint()` via `canvas.drawImage()`,
+making the GPU-rendered content a composited layer within the ordinary Flutter widget tree. Uniform
+buffers, storage buffers, depth attachments, multi-pass rendering, and custom vertex layouts are
+all supported via the same command-buffer model.
+
+### 12.3 `flutter_scene` — A 3D Scene Graph
+
+**`flutter_scene`** (`bdero/flutter_scene`) is a realtime 3D rendering library built on top of
+Flutter GPU, originally a C++ component of Impeller's engine, now extracted as a pure Dart
+package. It provides both an **imperative scene graph API** and a **declarative widget API**,
+targeting the use case of importing animated glTF/GLB models without writing raw GPU code.
+[Source: flutter_scene on pub.dev](https://pub.dev/packages/flutter_scene)
+
+Key features:
+- `SceneView` widget — renders a `Scene` into the widget tree.
+- `SceneNode`, `SceneMesh`, `SceneModel` — scene graph primitives.
+- Lighting: directional, point, and spot lights with shadow casting (cached shadow tiles for
+  static geometry, alpha-masked shadow casters).
+- Skinned meshes and a blended animation system with per-clip declarative playback control.
+- Custom material workflow (`.fmat` format) with GLSL fragment and vertex shaders; hot-reload
+  capable in debug mode.
+- glTF/GLB model import.
+
+**Status:** Version 0.19.0 (mid-2026), pre-1.0, requires Flutter master from 2026-06-09 or later
+for render-to-mip-level support. Platform support: iOS, Android, macOS, Windows, Linux (Impeller
+enabled), Web (WebGL2). On Linux, Impeller is not yet the default renderer (§10), making
+`flutter_scene` doubly experimental on that platform.
+
+**Example — declarative API:**
+
+```dart
+import 'package:flutter_scene/flutter_scene.dart';
+import 'package:vector_math/vector_math.dart';
+
+class ModelViewer extends StatefulWidget {
+  const ModelViewer({super.key});
+
+  @override
+  State<ModelViewer> createState() => _ModelViewerState();
+}
+
+class _ModelViewerState extends State<ModelViewer> {
+  Scene _scene = Scene();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadModel();
+  }
+
+  Future<void> _loadModel() async {
+    // Load a binary glTF (GLB) asset.
+    final model = await SceneNode.fromAsset('assets/models/character.glb');
+    setState(() {
+      _scene = Scene()
+        ..add(model)
+        ..add(DirectionalLight(
+          direction: Vector3(0.5, -1, -0.5)..normalize(),
+          color: Colors.white,
+          intensity: 1.0,
+        ));
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SceneView(
+      scene: _scene,
+      camera: PerspectiveCamera(
+        position: Vector3(0, 1.5, -3.0),
+        target: Vector3.zero(),
+      ),
+    );
+  }
+}
+```
+
+### 12.4 Practical Guidance: 3D in Flutter Today
+
+| Approach | Maturity | Description |
+|---|---|---|
+| Flutter GPU | Preview, master only | Raw GPU API; write custom 3D renderers in Dart+GLSL |
+| `flutter_scene` | Preview, master only | Scene graph on Flutter GPU; glTF import, lighting, animation |
+| Platform views | Stable | Embed a native OpenGL/Vulkan/Unity/Godot view inside Flutter |
+| `flutter_angle` / community | Varies | OpenGL ES access via community plugins |
+
+For production applications requiring 3D on stable Flutter, **platform views** remain the only
+supported path — embedding a native rendering surface (e.g. a Unity build, a custom OpenGL ES
+view, or a game engine fragment) inside the Flutter widget hierarchy via
+`AndroidView`/`UiKitView`/`PlatformViewLink`. Flutter GPU and `flutter_scene` are the intended
+long-term answer but require the master channel and have no API stability guarantees yet.
+
+---
+
+## 13. Rust Integration via `flutter_rust_bridge`
+
+### 13.1 Flutter's Language Boundary
+
+Flutter's UI layer is permanently Dart — the framework, widget system, and `dart:ui` canvas API
+are Dart-only. The engine (Impeller, text rendering, platform channels) is C++. What Dart can
+reach beyond its own runtime is any code that exposes a **C ABI**: a shared library (`.so` on
+Linux and Android, `.dylib` on macOS, `.dll` on Windows) callable via `dart:ffi`.
+
+Rust compiles to native shared libraries with C-compatible ABI via `#[no_mangle]` / `extern "C"`
+declarations. The Flutter↔Rust boundary is therefore `dart:ffi` — but writing raw FFI bindings by
+hand (unsafe Dart, manual type marshalling, lifecycle management) is error-prone. The standard
+solution is `flutter_rust_bridge`.
+
+### 13.2 `flutter_rust_bridge`
+
+**`flutter_rust_bridge`** ([github.com/fzyzcjy/flutter_rust_bridge](https://github.com/fzyzcjy/flutter_rust_bridge))
+is a code-generation tool that takes annotated Rust source and produces Dart FFI bindings
+automatically. The developer writes normal Rust; the generated Dart side looks like ordinary async
+Dart functions. Version 2.12.0 is the current stable release (mid-2026).
+[Source: pub.dev/packages/flutter_rust_bridge](https://pub.dev/packages/flutter_rust_bridge)
+
+**Installation:**
+
+```bash
+cargo install flutter_rust_bridge_codegen
+# In the Flutter project root:
+flutter_rust_bridge_codegen create   # scaffold Rust crate inside native/
+flutter_rust_bridge_codegen generate # regenerate after editing Rust
+```
+
+### 13.3 Annotating Rust and Calling from Dart
+
+Write functions in `native/src/api/simple.rs` using ordinary Rust. Use the `#[frb]` attribute
+to control calling conventions:
+
+```rust
+// native/src/api/simple.rs
+use flutter_rust_bridge::frb;
+
+// #[frb(sync)]: callable directly (no await) — safe for Widget.build()
+#[frb(sync)]
+pub fn greet(name: String) -> String {
+    format!("Hello from Rust, {}!", name)
+}
+
+// Async Rust — returned as a Dart Future automatically
+pub async fn load_resource(path: String) -> anyhow::Result<Vec<u8>> {
+    tokio::fs::read(&path).await.map_err(Into::into)
+}
+
+// Opaque handle: Dart holds a reference; Rust owns the allocation.
+// Useful for GPU buffers, parsers, or network connections.
+pub struct NativeRenderer {
+    width: u32,
+    height: u32,
+    // non-Send, non-Clone internal state
+}
+
+impl NativeRenderer {
+    pub fn new(width: u32, height: u32) -> NativeRenderer {
+        NativeRenderer { width, height }
+    }
+
+    // Rust mutates the opaque object via &mut self
+    pub fn render_frame(&mut self) -> Vec<u8> {
+        vec![0u8; (self.width * self.height * 4) as usize] // RGBA
+    }
+}
+```
+
+After running `flutter_rust_bridge_codegen generate`, the Dart side looks like:
+
+```dart
+import 'package:my_app/src/rust/api/simple.dart';
+import 'package:my_app/src/rust/frb_generated.dart';
+
+Future<void> main() async {
+  // Load the native .so / .dylib / .dll and initialise the Rust runtime.
+  await RustLib.init();
+  runApp(const MyApp());
+}
+
+class CounterWidget extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    // #[frb(sync)] — called directly, no await needed inside build().
+    final message = greet(name: 'Flutter');
+    return Text(message);
+  }
+}
+
+class RendererWidget extends StatefulWidget {
+  const RendererWidget({super.key});
+  @override State<RendererWidget> createState() => _RendererWidgetState();
+}
+
+class _RendererWidgetState extends State<RendererWidget> {
+  late final NativeRenderer _renderer;
+
+  @override
+  void initState() {
+    super.initState();
+    // Opaque Rust objects are created and dropped via generated Dart wrappers.
+    _renderer = NativeRenderer(width: 1920, height: 1080);
+  }
+
+  @override
+  void dispose() {
+    _renderer.dispose(); // calls Rust Drop
+    super.dispose();
+  }
+
+  Future<Uint8List> _getFrame() async {
+    return await _renderer.renderFrame();
+  }
+  // ...
+}
+```
+
+### 13.4 Type System and Calling Conventions
+
+`flutter_rust_bridge` 2.x handles the full Rust type space:
+
+| Rust type | Dart representation |
+|---|---|
+| `String`, `&str` | `String` |
+| `Vec<T>` | `List<T>` |
+| `[T; N]` (fixed array) | `List<T>` |
+| `Option<T>` | `T?` (nullable) |
+| `Result<T, E>` | throws `FrbAnyhowException` on `Err` |
+| `struct` with public fields | generated Dart class with fields |
+| `enum` with variants | generated Dart sealed class |
+| Opaque (`pub struct Foo { ... }`) | generated Dart class with `dispose()` |
+| `async fn` | `Future<T>` in Dart |
+| `#[frb(sync)] fn` | synchronous Dart call (runs on Rust thread) |
+| Rust → Dart callback | `DartFn<Args, Ret>` parameter in Rust |
+
+Bidirectional calls work: Rust functions can accept a `DartFn` parameter and invoke it, which
+calls back into the Dart isolate — useful for progress callbacks, streaming data pipelines, and
+event notification.
+
+### 13.5 Build Integration
+
+**Android:** Cargo cross-compiles to `aarch64-linux-android` and `x86_64-linux-android` via the
+Android NDK toolchain. The generated `.so` files are bundled into the APK under `jniLibs/`.
+`flutter_rust_bridge_codegen` generates the Gradle configuration automatically.
+
+**Linux:** Cargo compiles to `x86_64-unknown-linux-gnu` (or `aarch64-`). The `.so` is placed
+alongside the Flutter Linux bundle and loaded via `DynamicLibrary.open()` at runtime.
+
+```bash
+flutter build linux   # triggers Cargo build internally
+# Output: build/linux/x64/release/bundle/lib/libmy_native.so
+```
+
+**Cargo.toml** (minimal — `flutter_rust_bridge` pulls in its own proc-macros):
+
+```toml
+[package]
+name = "my_native"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]   # required: produce a .so / .dylib / .dll
+
+[dependencies]
+flutter_rust_bridge = "2"
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+```
+
+### 13.6 Role and Limitations
+
+`flutter_rust_bridge` makes Rust a **computation companion** to Flutter's Dart UI, not a
+replacement for it:
+
+- **UI is always Dart.** Widget trees, layout, painting, and `dart:ui` are inaccessible from
+  Rust. Rust cannot produce Flutter widgets.
+- **Performance-critical logic** (image processing, signal processing, cryptography, physics
+  simulation, custom codecs) is the primary use case. Moving hot loops across the FFI boundary
+  pays the serialisation cost once at the call site rather than per-element.
+- **Shared libraries are platform-specific.** Each target (Android ARM64, Linux x86_64, etc.)
+  requires its own cross-compiled `.so`; the build system handles this but it adds CI matrix
+  complexity.
+- **Dart GC cannot collect Rust heap.** Opaque Rust objects must be explicitly disposed via the
+  generated `dispose()` method; forgetting to do so leaks Rust-side memory.
+- **No access to Impeller / Flutter GPU from Rust.** Rust cannot directly issue Impeller draw
+  calls. The integration point for Rust-side rendering output is to pass raw pixel data (RGBA
+  bytes or a file descriptor to a GPU buffer) back to Dart, which uploads it as a `ui.Image`.
+
+[Source: flutter_rust_bridge GitHub](https://github.com/fzyzcjy/flutter_rust_bridge)
+[Source: Flutter dart:ffi docs](https://docs.flutter.dev/platform-integration/android/c-interop)
+
+---
+
+## 14. Integrations
 
 - **Chapter 18 (Mesa Vulkan)** — Impeller's Vulkan backend is a standard Vulkan client: it calls `vkCreateInstance`, selects a physical device from Mesa's RADV, ANV, or NVK, and submits `VkCommandBuffer`s through `vkQueueSubmit`. The shader pipeline (SPIR-V compiled at build time, loaded as byte arrays) enters Mesa's NIR through `vk_spirv_to_nir()` exactly as described in Ch18.
 - **Chapter 20 (Wayland Protocol Fundamentals)** — the GTK embedder reaches the Wayland compositor through GDK's Wayland backend; flutter-elinux binds `wl_compositor` and `vkCreateWaylandSurfaceKHR` directly. Explicit sync (`wp_linux_drm_syncobj_v1`) will be wired through the embedder's `FlutterCompositor` callbacks as compositors enable it.
