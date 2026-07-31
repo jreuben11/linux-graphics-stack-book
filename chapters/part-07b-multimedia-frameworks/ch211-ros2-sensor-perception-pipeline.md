@@ -77,7 +77,8 @@ stack.
 9. [Diagnostics and Performance Profiling](#9-diagnostics-and-performance-profiling)
 10. [System Integration: End-to-End Perception Stack](#10-system-integration-end-to-end-perception-stack)
     - [10.4 Data Recording with rosbag2 and MCAP](#104-data-recording-with-rosbag2-and-mcap)
-11. [Integrations](#11-integrations)
+11. [Roadmap and Release Cadence](#11-roadmap-and-release-cadence)
+12. [Integrations](#12-integrations)
 
 ---
 
@@ -1265,7 +1266,110 @@ ros2 launch foxglove_bridge foxglove_bridge_launch.xml
 
 ---
 
-## 11. Integrations
+## 11. Roadmap and Release Cadence
+
+ROS 2 follows an annual release cadence on May 23 each year. Even-year releases are **Long-Term
+Support (LTS)** distributions, supported for five years; odd-year releases are standard
+distributions supported for eighteen months. The cadence is governed by REP-2000.
+[Source: REP-2000](https://ros.org/reps/rep-2000.html)
+
+### Distribution Timeline
+
+| Distribution | Released | EOL | LTS | Ubuntu Tier 1 | Notes |
+|---|---|---|---|---|---|
+| Humble Hawksbill | May 2022 | May 2027 | ✓ | 22.04 | Last ROS 2 on Ubuntu 22.04 LTS |
+| Iron Irwini | May 2023 | Dec 2024 | — | 22.04 | Standard; EOL |
+| Jazzy Jalisco | May 2024 | May 2029 | ✓ | 24.04 | Current LTS; default for new projects |
+| Kilted Kaiju | May 2025 | Dec 2026 | — | 24.04 | Standard; adds Zenoh 1.0, RViz2 plugins |
+| Lyrical Luth | May 2026 | May 2031 | ✓ | 26.04 | Next LTS; EventsCBGExecutor, GPU zero-copy |
+
+The chapter's code examples target **Jazzy Jalisco** (LTS, Ubuntu 24.04), which is the
+recommended baseline for new production deployments as of mid-2026.
+[Source: endoflife.date/ros-2](https://endoflife.date/ros-2)
+
+### Kilted Kaiju (May 2025) — Notable Changes
+
+Kilted Kaiju is a standard (non-LTS) release on Ubuntu 24.04 with support until December 2026.
+Key changes relevant to sensor and perception pipelines:
+
+**Zenoh 1.0 middleware.** The `rmw_zenoh` implementation reached production readiness with the
+Zenoh 1.0 protocol release. `rmw_zenoh` bridges robot networks over WAN without per-topic
+port configuration, making it practical for cloud-edge and multi-robot fleet deployments where
+UDP multicast DDS discovery is impractical.
+[Source: openrobotics.org, Kilted announcement](https://www.openrobotics.org/blog/2025/5/23/ros-2-kilted-kaiju-released)
+
+**RViz2 sensor plugins.** New built-in plugins cover `AccelStamped`, `TwistStamped`,
+`WrenchStamped`, `DepthCloud`, and `Effort` message types — display types previously requiring
+third-party plugins. Simulation time reset and Foxglove protocol export were also added.
+
+**rosbag2 as rclcpp components.** The recorder and player nodes are now loadable as rclcpp
+components, enabling intra-process zero-copy recording within a composable node container. Thread
+priority for compression workers is now configurable — relevant for real-time LiDAR recording
+where compression latency can otherwise jitter the recording pipeline.
+
+**Python action type hints.** `ActionClient` and `ActionServer` gained full static type hints,
+improving IDE completion and mypy checking for Python-based perception nodes.
+
+**nav_msgs/PoseStampedArray.** A new array message type for publishing multiple pose hypotheses
+— directly useful for multi-hypothesis localization outputs feeding the perception stack.
+
+**OpenCV 4.12 native support.** The `cv_bridge` and `image_transport` packages support OpenCV
+4.12 without source patches, removing a common build friction point for camera pipeline nodes.
+
+### Lyrical Luth (May 2026) — Notable Changes
+
+Lyrical Luth is an LTS release on Ubuntu 26.04 "Resolute", supported until May 2031. It pairs
+with Ubuntu 26.04 LTS for an LTS-on-LTS combination that industrial deployments can target for
+full five-year support horizons.
+[Source: myzhar.tech, Lyrical Luth analysis](https://myzhar.tech/posts/ros2-lyrical-luth-released/)
+
+**CallbackGroupEventsExecutor (`EventsCBGExecutor`).** The new executor replaces the internal
+polling loop with an event queue driven by `epoll`/condition variables. Benchmarks show 10–15%
+lower CPU compared to `SingleThreadedExecutor` and `MultiThreadedExecutor` under identical
+workloads. It adds support for multiple ROS time sources within a single node and per-thread
+priority controls — important for mixed real-time/best-effort callback graphs common in sensor
+fusion pipelines.
+
+**`rosidl::Buffer` — zero-copy GPU transfer.** The new buffer type in the ROS IDL layer allows
+a publisher to hand a message to a subscriber without serialising through CDR and without copying
+between CPU and GPU memory. Perception pipelines that keep tensors in CUDA device memory (e.g.
+the NITROS pattern described in §8) can now use the standard DDS topic bus for intra-machine
+transfers without materialising a CPU-side copy.
+
+**rosbag2 circular recording.** The `--max-bag-files N` flag implements a rolling log that
+automatically deletes the oldest segment when N files are reached. Per-topic message-loss metrics
+are published to dedicated diagnostic topics, enabling real-time monitoring of drop rates in high-
+bandwidth sensor recordings (dense point clouds, raw image streams).
+
+**Python `AsyncNode`.** ROS 2 callbacks integrate natively with Python's `asyncio` event loop,
+removing the callback-thread/coroutine impedance mismatch that previously required manual
+`asyncio.run_coroutine_threadsafe` bridging in async perception services.
+
+**Explicit YAML type annotations in parameters.** Launch files and parameter files can now
+annotate scalar values with `!!str`, `!!bool`, `!!int`, etc. to prevent YAML's implicit type
+coercion from misinterpreting values like `"off"` as boolean false or `"1e3"` as a float.
+Range validation was extended to integer and double arrays.
+
+### Long-Term Direction
+
+The official ROS 2 roadmap tracks work items on GitHub project boards rather than publishing a
+fixed feature schedule. Themes active in the Lyrical Luth and Rolling development cycles include:
+
+- **Executor modernisation.** The `EventsCBGExecutor` is the first step; follow-on work targets
+  lock-free callback dispatch and unified real-time and non-real-time executor APIs.
+- **Type-system zero-copy generalisation.** `rosidl::Buffer` is the foundation for a broader
+  effort to make zero-copy transfer work across any rmw backend, not only shared-memory intra-
+  machine paths.
+- **Security by default.** DDS-Security (SROS2) provisioning is being streamlined; the goal is
+  to make encryption and authentication opt-out rather than opt-in for new deployments.
+- **Python tooling parity.** Type hints, `AsyncNode`, and improved `rclpy` executor internals
+  continue to close the ergonomic gap between the Python and C++ client libraries.
+
+[Source: ROS 2 Roadmap — Kilted docs](https://docs.ros.org/en/kilted/The-ROS2-Project/Roadmap.html)
+
+---
+
+## 12. Integrations
 
 - **Chapter 96 (libcamera and the Linux Camera Stack)**: Camera hardware pipeline, V4L2
   Media Controller, ISP pipeline, RAW capture, and `ros2_v4l2_camera`. The
