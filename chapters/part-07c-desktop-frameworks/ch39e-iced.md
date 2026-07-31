@@ -21,6 +21,7 @@
   - [7.4 Animation with Time Subscriptions](#74-animation-with-time-subscriptions)
 - [8. Accessibility](#8-accessibility)
 - [9. Performance and Debugging](#9-performance-and-debugging)
+- [10. Bevy Integration](#10-bevy-integration)
 - [Roadmap](#roadmap)
 - [Integrations](#integrations)
 - [References](#references)
@@ -1038,6 +1039,192 @@ Because the backend is `wgpu`, all of wgpu's diagnostics apply. Setting `WGPU_BA
 ### 9.3 GPU Profiling
 
 For frame-level profiling, an iced application built on wgpu can be captured with **RenderDoc** (its Vulkan submissions are ordinary `vkQueueSubmit` calls) to inspect per-pass timing and pipeline state. CPU-side, the **puffin** and **tracy** profilers integrate through `tracing` spans to attribute time across layout, tessellation, and the render passes. The combination — RenderDoc for the GPU timeline, tracy for the CPU timeline — localises whether a performance problem lives in the application's `view`/layout, in iced's batching, or in the driver.
+
+---
+
+## 10. Bevy Integration
+
+iced and **Bevy** share the same GPU substrate: both use **wgpu** as their sole rendering
+abstraction, emit SPIR-V via **naga**, and drive the same Mesa Vulkan back-ends (RADV, ANV, NVK).
+This makes iced/Bevy co-deployment significantly more tractable than integrating two toolkits with
+incompatible graphics APIs — in principle, a single `wgpu::Device` and `wgpu::Queue` can serve
+both.[^wgpu-crate][^wgpu-readme] Chapter 40 covers the Bevy side of this shared stack in depth;
+this section focuses on the iced perspective.
+
+### 10.1 Why Integrate iced with Bevy?
+
+The canonical use case is **game UI**: Bevy is an excellent 3-D / ECS engine but its built-in
+`bevy_ui` is designed around Bevy's own widget system, which historically has had less
+production polish than standalone GUI toolkits. Developers who want to author complex settings
+screens, inventory panels, or tool overlays in Elm-style iced — while Bevy drives the 3-D scene —
+reach for the iced/Bevy integration. The alternative commonly used is `bevy_egui`, an actively
+maintained integration with the immediate-mode **egui** toolkit (see Chapter 39h).
+
+| Scenario | Recommended approach |
+|---|---|
+| Simple debug overlay / performance counters | `bevy_ui` or `iyes_perf_ui` |
+| Complex retained UI (menus, settings, forms) in a Bevy app | `bevy_iced` or `bevy_egui` |
+| Standalone desktop application with optional 3-D viewport | Standalone iced, embed wgpu scene in `shader` widget (§5) |
+| Rust-first desktop shell (COSMIC) | libcosmic (Chapter 39f) |
+
+### 10.2 The `bevy_iced` Plugin
+
+**`bevy_iced`** ([github.com/tasgon/bevy_iced](https://github.com/tasgon/bevy_iced), also forked
+at [Azorlogh/bevy_iced](https://github.com/Azorlogh/bevy_iced)) is the community integration
+crate. It adds an `IcedPlugin` to the Bevy `App` and exposes an `IcedContext<UiMessage>` system
+parameter through which Bevy update systems can call `ctx.display()` to submit an iced widget
+tree for rendering each frame. The iced render pass is injected into Bevy's render graph after
+the main 3-D pass, so iced widgets appear on top of the 3-D scene.
+
+**Version compatibility** (published `bevy_iced` on crates.io):
+
+| `bevy_iced` | Bevy | iced |
+|---|---|---|
+| 0.5 | 0.13 | ~0.12 |
+| 0.4 | 0.11 | ~0.11 |
+| 0.3 | 0.10 | ~0.10 |
+
+> **Note:** As of mid-2026, no `bevy_iced` release targets Bevy 0.15/0.16 or iced 0.14. Pinning
+> to a git revision of the master branch, or maintaining a local fork, is currently required for
+> the latest versions of both crates. Check the repository for current status before adopting.
+> [Source: crates.io/crates/bevy_iced](https://crates.io/crates/bevy_iced)
+
+### 10.3 Canonical Example
+
+The minimal wiring — a Bevy app that renders a live iced text widget showing elapsed time:
+
+```rust
+use bevy::prelude::*;
+use bevy_iced::iced::widget::{button, column, text};
+use bevy_iced::{IcedContext, IcedPlugin};
+
+// 1. Define all UI events as a Bevy Event enum.
+#[derive(Event, Debug, Clone)]
+pub enum UiMessage {
+    Reset,
+}
+
+fn main() {
+    App::new()
+        .add_plugins(DefaultPlugins)          // Bevy's window, renderer, input, etc.
+        .add_plugins(IcedPlugin::default())   // inject iced render pass into Bevy's graph
+        .add_event::<UiMessage>()             // register the event type with Bevy's ECS
+        .add_systems(Startup, setup_scene)
+        .add_systems(Update, (ui_system, handle_ui_events))
+        .run();
+}
+
+// 2. Use IcedContext in any Bevy Update system to submit a widget tree.
+//    The system runs every frame; view() is called with the current resource state.
+fn ui_system(
+    time: Res<Time>,
+    mut ctx: IcedContext<UiMessage>,
+) {
+    let elapsed = time.elapsed_secs();
+
+    // Widget tree: standard iced widgets, column!/button/text macros work unchanged.
+    ctx.display(
+        column![
+            text(format!("Scene running: {elapsed:.2}s")).size(20),
+            button("Reset timer").on_press(UiMessage::Reset),
+        ]
+        .padding(16),
+    );
+}
+
+// 3. Handle UiMessage events in a separate Bevy system — keeps UI and game logic decoupled.
+fn handle_ui_events(
+    mut events: EventReader<UiMessage>,
+    // ... Bevy resources / queries for your game state
+) {
+    for event in events.read() {
+        match event {
+            UiMessage::Reset => {
+                info!("Reset requested from UI");
+                // mutate game state here
+            }
+        }
+    }
+}
+
+// Ordinary Bevy 3-D scene setup — unaffected by iced.
+fn setup_scene(mut commands: Commands) {
+    commands.spawn(Camera3d::default());
+    // meshes, lights, etc.
+}
+```
+
+The key points in this pattern:
+
+- **`IcedPlugin::default()`** registers the iced render node in Bevy's render graph. It reuses
+  Bevy's `wgpu::Device` and `wgpu::Queue` — no second GPU context is created.
+- **`IcedContext<UiMessage>`** is a Bevy system parameter. It captures the iced widget tree each
+  frame via `ctx.display(widget)`. The `UiMessage` generic is the iced `Message` type; it must
+  also be registered as a Bevy `Event`.
+- **Events flow Bevy → iced via `ctx.display()`** and **iced → Bevy via `EventWriter<UiMessage>`**
+  injected by `IcedContext` when the user interacts with a widget. The `handle_ui_events` system
+  reads those events with `EventReader<UiMessage>`.
+- **Bevy resources can be read inside `ui_system`** as ordinary `Res<T>` parameters, making it
+  straightforward to render health bars, inventory counts, or any game state directly in the iced
+  view without a separate data synchronisation layer.
+
+### 10.4 How the Render Graph Integration Works
+
+`IcedPlugin` appends an **iced render node** to Bevy's `RenderGraph` after the main 3-D pass.
+Inside the node:
+
+1. **`iced_wgpu::Engine`** is initialised once, sharing Bevy's `wgpu::Device`, `wgpu::Queue`,
+   and the swapchain `TextureFormat`. The `Engine` holds the quad, triangle, text, and image
+   pipelines used by every iced widget.
+2. Each frame, `iced_wgpu::Renderer` runs its two-phase pipeline — **prepare** (uploads geometry
+   and glyph atlas updates via `StagingBelt`) then **render** (issues draw calls into a
+   `wgpu::RenderPass` targeting the swapchain `TextureView` — the same texture Bevy's 3-D pass
+   already wrote to).
+3. The iced `Compositor` handles window-level surface presentation; in the Bevy integration it
+   delegates surface management back to Bevy's winit event loop rather than owning it.
+
+The result is a single GPU submit per frame with Bevy's 3-D scene in the first render pass and
+the iced overlay in a second render pass — no CPU readback, no texture blit, no second swapchain.
+
+### 10.5 Input Event Routing
+
+A critical implementation concern is that Bevy and iced both want to consume window input events
+(keyboard, mouse, touch). `IcedPlugin` intercepts raw `winit::Event` data early in Bevy's event
+pipeline and forwards it to iced's event queue before Bevy's `bevy_input` systems see it. If
+iced **captures** an event (e.g. a click lands inside an iced widget), it is consumed and Bevy
+game systems do not receive it. If iced does not capture it (the click lands in the 3-D viewport),
+the event propagates normally to Bevy. This is the same transparency model used by `bevy_egui`.
+
+### 10.6 Known Limitations
+
+| Limitation | Status |
+|---|---|
+| Multi-window | Not supported — `bevy_iced` attaches to the primary window only |
+| Clipboard | Not implemented in `bevy_iced` |
+| Version lag | Published crate trails both Bevy and iced releases by one or more versions |
+| iced 0.13+ API | iced 0.13 replaced `Application` / `Sandbox` traits with `iced::application()`; `bevy_iced` 0.5 predates this and uses the older API internally |
+
+### 10.7 Alternative Approaches
+
+When `bevy_iced` version lag is blocking, three alternatives are production-viable:
+
+**`bevy_egui`** ([github.com/vladbat00/bevy_egui](https://github.com/vladbat00/bevy_egui)) is
+the most actively maintained Bevy UI integration. It embeds **egui**, an immediate-mode GUI
+library (distinct from Dear ImGui — egui is pure Rust). `bevy_egui` tracks Bevy releases closely
+and is the safest choice when Bevy version currency matters more than Elm-style retained
+architecture.
+
+**Standalone iced window + IPC.** Run the iced GUI as a separate OS window (or separate binary)
+and communicate with the Bevy process via Unix sockets, channels, or shared memory. This is the
+cleanest architectural separation — iced and Bevy are fully independent — at the cost of IPC
+latency for state synchronisation.
+
+**Embed a 3-D scene inside iced** using the `shader` widget (§5.1). For tool applications where
+the 3-D view is secondary to the UI, this inversion makes iced the outer shell and the wgpu scene
+a widget. The COSMIC desktop's COSMIC Edit and similar apps follow this pattern with libcosmic.
+
+[Source: tasgon/bevy_iced](https://github.com/tasgon/bevy_iced)
+[Source: vladbat00/bevy_egui](https://github.com/vladbat00/bevy_egui)
 
 ---
 
