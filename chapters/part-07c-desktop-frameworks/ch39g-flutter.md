@@ -41,7 +41,8 @@
   - [8.2 Packaging: Snap, AppImage, and Flatpak](#82-packaging-snap-appimage-and-flatpak)
 - [9. Performance and Debugging](#9-performance-and-debugging)
 - [10. Roadmap and Release Cadence](#10-roadmap-and-release-cadence)
-- [11. Integrations](#11-integrations)
+- [11. Flutter vs Qt: Platform Comparison](#11-flutter-vs-qt-platform-comparison)
+- [12. Integrations](#12-integrations)
 - [References](#references)
 
 ---
@@ -552,7 +553,176 @@ Flutter ships multiple stable releases per year on a continuous-delivery model. 
 
 **Skia removal on Android.** The 2026 roadmap targets removing legacy Skia from Android 10+ builds once Impeller coverage is sufficient. This is Android-specific and has no effect on the Linux timeline.
 
-## 11. Integrations
+## 11. Flutter vs Qt: Platform Comparison
+
+Flutter and Qt are the two major cross-platform GUI frameworks that own their entire pixel pipeline
+— neither delegates to the OS widget layer the way React Native or GTK does. This section
+compares them across their shared target platforms: Linux desktop and Android. (Chapter 39b covers
+Qt in depth; this section is deliberately narrowed to the Linux and Android dimensions most
+relevant to a graphics-stack audience.)
+
+### 11.1 Rendering Philosophy
+
+Both frameworks bypass native OS widgets and custom-paint every pixel into a GPU surface, but
+they arrive there through different abstractions:
+
+| Dimension | Flutter (Impeller) | Qt (QRhi + Scene Graph) |
+|---|---|---|
+| Rendering abstraction | `Impeller::EntityPass` → per-platform backend | `QRhi` → Vulkan / OpenGL ES / Metal / D3D12 |
+| GPU API on Android | Vulkan (Impeller, API 29+); OpenGL ES fallback | Vulkan or OpenGL ES via QRhi |
+| GPU API on Linux | Skia/GL (current default); Impeller Vulkan in-dev | Vulkan (default via QRhi on Wayland) |
+| Shader compilation | AOT at build time → SPIR-V blobs bundled | Runtime compilation via SPIR-V (Qt Shader Tools) |
+| Scene representation | Immutable `Widget` tree rebuilt per state change | Mutable `QQuickItem` tree + property bindings |
+| Custom 3-D content | No built-in 3-D; use platform views or custom render | Qt Quick 3D (native first-class) |
+| Software fallback | Skia/CPU on unsupported hardware | `software` QPA backend (full CPU rasteriser) |
+
+Flutter's Impeller AOT-compiles all shaders at `flutter build` time — eliminating first-frame
+shader-compilation jank entirely. Qt's shader pipeline compiles at first use, which can produce
+stutter on first-seen shader variants unless applications use Qt's offline SPIR-V compilation
+tooling (`qsb`).
+[Source: Impeller docs](https://docs.flutter.dev/perf/impeller)
+[Source: QRhi, Qt 6.11](https://doc.qt.io/qt-6/qrhi.html)
+
+### 11.2 Linux Desktop
+
+**Windowing and compositor integration.** Qt has the most complete Linux Wayland integration of
+any toolkit: a native Wayland QPA plugin (`-platform wayland`) binds `xdg_shell`, `zwlr_layer_shell_v1`, `ext-session-lock-v1`, HDR colour management protocols, and `wp_fractional_scale_v1` directly in C++. Flutter's primary Linux path is the **GTK embedding** — it reaches Wayland through GDK and GTK4's Wayland backend, inheriting GTK's protocol support but not extending it independently. The `flutter-elinux` community embedder binds Wayland directly (including `zwlr_layer_shell_v1` for panels) at the cost of being unsupported.
+
+**Multi-window.** Qt supports multiple independent top-level windows on Linux with full native window management. Flutter's Linux embedding is single-window; Canonical is driving multi-window support but it is not yet in stable (as of 3.44, mid-2026). This is the largest functional gap for document-editor and IDE workflows.
+
+**Renderer status.** On Linux the default Flutter renderer as of 3.44 is **Skia with OpenGL** — the same renderer that Impeller replaced on iOS and Android. The Impeller Vulkan backend for Linux is in active development (tracked in Flutter GitHub issue #183495) but is not yet the default. Qt's Vulkan renderer via QRhi is production-stable on Linux.
+
+**Accessibility.** Qt exposes `QAccessible` → AT-SPI2 on Linux, which is the mature path tested against Orca. Flutter's AT-SPI2 integration via `AccessibilityBridge` is functional but less battle-tested on Linux than on Android (TalkBack) or iOS (VoiceOver).
+
+**Native look and feel.** Both frameworks custom-paint every pixel, so neither uses the OS's native widget controls. Flutter defaults to Material Design (or Cupertino), which is visually distinct from GNOME/Plasma. Qt Quick/QML also uses custom-painted widgets but the Qt ecosystem provides `org.kde.plasma.components` and `Kirigami` QML modules that match the desktop theme — a practical advantage on KDE desktops. Qt Widgets (`QWidget`-based) do use some native OS styling via `QStyle`.
+
+**Linux comparison summary:**
+
+| Feature | Flutter (Linux, 3.44) | Qt 6 (Linux) |
+|---|---|---|
+| Stable Vulkan renderer | No (Impeller in-dev) | Yes (QRhi) |
+| Native Wayland QPA | No (via GTK embedding) | Yes |
+| Multi-window | No | Yes |
+| `zwlr_layer_shell_v1` | Unofficial (flutter-elinux) | Yes (Qt 6 Wayland) |
+| AT-SPI2 accessibility | Early support | Mature |
+| Native theme integration | No (Material/Cupertino) | Partial (Qt Quick) / Full (Qt Widgets) |
+| D-Bus / XDG portal | Via platform channels | Direct C++ (`QDBusConnection`) |
+| Packaging (official) | Snap, AppImage, Flatpak | Flatpak, AppImage, distro packages |
+| Embedded Linux | Via flutter-elinux / embedder API | Qt for Device Creation (mature Yocto) |
+
+### 11.3 Android
+
+Android is the platform where Flutter leads Qt in ecosystem maturity, adoption, and Google-backed
+tooling — but the technical underpinning is closer than the reputation gap suggests.
+
+**Embedding.** Flutter's Android embedding runs inside an `Activity` (or `Fragment`) and renders
+into a `SurfaceView` (hardware-composited) or `TextureView` (composited into the view hierarchy,
+needed for platform views and certain overlays). The `FlutterEngine` owns the rendering thread
+and communicates with the Dart isolate via its internal channel system. Qt's Android embedding
+uses the Qt Android QPA plugin (`QtActivity` extends `org.qtproject.qt.android.QtActivityBase`),
+renders via `QAndroidPlatformWindow`, and compiles C++ to AArch64/x86_64 via the Android NDK
+toolchain.
+[Source: Flutter Android platform views](https://docs.flutter.dev/platform-integration/android/platform-views)
+
+**Renderer.** Flutter 3.44 ships **Impeller Vulkan as the only renderer on Android 10+ (API 29+)**;
+Skia has been removed for modern devices. For older Android (API < 29) or devices without Vulkan,
+Flutter falls back to Impeller's OpenGL ES path. The Impeller Vulkan path maps cleanly onto
+Android's `ANativeWindow` surface → `VkSurfaceKHR` → `VkSwapchainKHR` pipeline. Qt uses QRhi
+on Android, preferring Vulkan where available and falling back to OpenGL ES — the same logical
+choice but with runtime shader compilation rather than Flutter's AOT approach.
+[Source: Impeller removed Skia from Android 10+](https://levelup.gitconnected.com/flutter-just-removed-skia-from-every-modern-android-device-impeller-vulkan-is-now-mandatory-b52de5038587)
+
+**Platform API access.** Flutter accesses Android APIs through `MethodChannel` (async, Dart ↔
+Java/Kotlin over a serialised codec) or `dart:ffi` (direct C ABI via JNI). The channel boundary
+adds latency and serialisation overhead for high-frequency calls (sensor data, audio callbacks).
+Qt calls Android APIs directly from C++ via JNI helpers in `<QJniObject>` — synchronous, no
+serialisation, with the full NDK API available. For production embedded or automotive Android
+deployments where C++ is already the lingua franca, Qt's direct-access model is simpler.
+
+**App distribution.** Flutter is a Google-first framework with deep Play Store toolchain
+integration (`flutter build appbundle`). Qt builds a standard APK/AAB via Gradle with no special
+store treatment. Flutter's ecosystem on pub.dev is heavily Android/iOS-optimised with thousands
+of plugins maintaining Android Kotlin implementations. Qt's QML module ecosystem is smaller and
+C++-centric.
+
+**Android comparison summary:**
+
+| Feature | Flutter (Android, 3.44) | Qt 6 (Android) |
+|---|---|---|
+| Default renderer | Impeller Vulkan (API 29+) | QRhi Vulkan / OpenGL ES |
+| Shader jank | Eliminated (AOT SPIR-V) | Possible on first use (runtime compilation) |
+| App language | Dart (AOT release) | C++ + QML |
+| Native API access | MethodChannel / dart:ffi (JNI) | Direct C++ via `QJniObject` |
+| Platform views | Yes (SurfaceView / TextureView) | Yes (QAndroidPlatformWindow) |
+| TalkBack accessibility | Yes (`AccessibilityBridge`) | Yes (`QAccessible` Android) |
+| Minimum SDK | Android 5.0 (API 21) | Android 8.0 (API 26, Qt 6.8+) |
+| Toolchain | Gradle + flutter CLI | Gradle + CMake + NDK |
+| Play Store tooling | First-class (`flutter build appbundle`) | Standard Gradle APK/AAB |
+| GC pressure | Dart GC (can cause jank in alloc-heavy paths) | None (C++ RAII) |
+
+### 11.4 Cross-Platform Comparison
+
+Beyond the platform-specific differences, several dimensions apply equally to both Linux and Android:
+
+**Language and memory model.** Flutter uses **Dart** — a garbage-collected language with sound
+null safety, `async`/`await`, isolates for parallelism, and AOT compilation in release builds.
+Qt uses **C++** (no GC, RAII, deterministic destruction) with **QML** as the declarative UI
+layer (property bindings compiled by the QML engine, JIT or AOT with Qt Quick Compiler). Dart's
+GC can produce latency spikes in allocation-heavy code paths; C++ never does. C++ gives Qt
+direct control over memory layout, SIMD, and native library calls at zero cost.
+
+**UI programming model.** Flutter's widget system is purely functional and immutable: `build()`
+produces a new tree each time state changes; the framework diffs old and new trees. Qt Quick/QML
+is reactive and mutable: `QQuickItem`s live in a persistent scene graph; property bindings
+re-evaluate incrementally when their dependencies change. Flutter's model is simpler to reason
+about (no partial-update bugs); QML's model avoids full tree rebuilds for small state changes.
+
+**Binary size.** Flutter always bundles the Dart runtime and Impeller engine — approximately
+8 MB compressed for the base APK. Qt is modular: a Qt Quick application bundles the relevant
+Qt modules, typically 15–30 MB on Android for a rich app but potentially much smaller for
+embedded Lite builds with Qt for MCUs. On Linux, Qt can link statically or use system-installed
+libraries (reducing distribution size to near-zero); Flutter always carries its engine.
+
+**Startup time.** AOT Dart starts faster than JIT but the Flutter engine initialisation (surface
+creation, Dart isolate boot, asset loading) adds ~200–400 ms on a mid-range device vs a native
+Qt app which starts in native C++ time (typically < 100 ms to first frame on comparable hardware).
+The difference matters less for long-running applications than for widget/launcher-type apps.
+
+**Tooling.** Flutter DevTools provides CPU/GPU profiling, widget inspector, memory tracking, and
+network inspection in a unified browser-based UI. Qt Creator + Qt Design Studio provide a
+combined C++/QML IDE with a visual QML designer, valgrind/heaptrack integration, and QML
+profiler. Both toolchains are mature; Flutter's tooling is more integrated but Qt's is deeper for
+C++-level debugging.
+
+**Licensing.** Flutter is BSD 3-clause — always free including commercial and proprietary use.
+Qt is LGPL v3 for open-source projects; commercial proprietary applications require a Qt
+commercial licence (paid). For closed-source products Qt adds licensing overhead that Flutter
+avoids entirely.
+
+**When to choose:**
+
+| Requirement | Prefer Flutter | Prefer Qt |
+|---|---|---|
+| Mobile-first, ship to Play Store fast | ✓ | |
+| Consistent cross-platform Material UI | ✓ | |
+| Dart / web team, no C++ expertise | ✓ | |
+| Embedded Linux / automotive / industrial | | ✓ |
+| Native Linux theme (GNOME/Plasma) critical | | ✓ |
+| C++ codebase integration | | ✓ |
+| Multiple independent OS windows on Linux | | ✓ |
+| Built-in 3-D scene in the same toolkit | | ✓ (Qt Quick 3D) |
+| Zero licensing cost for proprietary product | ✓ | |
+| Hardware without Vulkan (software render) | | ✓ |
+| D-Bus / systemd / XDG deep integration | | ✓ |
+| Largest mobile plugin ecosystem | ✓ | |
+
+[Source: Qt vs Flutter embedded](https://www.ics.com/blog/qt-vs-flutter-which-framework-right-your-embedded-project)
+[Source: Qt Quick Scene Graph](https://doc.qt.io/qt-6/qtquick-visualcanvas-scenegraph.html)
+[Source: Impeller — Flutter perf docs](https://docs.flutter.dev/perf/impeller)
+
+---
+
+## 12. Integrations
 
 - **Chapter 18 (Mesa Vulkan)** — Impeller's Vulkan backend is a standard Vulkan client: it calls `vkCreateInstance`, selects a physical device from Mesa's RADV, ANV, or NVK, and submits `VkCommandBuffer`s through `vkQueueSubmit`. The shader pipeline (SPIR-V compiled at build time, loaded as byte arrays) enters Mesa's NIR through `vk_spirv_to_nir()` exactly as described in Ch18.
 - **Chapter 20 (Wayland Protocol Fundamentals)** — the GTK embedder reaches the Wayland compositor through GDK's Wayland backend; flutter-elinux binds `wl_compositor` and `vkCreateWaylandSurfaceKHR` directly. Explicit sync (`wp_linux_drm_syncobj_v1`) will be wired through the embedder's `FlutterCompositor` callbacks as compositors enable it.
