@@ -1547,7 +1547,7 @@ GNOME follows a strict six-month release cycle: March releases (aligned with GNO
 
 ## 11. Integrations
 
-- **Chapter 39 (Qt and GTK GPU Rendering)**: The GTK4 rendering pipeline this chapter treats as a black box — `GskRenderer`, `GskVulkanRenderer`, the `GskRenderNode` tree, and libadwaita's adaptive widgets and `AdwStyleManager` — is covered end to end there. Read the two chapters together to see both the app-author's platform APIs (here) and the GPU frame path they feed (Ch39).
+- **Chapter 39c (GTK4)**: The GTK4 rendering pipeline this chapter treats as a black box — `GskRenderer`, `GskVulkanRenderer`, the `GskRenderNode` tree, and libadwaita's adaptive widgets and `AdwStyleManager` — is covered end to end there. Read the two chapters together to see both the app-author's platform APIs (here) and the GPU frame path they feed (Ch39c).
 
 - **Chapter 2 / Chapter 3 (KMS Atomic and Advanced Display)**: Mutter's `MetaKmsUpdate` transactions program exactly the atomic-commit, plane-assignment, VRR, and colour-pipeline (GAMMA_LUT/DEGAMMA_LUT/CTM) properties described in those chapters. `MetaKmsDevice` is Mutter's wrapper over the DRM device those chapters open directly.
 

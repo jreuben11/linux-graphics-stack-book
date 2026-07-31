@@ -4,7 +4,7 @@
 > **Audience**: Graphics application developers, game developers, and tooling engineers who need a single library to bridge audio, input, windowing, and GPU access on Linux; systems developers who want to understand how a high-level multimedia layer maps onto the Linux graphics and audio stack.
 > **Status**: First draft — 2026-07-18
 
-SDL (Simple DirectMedia Layer) is the de facto cross-platform multimedia integration library for C/C++ applications and games. Where Qt (Ch39) and GTK (Ch39) are desktop widget toolkits, SDL is a lower-level integration layer: it exposes a unified API for windowing, input, audio, and now GPU access without providing a widget hierarchy. Every serious Linux game or multimedia application either uses SDL directly or re-implements a substantial subset of what SDL provides.
+SDL (Simple DirectMedia Layer) is the de facto cross-platform multimedia integration library for C/C++ applications and games. Where Qt (Ch39a) and GTK (Ch39c) are desktop widget toolkits, SDL is a lower-level integration layer: it exposes a unified API for windowing, input, audio, and now GPU access without providing a widget hierarchy. Every serious Linux game or multimedia application either uses SDL directly or re-implements a substantial subset of what SDL provides.
 
 SDL3.2.0 became the first stable, ABI-frozen release of the SDL 3 branch in January 2025. SDL2, the previous series, is now in maintenance mode — critical bug fixes only, no new features. This chapter covers SDL3 as the current target, noting SDL2 differences where relevant for the large installed base of SDL2 code still in production.
 

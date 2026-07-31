@@ -42,6 +42,7 @@
   - [6.2 Signal Handlers](#62-signal-handlers)
   - [6.3 Wrapping GL Output as a GdkTexture](#63-wrapping-gl-output-as-a-gdktexture)
   - [6.4 Dmabuf Interop](#64-dmabuf-interop)
+  - [6.5 GdkPixbuf: Raster Images into the GPU Texture Pipeline](#65-gdkpixbuf-raster-images-into-the-gpu-texture-pipeline)
 - [7. The GTK4 Widget System](#7-the-gtk4-widget-system)
 - [8. libadwaita: GNOME HIG Adaptive Widgets](#8-libadwaita-gnome-hig-adaptive-widgets)
 - [9. The GObject Type System](#9-the-gobject-type-system)
@@ -55,7 +56,6 @@
   - [9.8 G_DEFINE_TYPE Variants and GInterfaces](#98-g_define_type-variants-and-ginterfaces)
   - [9.9 Reference Counting and Floating References](#99-reference-counting-and-floating-references)
   - [9.10 GObject Introspection and Language Bindings](#910-gobject-introspection-and-language-bindings)
-  - [9.11 GObject vs QObject vs kernel kobject](#911-gobject-vs-qobject-vs-kernel-kobject)
 - [10. GLib: The Foundation Library](#10-glib-the-foundation-library)
   - [10.0 Primitive Type Aliases](#100-primitive-type-aliases-glibtypesh)
   - [10.1 Event Loop: GMainLoop and GMainContext](#101-event-loop-gmainloop-and-gmaincontext)
@@ -602,6 +602,33 @@ g_object_unref (b);
 
 The resulting `GdkTexture` is imported into the active renderer as a `VkImage` (with external memory) on the Vulkan path or an `EGLImage` (via `EGL_LINUX_DMA_BUF_EXT`) on the GL path. Placed under a `GskSubsurfaceNode` (§4.6), such a dmabuf texture becomes a candidate for KMS overlay-plane promotion. `GDK_DEBUG=dmabuf` traces the import negotiation, including which fourcc/modifier combinations the driver accepts.
 
+### 6.5 GdkPixbuf: Raster Images into the GPU Texture Pipeline
+
+**`GdkPixbuf`** (package `gdk-pixbuf-2.0`) is GTK's image loading library. It decodes JPEG, PNG, WebP, TIFF, and other formats into a CPU-side RGBA pixel buffer. From a GPU rendering perspective its role is narrow but important: it is the traditional path by which raster images from disk enter the `GskTextureNode` pipeline.
+
+```c
+/* Load a PNG file from disk into a CPU-side pixel buffer */
+GError *err = NULL;
+GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file("icon.png", &err);
+
+/* Upload to the GPU: GdkTexture wraps the pixbuf and owns a GL/Vulkan texture object */
+GdkTexture *texture = gdk_texture_new_for_pixbuf(pixbuf);
+g_object_unref(pixbuf);   /* GPU copy exists; CPU buffer can be freed */
+
+/* Use in a widget snapshot — becomes a GskTextureNode in the render tree */
+gtk_snapshot_append_texture(snapshot, texture, &bounds);
+```
+
+The conversion chain is:
+```
+gdk_pixbuf_new_from_file()   → GdkPixbuf  (CPU RGBA buffer)
+gdk_texture_new_for_pixbuf() → GdkTexture (uploads to GL texture / VkImage on first use)
+gtk_snapshot_append_texture()→ GskTextureNode in render node tree
+gsk_renderer_render()        → textured quad draw call
+```
+
+GTK 4.12+ introduces `GdkTexture` constructors (`gdk_texture_new_from_resource()`) that bypass `GdkPixbuf` entirely by loading directly into a GPU texture from compressed data, avoiding the CPU round-trip. For static assets embedded in a GResource bundle this is the preferred modern path. `GdkPixbuf` also provides CPU-side pixel manipulation — scaling (`gdk_pixbuf_scale_simple()`), compositing, and colour-space transforms — before the texture upload. GTK 5 plans to deprecate `GdkPixbuf` in favour of `GdkTexture` and `GdkPaintable`.
+
 ---
 
 ## 7. The GTK4 Widget System
@@ -800,6 +827,67 @@ graph TD
     Engine --> Nodes["GskRenderNode tree"]
     Nodes --> Renderer["GskVulkanRenderer / GskNglRenderer"]
 ```
+
+**AdwAnimation: spring and timed animations.** Both animation types tick off `GdkFrameClock` and write an interpolated value to a target property each frame, driving `gtk_widget_queue_draw()`.
+
+```c
+/* Fade a widget from 0 to 1 opacity over 300 ms with ease-out-cubic */
+AdwAnimationTarget *target =
+    adw_property_animation_target_new(G_OBJECT(widget), "opacity");
+
+AdwTimedAnimation *anim = ADW_TIMED_ANIMATION(
+    adw_timed_animation_new(widget, 0.0, 1.0, 300, target));
+adw_timed_animation_set_easing(anim, ADW_EASING_EASE_OUT_CUBIC);
+adw_animation_play(ADW_ANIMATION(anim));
+
+/* Spring-driven position animation — natural deceleration without explicit duration */
+AdwSpringParams *spring = adw_spring_params_new(
+    0.8,    /* damping ratio: < 1 underdamped (overshoot), 1 critically damped */
+    1.0,    /* mass */
+    500.0   /* stiffness */
+);
+AdwAnimationTarget *pos_target =
+    adw_property_animation_target_new(G_OBJECT(widget), "margin-start");
+AdwSpringAnimation *spring_anim = ADW_SPRING_ANIMATION(
+    adw_spring_animation_new(widget, 0.0, 240.0, spring, pos_target));
+adw_animation_play(ADW_ANIMATION(spring_anim));
+adw_spring_params_unref(spring);
+```
+
+Both animation types register with the widget's `GdkFrameClock` via `gdk_frame_clock_begin_updating()`. Each tick rebuilds a `GskOpacityNode` or `GskTransformNode`, achieving smooth GPU-composited animation with no libadwaita-specific GPU code.
+
+**AdwBreakpoint: adaptive layout with code.** For programmatic configuration of responsive layout:
+
+```c
+AdwBreakpointBin *bin = ADW_BREAKPOINT_BIN(adw_breakpoint_bin_new());
+adw_breakpoint_bin_set_child(bin, GTK_WIDGET(split_view));
+
+/* Collapse the navigation split view when width drops below 500px */
+AdwBreakpoint *bp = adw_breakpoint_new(
+    adw_breakpoint_condition_parse("max-width: 500px"));
+
+GValue collapsed = G_VALUE_INIT;
+g_value_init(&collapsed, G_TYPE_BOOLEAN);
+g_value_set_boolean(&collapsed, TRUE);
+adw_breakpoint_add_setter(bp, G_OBJECT(split_view), "collapsed", &collapsed);
+adw_breakpoint_bin_add_breakpoint(bin, bp);
+```
+
+The breakpoint transition is a GTK4 property change — the sidebar column's `visible` state changes, causing the widget snapshot to produce a structurally different `GskRenderNode` tree. No special GPU path is involved.
+
+**Notable rendering-relevant widgets.** `AdwAvatar` clips a circular user-picture texture via `gtk_snapshot_push_rounded_clip()` → `gtk_snapshot_append_texture()`, producing a `GskRoundedClipNode → GskTextureNode` pair resolved entirely in the GPU ubershader. `AdwSpinner` is implemented as a CSS `@keyframes` rotation of a shaped fill — a `GskTransformNode` stepped each frame by the CSS animation engine. `AdwDialog` (libadwaita 1.5+, the replacement for `GtkDialog`) requests the `xdg-dialog` role via the `xdg-toplevel-dialog` protocol extension, giving the compositor correct modal semantics without a separate `wl_surface` stack:
+
+```c
+AdwAlertDialog *dialog = ADW_ALERT_DIALOG(
+    adw_alert_dialog_new("Delete File?", "This action cannot be undone."));
+adw_alert_dialog_add_response(dialog, "cancel", "Cancel");
+adw_alert_dialog_add_response(dialog, "delete", "Delete");
+adw_alert_dialog_set_response_appearance(dialog, "delete", ADW_RESPONSE_DESTRUCTIVE);
+g_signal_connect(dialog, "response", G_CALLBACK(on_response), NULL);
+adw_dialog_present(ADW_DIALOG(dialog), GTK_WIDGET(parent_window));
+```
+
+`AdwNavigationView` and `AdwNavigationPage` implement a push/pop navigation stack with a slide animation: an `AdwSpringAnimation` on a `GskTransformNode` (X-axis translation), composited in the normal GSK render tree.
 
 ---
 
@@ -2141,155 +2229,11 @@ classDiagram
 
 ### 9.11 GObject vs QObject vs kernel kobject
 
-Three major C/C++ systems in the Linux stack solve similar problems — object identity, lifetime management, and event notification — but at different layers and with strikingly different approaches. Understanding where they agree and where they diverge is useful both for reading kernel and toolkit source and for choosing the right abstraction when writing a new subsystem.
+See **Ch39i §1** for the full cross-system comparison of GObject, QObject, and `struct kobject` — covering origins, type registration, ownership models, signal/event mechanisms, property systems, and design philosophy tradeoffs.
 
-#### Origins and Purpose
+<!-- Content moved to ch39i-desktop-framework-comparisons.md §1 -->
 
-| | GObject | QObject | `struct kobject` |
-|---|---|---|---|
-| Layer | Userspace — GTK/GNOME toolkit | Userspace — Qt toolkit | Kernel — device model / sysfs |
-| Language | C | C++ | C |
-| Problem solved | OOP, signals, properties for C | Reflection, signals/slots, properties for C++ | Refcounting, sysfs representation, hotplug events |
-| Code generation | None — runtime registration only | `moc` generates `moc_*.cpp` at build time | None |
 
-#### Object Identity and Type Registration
-
-**GObject** registers types at runtime via `g_type_register_static()` — typically invoked once per process by `get_type()` on first use. The type system lives entirely in the GLib heap; no compiler sees it. A `GType` is a `gulong` identifier handed out at registration time. `G_DEFINE_TYPE` (and its variants) generates the `get_type()` function and the `instance_init`/`class_init` boilerplate. Because everything is runtime, the same C library is introspectable from Python, Rust, Lua, or JavaScript without recompilation — only a `.gir` file is needed (§9.10).
-
-**QObject** splits the work: the programmer writes `Q_OBJECT` in the class declaration and `moc` generates a `moc_MyClass.cpp` that defines a `QMetaObject` — a static, compile-time table of methods, properties, signals, enums, and class hierarchy. `qobject_cast<T*>(obj)` performs a safe downcast by walking the `QMetaObject` chain; it is O(depth) and type-checked at compile time via the function-pointer cast. Because the metadata is compiled in, it is not accessible across language boundaries without a binding generator (e.g., Shiboken for Python/Qt or cxx-qt for Rust).
-
-**kobject** has no type system. `struct kobject` is a plain C struct embedded in a larger kernel object (e.g., `struct device`, `struct gendisk`). The embedding type is recovered via `container_of(ptr, struct device, kobj)` — a macro that subtracts the field's offset from the pointer. There is no runtime check; the programmer must know the containing type statically. `struct kobj_type` supplies per-type function pointers (`release`, `sysfs_ops`, `default_groups`) but is attached to the kobject by pointer rather than inheritance.
-
-#### Ownership and Lifetime
-
-**GObject** uses **reference counting** as its primary ownership model. Every GObject has an atomic integer refcount. `g_object_ref()` increments, `g_object_unref()` decrements; when the count reaches zero, `dispose()` runs first (the place to drop references to other objects and disconnect signals), then `finalize()` frees memory. The two-phase teardown prevents use-after-free caused by signal callbacks firing during destruction. `GInitiallyUnowned` adds a **floating reference**: newly constructed objects start with a "floating" ref that `g_object_ref_sink()` converts to a normal ref, allowing `column.append(widget)` to transfer ownership without an explicit unref.
-
-**QObject** uses **parent/child tree ownership** as its primary model. Passing a parent to a QObject constructor transfers ownership; `delete parent` recursively deletes all children in declaration order. This works well for widget trees where a `QWidget` owns its layout and the layout owns its items. When shared or cross-tree ownership is needed, `QSharedPointer<T>` and `QWeakPointer<T>` provide reference-counted smart pointers. The base `QObject` has no refcount — it is owned either by its parent or by the stack/heap directly.
-
-**kobject** uses `kref` — a struct wrapping an `atomic_t` — for reference counting. `kobject_get()` increments the refcount; `kobject_put()` decrements it and, when zero, calls `kobj_type.release(kobj)`. The `release` callback is responsible for freeing the containing structure (via `container_of`). There is no parent/child ownership in the C++ sense: `kobject.parent` builds the sysfs directory hierarchy but does not transfer ownership; a child kobject does not hold a reference to its parent's memory.
-
-```c
-/* kernel kobject embed-and-release pattern */
-struct my_device {
-    struct kobject kobj;     /* must be first for container_of */
-    int            value;
-};
-
-static void my_device_release(struct kobject *kobj)
-{
-    struct my_device *dev = container_of(kobj, struct my_device, kobj);
-    kfree(dev);              /* free the enclosing struct */
-}
-
-static const struct kobj_type my_ktype = {
-    .release   = my_device_release,
-    .sysfs_ops = &kobj_sysfs_ops,
-};
-```
-
-#### Signals and Event Notification
-
-**GObject signals** are fully dynamic. A signal is registered with `g_signal_new()`, specifying its name, parameter types as `GType`s, and a default handler (`class_closure`). Connections are made with `g_signal_connect(object, "signal-name", G_CALLBACK(handler), user_data)` — a string-based lookup that returns a `gulong` handler id for later disconnection. Signal emission calls the default handler then all connected handlers in connection order. Because connections hold a reference to the callback and user_data, disconnecting in `dispose()` before `finalize()` is critical to avoid dangling pointer callbacks.
-
-**QObject signals and slots** are type-safe when connected via the function-pointer syntax introduced in Qt 5:
-
-```cpp
-connect(button, &QPushButton::clicked,
-        this,   &MyWindow::onButtonClicked);
-// Compile error if parameter types don't match — caught by the C++ compiler.
-```
-
-The older string-based `SIGNAL()`/`SLOT()` macros still work but defer type checking to runtime. Qt signals can cross thread boundaries: if sender and receiver live in different threads, Qt queues the signal as a `QMetaCallEvent` on the receiver's event loop — thread safety for free. Qt also supports **lambda slots**:
-
-```cpp
-connect(timer, &QTimer::timeout, this, [this]{ tick(); });
-```
-
-**Kernel notification** uses several independent mechanisms rather than a unified signal system:
-
-- **Notifier chains** (`atomic_notifier_call_chain`, `blocking_notifier_call_chain`): a linked list of callbacks registered with `register_xxx_notifier()`; the caller invokes all registered callbacks synchronously or asynchronously.
-- **sysfs uevents**: when a kobject is added, removed, or changed, `kobject_uevent(kobj, KOBJ_ADD)` broadcasts a netlink message that udev/systemd-udevd receives, triggering hotplug rules.
-- **Completions**: `wait_for_completion()` / `complete()` — single-shot synchronisation between kernel threads.
-- **Work queues**: deferred execution via `schedule_work()` / `queue_work()`.
-
-There is no equivalent to GObject's per-object signal connection table or Qt's per-object slot registration.
-
-#### Properties and Attributes
-
-**GObject properties** are declared as `GParamSpec` descriptors registered with `g_object_class_install_properties()`. A widget subclass overrides `set_property` and `get_property` vtable slots in its `GObjectClass`. Every property change that calls `g_object_notify()` fires a `notify::property-name` signal. This is the basis for `GBinding` (one-way property synchronisation) and Blueprint `bind` expressions (§13.3).
-
-**QObject properties** are declared with the `Q_PROPERTY` macro, which lists getter, setter, and `NOTIFY` signal. `moc` generates the read/write dispatch in `QMetaObject::property()`. Properties are accessible by name as `QVariant` via `QObject::property("name")`, enabling scripting and QML binding. QML's property binding engine (`QQmlBinding`) re-evaluates a binding expression whenever any `NOTIFY` signal it depends on fires.
-
-**kobject attributes** are kernel files in `/sys`. An attribute is a `struct attribute` (name + permissions) paired with `show(kobj, attr, buf)` and `store(kobj, attr, buf, count)` callbacks in `struct sysfs_ops`. Reading `/sys/bus/pci/devices/0000:00:02.0/vendor` calls the `show` callback for the `vendor` attribute. There is no change notification within the kernel — userspace polls or uses inotify on sysfs files, or the driver calls `sysfs_notify()` to wake inotify waiters.
-
-#### Comparison Summary
-
-| Dimension | GObject | QObject | `kobject` |
-|-----------|---------|---------|-----------|
-| Code generation | None; runtime `g_type_register_static()` | `moc` → `QMetaObject` at compile time | None |
-| Ownership model | Reference counting; floating ref for widgets | Parent/child tree; `QSharedPointer` for shared | `kref` atomic refcount; `release()` callback |
-| Teardown | Two-phase: `dispose()` then `finalize()` | C++ destructor; children deleted by parent | `kobj_type.release()` at refcount zero |
-| Inheritance | Single via struct embedding; `GTypeInterface` | Single from `QObject`; no diamond | None — composition via struct embedding |
-| Signal/event system | Dynamic by name; `GClosure`; `gulong` handler id | Typed function-pointer connect; thread-safe queuing; lambda slots | Notifier chains; sysfs uevents; completions; work queues |
-| Properties | `GParamSpec` + `get/set_property` vtable + `notify::` | `Q_PROPERTY` + getter/setter/NOTIFY; `QVariant` dynamic access | `struct attribute` + `show()`/`store()` sysfs files |
-| Type downcast | `G_TYPE_CHECK_INSTANCE_CAST`; GIR for bindings | `qobject_cast<T*>()` via `QMetaObject` | `container_of()` macro; no runtime check |
-| Language bindings | GIR → Python, Rust, JS, Lua without recompile | Requires binding generator (Shiboken, cxx-qt) | N/A — kernel-only |
-| Sysfs / hotplug | None | None | Core feature: kobject = sysfs directory + uevent |
-
-The conceptual through-line is **reference counting for lifetime** (all three), **embedding for composition** (GObject struct-in-struct, kobject in device), and **separate notification mechanisms** (GObject signals vs Qt signals-and-slots vs kernel notifier chains). The most practically significant difference for application developers is the code-generation split: GObject's runtime-only approach enables dynamic language bindings at the cost of compile-time type safety on signal connections, while QObject's `moc`-generated metadata enables compile-time checking at the cost of a build step and the absence of automatic cross-language binding.
-
-#### Design Philosophy and Tradeoffs
-
-Each system reflects the constraints and goals of its context. Understanding why each was designed as it was explains the bugs each makes easy to write and the capabilities each makes easy to add.
-
-**GObject: maximum portability and bindability, at the cost of type safety**
-
-GObject's core design decision is to do everything at runtime in C. This was the right choice for GTK in the mid-1990s: C was the common denominator for the GNOME platform, C++ compilers were inconsistent, and language bindings (Python, Perl, Java) were a priority from the beginning. The tradeoff is that the C type system cannot enforce correctness at the GObject API boundary. `g_signal_connect(obj, "clicked", G_CALLBACK(handler), data)` compiles without error regardless of whether `handler`'s parameter types match the `clicked` signal's actual parameters — the mismatch is a runtime crash or silent misbehaviour. Property names are strings; a typo is silent until `g_object_get` returns `NULL`. GObject's verbosity is also a consequence of its C heritage: expressing a single-level subclass requires `G_DEFINE_TYPE`, an instance struct, a class struct, `instance_init`, `class_init`, overridden vtable slots, and `GParamSpec` descriptors — tens of lines for what Rust or Python achieves in three.
-
-The two-phase teardown (`dispose`/`finalize`) is an elegant solution to a subtle problem. Reference cycles — two objects each holding a ref to the other — are the most common GObject memory bug. `dispose()` is the place to break cycles: drop refs to other objects, disconnect signal handlers (which themselves hold refs). After `dispose()`, the object is logically dead but its memory is still valid. `finalize()` frees the memory. Separating the two phases means that a signal callback firing during teardown sees a dead-but-valid object rather than freed memory. The discipline required is real: forgetting to disconnect a signal in `dispose()` is a use-after-free waiting to happen.
-
-The floating reference (`GInitiallyUnowned`) is ergonomic for widget construction. Without it, `gtk_box_append(box, gtk_button_new())` would leak the button: `gtk_button_new()` returns a ref, `gtk_box_append` takes ownership, and the caller's ref is never released. With floating refs, the button starts with a floating ref that `gtk_box_append` sinks — the caller's logical "I created this" intention is consumed by the ownership transfer with no explicit `g_object_unref` needed.
-
-**QObject: compile-time safety and cross-thread transparency, at the cost of C++ purity**
-
-Qt's `moc` is a deliberate departure from standard C++. In 1991 when Qt was designed, C++ had no reflection, no standard introspection, and template metaprogramming was not yet practical. Qt needed signals and slots that were type-safe, cross-thread transparent, and usable from scripting languages. The choices were: use macros (error-prone), use virtual dispatch (no introspection), or use a code generator. They chose the code generator and have paid the maintenance cost ever since.
-
-`moc`'s main practical limitations:
-- **Templates and `Q_OBJECT` don't mix.** A class template cannot itself use `Q_OBJECT`; only a fully specialised concrete class can. Workarounds exist but are ugly.
-- **Build system coupling.** Every build system must run `moc` before compiling. CMake's `automoc` handles this, but it adds latency and occasional dependency-graph confusion.
-- **Multiple inheritance.** `QObject` must be first in a multiple-inheritance list. Having two `QObject`-derived bases in one class is not supported — a design constraint that occasionally forces awkward composition patterns.
-
-The parent/child ownership tree elegantly handles the 90% case — a widget tree where the window owns everything — but breaks down at the edges. A `QObject` that outlives its parent (stored in a `QVector`, returned from a factory, passed across a thread boundary) requires either `setParent(nullptr)` or a `QSharedPointer`. Forgetting either results in a double-delete (parent deletes the child, then the `QSharedPointer` also releases it) or a dangling pointer (parent deletes the child, QSharedPointer now points to freed memory). The Qt documentation addresses this extensively because it is a genuine frequent mistake.
-
-Cross-thread signal delivery is Qt's most elegant feature: `emit signal()` in a sender thread automatically becomes a `QMetaCallEvent` queued on the receiver's `QEventLoop` when sender and receiver live in different threads. The programmer declares thread affinity (`QObject::moveToThread()`), not locking discipline. This is substantially easier to reason about than manual mutex usage for the common producer/consumer pattern.
-
-**kobject: zero-overhead bookkeeping, at the cost of safety guarantees**
-
-kobject's design is shaped by one constraint: it runs in kernel context. That means no `malloc` failure handling beyond returning `-ENOMEM`, no C++ exceptions, no garbage collector, and extreme caution around locking because some code paths run in atomic context (interrupt handlers, RCU read-side sections) where sleeping is forbidden.
-
-`container_of` is zero-overhead — it compiles to a single pointer subtraction with no indirection — but it is also the system's main footgun. The macro trusts the programmer that the field name and containing type are correct. There is no runtime tag, no type identifier, and no check: `container_of(ptr, struct wrong_type, kobj)` compiles silently and produces undefined behaviour at runtime. This is acceptable in kernel code because the call sites are controlled and reviewed, but it means that new kobject-embedded subsystems require careful auditing.
-
-The `release` callback discipline is the kobject equivalent of GObject's `dispose`/`finalize` pair. The rules are:
-1. Every kobject that is initialized with `kobject_init()` must eventually call `kobject_put()` exactly once on every reference acquired with `kobject_get()`.
-2. The `release` callback must free the enclosing structure — not just the kobject field — because the kobject is embedded, not heap-allocated independently.
-3. `release` may not be called from atomic context because `kfree` can sleep.
-Violating rule 2 leaks the enclosing struct while freeing nothing (the kobject field is embedded, so `kfree(kobj)` would free the wrong address). Violating rule 3 causes a `might_sleep()` assertion in debug kernels.
-
-The sysfs attribute model is deliberately minimal: a file, a `show` function, a `store` function. This simplicity is a feature — a new driver attribute is ten lines — but it limits expressiveness. Attributes have a 4 KB page limit per read (the kernel's page size), making them unsuitable for large data. Complex subsystems work around this with binary attributes (`bin_attribute`) or by using debugfs instead.
-
-**The moc decision in retrospect**
-
-`moc` was a pragmatic solution to a 1991 problem. C++26 reflection will make it technically unnecessary — a sufficiently advanced C++26 compiler could generate `QMetaObject` data from class declarations without a separate tool. The Qt project is aware of this; experimental work on a moc-replacement using C++20 concepts and C++26 reflection has been prototyped. GObject took the opposite path (no codegen, maximum runtime flexibility) and was rewarded with automatic language bindings — a capability Qt has never matched without a dedicated binding generator (Shiboken, cxx-qt). With hindsight, both were correct given their goals: Qt prioritised C++ developer ergonomics and compile-time correctness; GObject prioritised ecosystem reach across languages.
-
-kobject made no such tradeoff because it was never trying to be a general-purpose OOP system. Its design is the correct one for its domain: a minimal refcount + sysfs-directory primitive that composes into the device model. Adding GObject-style signals or QObject-style metadata to kobject would add overhead to every device object in the kernel for capabilities that kernel code doesn't need.
-
-| | GObject | QObject | kobject |
-|---|---|---|---|
-| **Primary design goal** | OOP + language bindings for C | Type-safe signals + reflection for C++ | Refcount + sysfs for kernel C |
-| **Worst common bug** | Signal/slot type mismatch (silent runtime) | Ownership confusion (double-free / dangling ptr) | `container_of` wrong type (UB); release from atomic context |
-| **Most elegant feature** | GIR → automatic N-language bindings | Cross-thread signal queuing is transparent | `kref` + `container_of` = zero-overhead lifetime for any struct |
-| **Biggest design tax** | Boilerplate for subclassing; no compile-time signal safety | `moc` build step; template+Q_OBJECT incompatibility | No type safety; 4 KB sysfs attribute limit |
-| **Future direction** | gtk-rs / GIR-Rust reduces boilerplate; AccessKit bridges a11y | C++26 reflection may eventually replace moc | Stable; no planned redesign |
 
 ---
 
@@ -3569,6 +3513,59 @@ webkit_web_view_load_uri (view, "https://gnome.org/");
 
 **Security.** With `webkit_web_context_set_sandbox_enabled(ctx, TRUE)`, the Web Content Process is confined by **bubblewrap** namespaces and a **seccomp-BPF** syscall allowlist, with only the DRM render node (`/dev/dri/renderD128`) exposed. Unlike Chromium there is no separate GPU-process boundary — the content process holds the EGL context directly — so the sandbox is somewhat weaker, but it blocks the common kernel-escape syscalls. GNOME Web enables it by default; embedders of untrusted content should too.
 
+**Detailed C API.** Beyond the basic `webkit_web_view_new()` + `webkit_web_view_load_uri()` pattern, the key APIs for application integration are:
+
+```c
+/* Cookie and private browsing management */
+WebKitCookieManager *cookies =
+    webkit_web_context_get_cookie_manager(ctx);
+webkit_cookie_manager_set_persistent_storage(cookies,
+    "/home/user/.local/share/myapp/cookies.db",
+    WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
+
+/* Ephemeral (private) context — no on-disk storage */
+WebKitWebContext *private_ctx = webkit_web_context_new_ephemeral();
+WebKitWebView *private_view = WEBKIT_WEB_VIEW(
+    webkit_web_view_new_with_context(private_ctx));
+
+/* JavaScript injection and message passing */
+WebKitUserContentManager *mgr =
+    webkit_web_view_get_user_content_manager(view);
+webkit_user_content_manager_register_script_message_handler(mgr, "myapp", NULL);
+g_signal_connect(mgr, "script-message-received::myapp",
+    G_CALLBACK(on_message_received), NULL);
+
+WebKitUserScript *script = webkit_user_script_new(
+    "window.myAppVersion = '1.0';",
+    WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+    WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
+    NULL, NULL);
+webkit_user_content_manager_add_script(mgr, script);
+webkit_user_script_unref(script);
+
+/* Custom URI scheme handler — serve app assets without a network server */
+webkit_web_context_register_uri_scheme(ctx, "app",
+    uri_scheme_request_cb, NULL, NULL);
+```
+
+**GNOME Web (Epiphany) as a reference consumer.** GNOME Web (`epiphany-browser`) illustrates patterns for GTK4+WebKit applications: each tab owns a separate `WebKitWebView` instance sharing a common `WebKitWebContext` (shared cookies/localStorage/cache; independent Web Content Processes). Web extensions loaded into the content process via `webkit_web_context_set_web_process_extensions_directory()` can intercept DOM events and communicate back to the UI process via GDBus. GNOME Web 45 (2023) completed the migration from `webkit2gtk-4.1` (GTK3) to `webkitgtk-6.0` (GTK4), gaining the `GskSubsurfaceNode` zero-copy presentation path and improved fractional scaling support.
+
+**WPE: WebKitGTK without GTK.** **WPE WebKit** (`wpe-webkit`) removes the GTK dependency entirely, rendering directly to a GBM surface or DMA-BUF buffer and submitting it to the display system without a GTK compositor layer:
+
+```
+WPE architecture on embedded Linux:
+  WebCore + JSC + WPE compositor
+    │  GL ES → GBM buffer → DMA-BUF
+    ▼
+  wpe-backend-fdo (Wayland) or wpe-backend-drm (direct KMS)
+    │
+  Wayland compositor or DRM atomic commit
+    │
+  Display
+```
+
+WPE targets automotive HMI, smart TV/STB UIs, kiosk displays, and embedded IoT — contexts where there is no desktop compositor and the WebKit surface is scanned out directly via KMS. Unlike WebKitGTK there is no GTK rendering pipeline, no GSK compositor, and no `GdkWaylandSurface`. The Tauri project tracks a WPE backend for Wry as a long-term goal for embedded Linux targets.
+
 ---
 
 ## 15. Font and Text Rendering
@@ -3656,7 +3653,7 @@ GTK 4 releases in lock-step with GNOME: a stable even-minor release ships with e
 - **Ch14 (NIR Shader IR) / Ch16 (Mesa Vulkan Common, WSI)** — `GskVulkanRenderer`'s build-time SPIR-V (§3.2) feeds Mesa Vulkan drivers and NIR; WSI explicit sync underpins §4.4.
 - **Ch18 (Mesa Vulkan Drivers)** — `GskVulkanRenderer` is a client of ANV/RADV/NVK; `GskNglRenderer` and WebKit's content process use Mesa's OpenGL/GLES state trackers.
 - **Ch20 (Wayland Protocol Fundamentals)** — the GDK Wayland backend (§4) binds `wl_compositor`, `xdg_wm_base`, `wp_linux_dmabuf_v1`, and drives `wl_surface_commit`.
-- **Ch39 (Qt and GTK GPU Rendering)** — the parent comparison chapter; contrasts `GskRenderer` with Qt's `QRhi` and the `moc` meta-object system with GObject.
+- **Ch39i (Desktop Framework Comparisons)** — cross-system comparison of GObject, QObject, and kernel kobject (§9.11 pointer); comparison of COSMIC, GNOME, KDE, and elementary as desktop stacks.
 - **Ch39a/Ch39b (Qt, other Desktop Frameworks)** — sibling chapters in this part; §8's GObject bindings mirror Qt's PyQt/PySide and `qmetaobject-rs` story.
 - **Ch45 (Terminal Integration with the Compositor Stack)** — VTE (the GNOME terminal widget) is a GTK4 widget rendering through this exact GSK pipeline; shares the overlay-plane path of §4.6.
 - **Ch105 (Font Rendering — FreeType2, HarfBuzz, and the Text Pipeline)** — the text primitives beneath Pango (§10); glyph-atlas management is shared conceptual ground with Skia and terminal renderers.

@@ -89,7 +89,8 @@ graph TD
 
     Ch38b["Ch38b: ALSA\n(kernel audio substrate)"]
     Ch38["Ch38: PipeWire\n(audio/video session layer)"]
-    Ch39["Ch39: Qt & GTK\n(toolkit rendering)"]
+    Ch39c["Ch39c: GTK4\n(toolkit rendering)"]
+    Ch39a["Ch39a: Qt6\n(toolkit rendering)"]
     Ch47["Ch47: Font & Text\n(FreeType / HarfBuzz / Pango)"]
     Ch50["Ch50: Vulkan Video\n(VK_KHR_video_*)"]
     Ch96["Ch96: libcamera\n(PipelineHandler / IPA / ISP)"]
@@ -102,7 +103,8 @@ graph TD
     Ch38 --> Ch96
     Ch38 --> Ch111
     Ch38 --> Ch206
-    Ch39 --> Ch47
+    Ch39c --> Ch47
+    Ch39a --> Ch47
     Ch26VIIA -.alternative/successor.-> Ch50
     Ch24VIIA --> Ch111
     Ch24VIIA --> Ch114
@@ -114,7 +116,7 @@ graph TD
     Ch26VIIA --> Ch114
 ```
 
-The graph has a clear shape. **ALSA (Ch38b)** is the substrate beneath **PipeWire (Ch38)**, which is in turn the hub of the part: the camera stack (Ch96) reaches applications through PipeWire's camera portal, the sandbox chapter (Ch111) depends on PipeWire's portal model, and PipeWire delivers camera frames into the synthesis chapter (Ch114). **SDL3 (Ch206)** draws on both ALSA and PipeWire as its audio backends, and on the EGL/Vulkan foundations from Part VII-A (Ch24) for its windowing and GPU surface paths — it sits beside Qt/GTK as a peer multimedia integration layer. **Vulkan Video (Ch50)** sits as an alternative and successor path to the **VA-API** coverage that lives in Part VII-A's Chapter 26 (the dashed edge), and both feed OpenCV. **Qt/GTK (Ch39)** introduces the text pipeline that **font rendering (Ch47)** dissects — a self-contained pair on the toolkit side, independent of the media path. **OpenCV (Ch114)** is the terminal sink of the part: it draws on PipeWire (Ch38) for camera delivery, libcamera (Ch96) for the sensor stack, Vulkan Video (Ch50) and VA-API (Ch26) for decode, Flatpak (Ch111) for packaging, and the Vulkan/EGL foundations (Ch24) from Part VII-A. Two Part VII-A chapters — **Ch24** (the Vulkan ICD loader and EGL/GBM context model) and **Ch26** (VA-API decode) — are prerequisites carried into this part rather than chapters within it.
+The graph has a clear shape. **ALSA (Ch38b)** is the substrate beneath **PipeWire (Ch38)**, which is in turn the hub of the part: the camera stack (Ch96) reaches applications through PipeWire's camera portal, the sandbox chapter (Ch111) depends on PipeWire's portal model, and PipeWire delivers camera frames into the synthesis chapter (Ch114). **SDL3 (Ch206)** draws on both ALSA and PipeWire as its audio backends, and on the EGL/Vulkan foundations from Part VII-A (Ch24) for its windowing and GPU surface paths — it sits beside Qt/GTK as a peer multimedia integration layer. **Vulkan Video (Ch50)** sits as an alternative and successor path to the **VA-API** coverage that lives in Part VII-A's Chapter 26 (the dashed edge), and both feed OpenCV. **Qt6 (Ch39a) and GTK4 (Ch39c)** introduce the text pipeline that **font rendering (Ch47)** dissects — a self-contained pair on the toolkit side, independent of the media path. The combined Qt and GTK rendering chapter that previously lived here (ch39-qt-gtk-rendering.md) has been absorbed into the dedicated Part VII-C chapters (Ch39a–Ch39i). **OpenCV (Ch114)** is the terminal sink of the part: it draws on PipeWire (Ch38) for camera delivery, libcamera (Ch96) for the sensor stack, Vulkan Video (Ch50) and VA-API (Ch26) for decode, Flatpak (Ch111) for packaging, and the Vulkan/EGL foundations (Ch24) from Part VII-A. Two Part VII-A chapters — **Ch24** (the Vulkan ICD loader and EGL/GBM context model) and **Ch26** (VA-API decode) — are prerequisites carried into this part rather than chapters within it.
 
 ## Chapter Progression
 

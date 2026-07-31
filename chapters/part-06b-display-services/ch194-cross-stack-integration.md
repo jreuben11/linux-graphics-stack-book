@@ -387,7 +387,7 @@ When a compositor can assign a Wayland surface to an overlay plane, the result i
 
 ### 7.2 GskSubsurfaceNode and Compositor Plane Promotion
 
-GTK4 (§4, Ch39) exposes `GskSubsurfaceNode` — a render node that tells the GTK4 Vulkan/GL renderer "this content should be a Wayland subsurface, not composited into the parent surface". The compositor, on receiving a `wl_subsurface` from a GTK4 application, can attempt to assign the subsurface to an overlay plane via KMS atomic commit.
+GTK4 (§4, Ch39c) exposes `GskSubsurfaceNode` — a render node that tells the GTK4 Vulkan/GL renderer "this content should be a Wayland subsurface, not composited into the parent surface". The compositor, on receiving a `wl_subsurface` from a GTK4 application, can attempt to assign the subsurface to an overlay plane via KMS atomic commit.
 
 The protocol that enables this is **`xdg_toplevel_icon`** and, more relevantly for GPU surfaces, the combination of `wp_linux_drm_syncobj_v1` (explicit sync) and `linux-dmabuf-v1` modifiers on the subsurface: the compositor can attempt an atomic plane assignment with the DMA-BUF if:
 

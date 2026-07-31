@@ -177,7 +177,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 
 - [Ch 38: PipeWire and the Video Session Layer](chapters/part-07b-multimedia-frameworks/ch38-pipewire.md)
 - [Ch 38b: ALSA — The Linux Audio Subsystem](chapters/part-07b-multimedia-frameworks/ch38b-alsa-linux-audio-subsystem.md)
-- [Ch 39: Qt and GTK GPU Rendering](chapters/part-07b-multimedia-frameworks/ch39-qt-gtk-rendering.md)
+*(Ch 39: Qt and GTK GPU Rendering has been absorbed into Part VII-C — see Ch39a–Ch39i under Desktop Frameworks below)*
 - [Ch 47: Font and Text Rendering Pipeline](chapters/part-07b-multimedia-frameworks/ch47-font-text-rendering.md)
 - [Ch 50: Vulkan Video Extensions](chapters/part-07b-multimedia-frameworks/ch50-vulkan-video.md)
 - [Ch 96: libcamera and the Linux Camera Stack](chapters/part-07b-multimedia-frameworks/ch96-libcamera.md)
@@ -187,6 +187,23 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 209: OpenSLAM — Classical and Graph-Based SLAM on the Linux Stack](chapters/part-07b-multimedia-frameworks/ch209-openslam.md)
 - [Ch 210: SLAM Theory and State of the Art](chapters/part-07b-multimedia-frameworks/ch210-slam-theory-sota.md)
 - [Ch 211: ROS 2 Multimodal Sensor and Perception Pipeline](chapters/part-07b-multimedia-frameworks/ch211-ros2-sensor-perception-pipeline.md)
+
+---
+
+### Part VII-C — Desktop Frameworks
+
+*The six major desktop application frameworks on Linux, from rendering architecture to GPU stack integration. Each chapter traces widget system, Wayland integration, language bindings, and ecosystem tooling.*
+
+- [Part Overview](chapters/part-07c-desktop-frameworks/part-intro.md)
+- [Ch 39a: Qt6 — Scene Graph, QRhi, and Wayland Integration](chapters/part-07c-desktop-frameworks/ch39a-qt6.md)
+- [Ch 39b: KDE Frameworks 6 and KWin](chapters/part-07c-desktop-frameworks/ch39b-kde.md)
+- [Ch 39c: GTK4 — GskRenderer, libadwaita, and WebKitGTK](chapters/part-07c-desktop-frameworks/ch39c-gtk4.md)
+- [Ch 39d: GNOME Shell and Mutter](chapters/part-07c-desktop-frameworks/ch39d-gnome.md)
+- [Ch 39e: iced — Rust-Native GUI with wgpu](chapters/part-07c-desktop-frameworks/ch39e-iced.md)
+- [Ch 39f: libcosmic and the COSMIC Desktop](chapters/part-07c-desktop-frameworks/ch39f-libcosmic.md)
+- [Ch 39g: Flutter on Linux — Impeller and the GTK Embedder](chapters/part-07c-desktop-frameworks/ch39g-flutter.md)
+- [Ch 39h: Dear ImGui — Immediate-Mode GUI for Linux Applications](chapters/part-07c-desktop-frameworks/ch39h-dear-imgui.md)
+- [Ch 39i: Desktop Framework Comparisons](chapters/part-07c-desktop-frameworks/ch39i-desktop-framework-comparisons.md)
 
 ---
 
@@ -618,7 +635,7 @@ chapters/
   part-07b-multimedia-frameworks/
     ch38-pipewire.md
     ch38b-alsa-linux-audio-subsystem.md
-    ch39-qt-gtk-rendering.md
+
     ch47-font-text-rendering.md
     ch50-vulkan-video.md
     ch96-libcamera.md

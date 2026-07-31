@@ -33,7 +33,7 @@
   - [6.5 Building a Panel Applet](#65-building-a-panel-applet)
 - [7. cosmic-settings: Anatomy of a Real COSMIC App](#7-cosmic-settings-anatomy-of-a-real-cosmic-app)
 - [8. XWayland and Legacy Application Support](#8-xwayland-and-legacy-application-support)
-- [9. Comparison: COSMIC vs GNOME vs KDE vs elementary](#9-comparison-cosmic-vs-gnome-vs-kde-vs-elementary)
+- [9. Comparison: COSMIC vs GNOME vs KDE vs elementary](#9-comparison-cosmic-vs-gnome-vs-kde-vs-elementary) → see [Ch39i §2](ch39i-desktop-framework-comparisons.md)
 - [Roadmap](#roadmap)
 - [Integrations](#integrations)
 - [References](#references)
@@ -46,7 +46,7 @@ The COSMIC desktop environment is System76's from-scratch replacement for the GN
 
 This chapter treats libcosmic as a framework and the COSMIC desktop as a case study. It has two natural readerships. The first is the application developer who wants to ship a COSMIC-native GUI and needs the current `cosmic::Application` API, the widget set, the theming model, and the `cosmic-config` persistence layer. The second is the systems developer who wants to see how a Rust compositor implements the same DRM/KMS atomic-commit and GBM buffer paths (Ch2, Ch4) as wlroots-based compositors (Ch21) and Mutter (Ch22), but with a different type discipline.
 
-A note on scope and overlap. Chapter 39 §9 already covers the *rendering mechanics* of the iced toolkit — the Elm-architecture model, the `iced_wgpu::Engine`, the primitive render loop that turns quads, text, and images into `wgpu` command buffers, and the software `tiny_skia` fallback. This chapter does not re-derive those; where the widget or theming sections touch iced's renderer, they cross-link Ch39 and instead go deeper on what is specific to *COSMIC*: the compositor internals, the current application API, `cosmic-config`, `cosmic-settings` as a worked example, XWayland support, and the desktop-stack framing.
+A note on scope and overlap. Ch39e already covers the *rendering mechanics* of the iced toolkit — the Elm-architecture model, the `iced_wgpu::Engine`, the primitive render loop that turns quads, text, and images into `wgpu` command buffers, and the software `tiny_skia` fallback. This chapter does not re-derive those; where the widget or theming sections touch iced's renderer, they cross-link Ch39e and instead go deeper on what is specific to *COSMIC*: the compositor internals, the current application API, `cosmic-config`, `cosmic-settings` as a worked example, XWayland support, and the desktop-stack framing.
 
 One correction is worth stating up front because it recurs. libcosmic *applications* render through `wgpu` (via iced), and on Linux `wgpu` resolves to the Vulkan backend against Mesa drivers (Ch18). The `cosmic-comp` *compositor*, however, does **not** render through `wgpu` — it uses smithay's OpenGL ES renderer (`GlowRenderer`, over the `glow` crate). The two layers of the "pure-Rust GPU stack" therefore reach the GPU by different routes, and §2.6 spells this out.
 
@@ -108,10 +108,10 @@ The shell components — `cosmic-panel`, `cosmic-applets`, `cosmic-launcher`, `c
 The distinguishing property is the absence of a C GUI toolkit in the rendering path. The three load-bearing layers are:
 
 - **smithay** — a Rust library of building blocks for Wayland *servers* (not a binding to wlroots; a native reimplementation of the same responsibilities). `cosmic-comp` is built on it. [Source](https://github.com/Smithay/smithay)
-- **iced** — a cross-platform Rust GUI toolkit using the Elm architecture and a `wgpu` renderer (covered mechanically in Ch39 §9). [Source](https://github.com/iced-rs/iced)
+- **iced** — a cross-platform Rust GUI toolkit using the Elm architecture and a `wgpu` renderer (covered mechanically in Ch39e). [Source](https://github.com/iced-rs/iced)
 - **libcosmic** — System76's widget library and application framework on top of iced, adding a design system, theming, accessibility, and a higher-level `Application` API. [Source](https://github.com/pop-os/libcosmic)
 
-This does not mean *zero* C: Mesa (the Vulkan/GLES driver stack), the kernel DRM subsystem, `libinput`, `libwayland`'s wire protocol conventions, and system libraries like `fontconfig` and `freetype` (Ch39 §7, reached transitively) are all still C. The claim is narrower and more precise: the compositor and the widget toolkit — the parts a desktop project would normally take from GTK/Qt/Mutter/KWin — are Rust. This is the concrete instance of the "Rust in the graphics stack" theme that also appears in Mesa's Rust components (Ch4), NVK/rusticl, and the `nova` DRM driver work.
+This does not mean *zero* C: Mesa (the Vulkan/GLES driver stack), the kernel DRM subsystem, `libinput`, `libwayland`'s wire protocol conventions, and system libraries like `fontconfig` and `freetype` (Ch47, reached transitively) are all still C. The claim is narrower and more precise: the compositor and the widget toolkit — the parts a desktop project would normally take from GTK/Qt/Mutter/KWin — are Rust. This is the concrete instance of the "Rust in the graphics stack" theme that also appears in Mesa's Rust components (Ch4), NVK/rusticl, and the `nova` DRM driver work.
 
 ### 1.4 Packaging and the COSMIC Store
 
@@ -127,7 +127,7 @@ COSMIC 1.0 (Epoch 1) shipped in December 2025 as the default desktop on Pop!_OS 
 
 ### 1.6 What is libcosmic?
 
-libcosmic is the Rust application framework and widget library that System76 provides for building COSMIC-native desktop applications and shell applets. It sits between the iced GUI toolkit (Ch39 §9) and the application developer: it adds the COSMIC design system (spacing constants, typography scales, icon handling), a configurable theme with light and dark modes, accessibility metadata, the `cosmic::Application` trait that unifies the entry point for both full applications and lightweight applets, and the `cosmic-config` library for persistent per-application key-value settings.
+libcosmic is the Rust application framework and widget library that System76 provides for building COSMIC-native desktop applications and shell applets. It sits between the iced GUI toolkit (Ch39e) and the application developer: it adds the COSMIC design system (spacing constants, typography scales, icon handling), a configurable theme with light and dark modes, accessibility metadata, the `cosmic::Application` trait that unifies the entry point for both full applications and lightweight applets, and the `cosmic-config` library for persistent per-application key-value settings.
 
 A libcosmic program implements the `cosmic::Application` trait on a state struct, declares a `Settings` value specifying window geometry and application metadata, and calls `cosmic::app::run()`. libcosmic wraps iced's `Application` trait, intercepts the event loop, injects COSMIC window decorations and theming, and delegates layout and rendering to iced's existing machinery — the Elm-architecture model, the `iced_wgpu::Engine` for GPU-accelerated output, and the `tiny_skia` software fallback. The GPU rendering path therefore runs: libcosmic widget tree → iced primitive renderer → `wgpu` → Mesa Vulkan driver (Ch18). libcosmic's API is described fully in §3 and §4; the current API is representative of its shape but not yet declared stable.
 
@@ -267,7 +267,7 @@ An application submits its frame as a dmabuf (produced by wgpu/Vulkan) through `
 
 ### 3.1 Relationship to iced
 
-libcosmic is best understood as an *opinionated superset* of iced. iced provides the toolkit foundation — the Elm-style Model-View-Update loop, the `Element` widget tree, the `wgpu` renderer, and platform integration through winit or (on Wayland) the SCTK layer-shell backend. Those internals are covered in Ch39 §9 and are not repeated here. What libcosmic adds on top is:
+libcosmic is best understood as an *opinionated superset* of iced. iced provides the toolkit foundation — the Elm-style Model-View-Update loop, the `Element` widget tree, the `wgpu` renderer, and platform integration through winit or (on Wayland) the SCTK layer-shell backend. Those internals are covered in Ch39e and are not repeated here. What libcosmic adds on top is:
 
 1. A design system: the COSMIC visual language expressed as design tokens (§5).
 2. Additional widgets that iced does not ship: header bars, navigation sidebars, context drawers, segmented buttons, settings sections (§4).
@@ -361,7 +361,7 @@ libcosmic is a workspace of focused crates; an application depends on a subset:
 
 ## 4. The COSMIC Widget Library
 
-`cosmic::widget` re-exports iced's widgets and adds COSMIC-specific ones. The mechanics of how any widget becomes GPU primitives is Ch39 §9 material; here the focus is the *set* libcosmic adds and the builder patterns for them.
+`cosmic::widget` re-exports iced's widgets and adds COSMIC-specific ones. The mechanics of how any widget becomes GPU primitives is Ch39e material; here the focus is the *set* libcosmic adds and the builder patterns for them.
 
 **Navigation and chrome widgets:**
 
@@ -416,7 +416,7 @@ fn on_nav_select(&mut self, id: nav_bar::Id) -> cosmic::app::Task<Self::Message>
 
 ## 5. COSMIC Theming System
 
-COSMIC's theming is a *design-token* model: applications never hardcode a colour, radius, or spacing value. They reference semantic tokens, and the framework resolves them at render time from the active `Theme`. Ch39 §9.2 introduced the token concept; this section covers the concrete `cosmic-theme` types and how the values reach an application and change live.
+COSMIC's theming is a *design-token* model: applications never hardcode a colour, radius, or spacing value. They reference semantic tokens, and the framework resolves them at render time from the active `Theme`. Ch39e §3 introduced the token concept; this section covers the concrete `cosmic-theme` types and how the values reach an application and change live.
 
 ### 5.1 The Theme Model
 
@@ -446,7 +446,7 @@ The `Theme` type itself `derive`s `CosmicConfigEntry`, so it serializes to and f
 
 ### 5.3 Export to Other Toolkits
 
-So that non-COSMIC applications on a COSMIC session look consistent, `cosmic-theme` can *export* the active theme to other toolkits: `as_gtk4()` emits GTK4 CSS custom properties, and there are exporters for KDE's `KColorScheme` and for `qt5ct`/`qt6ct`. Convenience wrappers (`apply_exports()` / `write_exports()`) trigger all of these at once so a GTK or Qt application (Ch39) picks up COSMIC's accent colour and light/dark mode. [Source](https://deepwiki.com/pop-os/libcosmic)
+So that non-COSMIC applications on a COSMIC session look consistent, `cosmic-theme` can *export* the active theme to other toolkits: `as_gtk4()` emits GTK4 CSS custom properties, and there are exporters for KDE's `KColorScheme` and for `qt5ct`/`qt6ct`. Convenience wrappers (`apply_exports()` / `write_exports()`) trigger all of these at once so a GTK or Qt application (Ch39c/Ch39a) picks up COSMIC's accent colour and light/dark mode. [Source](https://deepwiki.com/pop-os/libcosmic)
 
 ### 5.4 How Tokens Reach iced
 
@@ -822,207 +822,13 @@ The X11 window manager side of `cosmic-comp` translates between X11 semantics an
 
 ### 8.3 GTK and Qt Application Compatibility
 
-Native GTK3/GTK4 and Qt5/Qt6 applications generally run as Wayland clients directly (both toolkits have mature Wayland backends — Ch39), so they do not need XWayland at all; XWayland is the fallback for applications that are X11-only. Visual consistency for those native GTK/Qt applications comes from the theme-export mechanism of §5.3: `cosmic-theme` writes GTK4 CSS variables and Qt platform-theme colours so a GTK or Qt window on a COSMIC session picks up the user's accent colour and light/dark preference rather than looking foreign.
+Native GTK3/GTK4 and Qt5/Qt6 applications generally run as Wayland clients directly (both toolkits have mature Wayland backends — Ch39c/Ch39a), so they do not need XWayland at all; XWayland is the fallback for applications that are X11-only. Visual consistency for those native GTK/Qt applications comes from the theme-export mechanism of §5.3: `cosmic-theme` writes GTK4 CSS variables and Qt platform-theme colours so a GTK or Qt window on a COSMIC session picks up the user's accent colour and light/dark preference rather than looking foreign.
 
 ---
 
 ## 9. Comparison: COSMIC vs GNOME vs KDE vs elementary
 
-### Architecture
-
-| Dimension | COSMIC | GNOME | KDE Plasma | elementary OS (Pantheon) |
-|-----------|--------|-------|------------|--------------------------|
-| Implementation language | Rust | C (Shell in JS) | C++ | Vala / C |
-| Compositor | cosmic-comp (Smithay) | Mutter | KWin | Gala (on Mutter) |
-| Compositor renderer | GLES (`GlowRenderer`) | GL / Vulkan (GSK) | GL / Vulkan (KWin OpenGL/Vulkan) | GL |
-| Widget toolkit | libcosmic (on iced) | GTK4 + libadwaita | Qt 6 + Kirigami | GTK4 (Granite) |
-| App GPU rendering | wgpu → Vulkan / GLES | GSK → Vulkan (Wayland) / GL | Qt RHI → Vulkan / GL | GSK → GL |
-| Config system | cosmic-config (RON files) | GSettings / dconf (binary) | KConfig (INI files) | GSettings / dconf |
-| IPC / shell protocol | D-Bus + Wayland ext. | D-Bus + GNOME-specific ext. | D-Bus + plasma-wayland-protocols | D-Bus + pantheon-wayland |
-| Build system for apps | Cargo + Meson | Meson (Blueprint, GResource) | CMake + ECM | Meson / CMake |
-| Preferred app language | Rust | C / Rust (gtk-rs) / Python / JS | C++ / QML / Rust | Vala / C |
-
-### Display Stack
-
-| Dimension | COSMIC | GNOME | KDE Plasma | elementary OS (Pantheon) |
-|-----------|--------|-------|------------|--------------------------|
-| HDR support | Planned; not yet in Epoch 1 | Stable — HDR switch (GNOME 48), brightness in Quick Settings (49), HDR screen sharing (50) | Stable and mature — simultaneous HDR + ICC profiles since Plasma 6.7 | Not supported |
-| VRR (variable refresh rate) | Basic support in cosmic-comp | Stable since GNOME 50 (experimental from GNOME 46) | Stable since Plasma 6.3; per-monitor toggle | Limited |
-| Fractional scaling | Supported (Wayland) | Stable since GNOME 50; improved Xwayland fractional scaling | Mature on Wayland; per-output in Display Settings | Limited |
-| Color management | Planned (Smithay protocol in progress) | `wp-color-management-v2` (GNOME 50); wide-gamut SDR-native mode | ICC profiles + per-display KCM calibration (Plasma 6.7) | Not supported |
-| Multi-monitor | Supported; arrangement via COSMIC Settings | Full support; per-monitor scale; mirror / extend | Full support via KScreen; per-monitor refresh / scale / rotation | Basic support |
-| Direct scan-out | Via Smithay DRM backend | Via Mutter DRM backend | Via KWin DRM backend | Via Gala/Mutter |
-
-### Accessibility
-
-| Dimension | COSMIC | GNOME | KDE Plasma | elementary OS (Pantheon) |
-|-----------|--------|-------|------------|--------------------------|
-| Accessibility framework | AT-SPI2 via AccessKit (libcosmic) | AT-SPI2 (GTK4 native + AccessKit on Win/macOS) | AT-SPI2 via Qt Accessibility | AT-SPI2 (GTK4) |
-| Screen reader | Early — Orca-compatible via AT-SPI2; enabled by default in Setup since 1.0.2 | Orca (mature; redesigned in GNOME 50 with auto language switching, new prefs UI) | Basic AT-SPI2 compatibility; Orca works but integration is less complete | Basic |
-| Keyboard navigation | Partial; improving in 1.0.x | Mature — full GTK4 focus model; accessible roles on all built-ins | Mature — Qt accessibility with full keyboard navigation | Moderate |
-| Reduced motion | Partial | System-wide option since GNOME 50 | Configurable per-effect in KWin | Not exposed system-wide |
-
-### Portals and Sandboxing
-
-| Dimension | COSMIC | GNOME | KDE Plasma | elementary OS (Pantheon) |
-|-----------|--------|-------|------------|--------------------------|
-| xdg-portal backend | xdg-desktop-portal-cosmic | xdg-desktop-portal-gnome (comprehensive) | xdg-desktop-portal-kde (comprehensive) | xdg-desktop-portal-pantheon (basic) |
-| Flatpak integration | COSMIC Store (Flatpak-first); portal support in progress | GNOME Software + Flathub; mature portal coverage | Discover (PackageKit + Flatpak + Snap); mature portal coverage | AppCenter (curated Flatpak); basic portals |
-| App store / software center | COSMIC Store | GNOME Software | Discover | AppCenter |
-| Sandboxed file access | FileChooser portal (basic) | FileChooser + Documents portal (mature) | FileChooser portal (mature) | FileChooser portal |
-| Remote desktop / screen sharing | Not yet shipped; planned | gnome-remote-desktop (RDP + VNC; PipeWire-backed); hardware-accel in GNOME 50 | KRdp (RDP server); KRfb (VNC); PipeWire screencast | Not supported |
-
-### Customisation and Theming
-
-| Dimension | COSMIC | GNOME | KDE Plasma | elementary OS (Pantheon) |
-|-----------|--------|-------|------------|--------------------------|
-| Theming system | libcosmic themes (RON); accent colors; dark/light variants | libadwaita CSS + accent colors (GNOME 47+); GTK3 theming intentionally restricted | Plasma Themes + KColorScheme + Breeze; per-widget CSS in QML | elementary stylesheet; Granite-based accent |
-| Custom app themes | libcosmic theme API (Rust) | libadwaita CSS custom properties; very limited third-party override | Full Qt stylesheet + QSS override possible | elementary stylesheet fork |
-| Icon themes | Cosmic Icons (XDG icon theme) | Adwaita (symbolic-first) | Breeze (symbolic + full-color) | elementary Icons |
-| Font configuration | COSMIC Settings font panel | GNOME Tweaks / Settings font panel | System Settings → Fonts + KFontConfig | elementary Settings |
-| Shell extensions / plugins | COSMIC Applets (separate Rust processes) | GNOME Shell JS extensions (in-process; EGO review) | Plasmoids (QML in-process) + KWin scripting | Limited (Switchboard plugs only) |
-
-### Platform and Ecosystem
-
-| Dimension | COSMIC | GNOME | KDE Plasma | elementary OS (Pantheon) |
-|-----------|--------|-------|------------|--------------------------|
-| Session protocol | Wayland only | Wayland (X11 session removed in GNOME 50) | Wayland + X11 (X11 session removed in Plasma 6.8) | Wayland + X11 |
-| XWayland | Supported | Supported | Supported | Supported |
-| Mobile / convergent | Not targeting mobile | Phosh (separate GTK/wlroots shell; ~monthly cadence) | Plasma Mobile (active; tracks Plasma releases) | Not targeting mobile |
-| Release cadence | Rolling point releases on Epoch 1 | 6-month (March / September; named releases) | 4-month (~3 releases/year; numbered) | Infrequent major releases |
-| API stability | Unstable (pre-stable API commitment) | Stable (GTK4 / libadwaita LGPLv2.1) | Stable (Qt / KF6 LGPLv3 + GPLv2) | Stable (Granite LGPL) |
-| Primary sponsor | System76 | GNOME Foundation | KDE e.V. | elementary, Inc. |
-| Governance | System76-led; community PRs welcome | Board + Release Team committee; FOSS | Board of KDE e.V.; meritocracy | elementary, Inc.-led |
-
-### Summary
-
-The table reveals four distinct engineering philosophies. **KDE Plasma** offers the deepest configurability and the most mature display stack (HDR, VRR, ICC, multi-monitor all stable) at the cost of a large C++/QML codebase. **GNOME** prioritises coherence and Flatpak-first application distribution, with a rapidly maturing Wayland pipeline (wp-color-management-v2, VRR, hardware-accelerated remote desktop all landing in GNOME 49–50) and the strongest accessibility story. **COSMIC** is the only desktop written entirely in Rust, making memory safety a first-class architectural property; it is also the only one where the compositor renderer (GLES) and the application renderer (wgpu/Vulkan) are architecturally distinct stacks, and the only one with auto-tiling as a built-in mode. Its display stack (HDR, color management) and portal coverage trail GNOME and KDE while the 1.0.x series matures. **elementary OS** targets the most curated and opinionated experience, but its display stack and portal coverage are the least developed of the four.
-
-From a graphics-stack perspective, GNOME and KDE are the reference targets for Wayland protocol adoption — new protocols (color management, explicit sync, input capture) typically land in Mutter or KWin first. COSMIC is a useful stress-test for Smithay maturity and Rust-based compositor development. elementary is a useful reference for a GTK4 app running under a Mutter-derived compositor with minimal extensions.
-
-### Application Development Model: QML+C++ vs GJS-over-C vs Rust
-
-The three major desktops represent three distinct engineering philosophies for how application logic and UI description relate to each other.
-
-#### KDE: C++ core, QML UI layer
-
-The architecture separates application logic (C++) from declarative UI (QML). QML is a JavaScript-syntax language compiled by the Qt QML engine into a scene graph of `QQuickItem` subtypes; the engine uses a JIT-compiled V4 JavaScript runtime, making property bindings and animations fast. The C++ ↔ QML boundary is handled by `Q_PROPERTY` / `Q_INVOKABLE` macros, which the Meta-Object Compiler (`moc`) processes at build time to generate the signal/slot and property-binding machinery.
-
-**Strengths.** QML is purpose-built for declarative UI — property bindings, state machines, and transitions are first-class language features. C++ carries zero FFI overhead for performance-critical code. Qt RHI abstracts Vulkan, Metal, and Direct3D without the application touching GPU code. The same codebase compiles on Linux, Windows, macOS, Android, and iOS. Tooling is mature: Qt Creator, `qmllint`, `qmlformat`, and the QML language server all understand the type system.
-
-**Weaknesses.** QML's JavaScript layer is dynamically typed — `qmllint` catches many errors but compile-time type safety is weaker than Blueprint's GIR-validated schema. The Qt licensing split (LGPLv3 / GPLv2 vs. commercial) creates friction for proprietary applications. `moc` is a pre-compilation step that adds build complexity; it is being incrementally replaced by C++26 reflection. The QML runtime adds approximately 10 MB of baseline memory overhead.
-
-#### GNOME: C GObject core, multiple language bindings via GIR
-
-GTK widgets and the GObject type system are implemented in C. The GObject Introspection (GIR) pipeline — `g-ir-scanner` → `.gir` XML → `g-ir-compiler` → `.typelib` — automatically exposes every annotated GObject type to any language that has a GIR binding. GJS (Mozilla SpiderMonkey embedding) is used in GNOME Shell itself; `gtk-rs` (Rust) is now production-quality and used in core GNOME applications; PyGObject (Python) remains the easiest entry point. Application UI is described in Blueprint (`.blp`) files that compile to GtkBuilder XML, with signal handlers wired via GObject Introspection.
-
-**Strengths.** GIR means the full GTK/GNOME API is available in any binding language without hand-written glue — a library author writes once in C and gets JS, Python, Rust, Lua, and Haskell bindings automatically. GTK4 + libadwaita provides the GNOME platform's native look-and-feel with no configuration. Blueprint adds compile-time type checking for property names and signal signatures. `gtk-rs` macros make Rust-based GNOME apps ergonomic and memory-safe. Flatpak integration and Flathub distribution are the most mature of the four desktops.
-
-**Weaknesses.** GJS/SpiderMonkey is a browser JavaScript engine bolted onto a C object system — the mismatch shows in error messages, reference-cycle debugging, and the requirement to manually disconnect GObject signals to avoid leaks. The underlying GObject type system (`G_DEFINE_TYPE`, `g_signal_connect`, manual reference counting) is verbose C from the late 1990s; even `gtk-rs` inherits its structural complexity. Blueprint handles only the widget tree — bindings between application state and UI state still require GObject property machinery or manual signal connections, unlike QML's built-in reactive bindings.
-
-#### COSMIC: Rust end to end
-
-COSMIC collapses the language boundary entirely: both the compositor (`cosmic-comp`) and applications (`libcosmic`) are written in Rust. The iced runtime provides the reactive Elm-style update loop natively in Rust — no separate scripting layer, no FFI to C, no GIR pipeline. The `wgpu` renderer compiles to SPIR-V for Vulkan at build time. Type safety extends from application logic through widget state into GPU shader uniforms.
-
-**Strengths.** Memory safety is guaranteed by the Rust compiler across the entire stack — compositor, toolkit, and applications — with no garbage-collector pause, no runtime overhead, and no `unsafe` escape hatch required for ordinary widget code. This is a qualitative difference from both GTK (where C code can misuse reference counts, double-free signal handlers, or corrupt GValue containers) and Qt (where C++ permits the same classes of bug, and QML adds a garbage-collected JS heap alongside the C++ object graph). The entire COSMIC stack — from DRM buffer allocation in `cosmic-comp` through wgpu command encoding to widget layout in libcosmic — is free-of-data-races by construction: the borrow checker enforces the invariants the compositor relies on without runtime locking.
-
-The single-language architecture also means there is no legacy API surface to carry. GTK inherits thirty years of GObject conventions — `GtkWidget` has over two hundred virtual methods accumulated across API generations, `GdkPixbuf` persists in parallel to `GdkTexture`, and the GLib main loop predates `async`/`await` by two decades. Qt carries similar weight: `QWidget` coexists with `QQuickItem`, `QObject::connect` has four incompatible syntaxes across Qt versions, and `moc` exists entirely because C++ lacked reflection when Qt was designed in 1991. COSMIC starts from a clean design point: iced's `Widget` trait has a handful of methods, the `Application` trait has three, and the entire widget model fits comfortably in a single document. There is no deprecated API to accidentally reach for, no compatibility shim to route around, and no C ABI to stabilise across years.
-
-The iced Elm model (a `Message` enum, an `update` function, a `view` function) is explicit and testable: the full application state is a Rust struct, every state transition is a pure function, and the view is a deterministic function of state. This makes unit testing of application logic straightforward without a running compositor. `cargo` handles the entire build graph, including wgpu SPIR-V shader compilation, without a separate preprocessing step like `moc` or `g-ir-scanner`.
-
-**Weaknesses.** The API is pre-stable (breaking changes occur between releases). The application ecosystem is small compared to GNOME's Flathub catalogue or KDE's mature app suite. GIR-style automatic multi-language binding does not exist — a non-Rust application cannot easily use libcosmic. Accessibility coverage trails GTK4's AT-SPI2 integration.
-
-#### Practical Guidance
-
-| If you need… | Recommended choice |
-|---|---|
-| Cross-platform (Linux + Windows + Android) from one codebase | KDE / Qt |
-| GNOME platform look-and-feel; Flatpak-first distribution | GNOME / GTK4 |
-| Rust end-to-end; no C FFI boundary | COSMIC / libcosmic |
-| Richest declarative animation and reactive binding model | KDE / QML |
-| Strongest accessibility on Linux, most mature a11y tooling | GNOME / GTK4 |
-| Most mature HDR + VRR display pipeline (mid-2026) | KDE (stable Plasma 6.7) |
-| Most mature Flatpak portal coverage | GNOME |
-
-From the graphics-stack perspective that anchors this book, all three converge at the same point: Qt RHI, GSK, and wgpu each emit Vulkan commands that travel through the same Mesa drivers, the same kernel DRM subsystem, and the same KMS atomic commit path to the display. The compositor differences — Mutter, KWin, cosmic-comp — are the subject of Part IV (Ch20–Ch22). The toolkit rendering differences — Qt RHI, GSK GskGpuRenderer, iced wgpu — map directly to the Vulkan and GL chapters in Part III.
-
-### Rust UI Frameworks: iced/libcosmic vs gtk-rs vs cxx-qt
-
-A growing number of Linux desktop applications are written in Rust, but "written in Rust" spans three very different architectural positions. Each framework's Rust code sits at a different layer of the stack, inherits a different legacy surface, and makes different tradeoffs.
-
-#### Framework Overview
-
-| Dimension | iced / libcosmic | gtk-rs | cxx-qt |
-|-----------|-----------------|--------|--------|
-| What is Rust replacing? | Everything — no C or C++ in the stack | The application layer above GTK4 (C stays) | The business-logic layer above Qt (C++ stays) |
-| Rendering engine | wgpu (native Rust → Vulkan/GLES/Metal/DX12) | GSK (C, part of GTK4) | Qt RHI (C++, part of Qt 6) |
-| Widget model | Functional / immutable; Elm Message+update+view | GObject subclassing via `glib::subclass` macros; `CompositeTemplate` + Blueprint | QObject subclassing in Rust via `#[cxx_qt::bridge]`; QML frontend |
-| UI description language | Rust view function (returns `Element` tree) | Blueprint `.blp` → GtkBuilder XML; or programmatic GTK construction | QML (declarative) backed by Rust QObject properties |
-| Type system bridging | Pure Rust traits | GIR → GObject reference-counted pointers wrapped in `glib::Object<T>` smart pointers | `cxx` bridge: Rust struct ↔ Q_PROPERTY; `UniquePtr<QObject>` / `Pin<&mut T>` |
-| Memory model | Rust ownership throughout; no GC | GObject refcounting wrapped by Rust (`clone()` increments refcount); some `unsafe` in bindings | Rust ownership for Rust data; Qt parent/child ownership for QObject tree; cxx handles ABI boundary |
-| Accessibility | AccessKit → AT-SPI2 (Linux), native (Win/macOS) | AT-SPI2 via GTK4 (mature; best on Linux) | AT-SPI2 via Qt Accessibility (moderate) |
-| Platform reach | Linux (Wayland/X11), Windows, macOS, Web (WASM) | Linux (primary), Windows, macOS | Linux, Windows, macOS, Android, iOS (wherever Qt runs) |
-| Build tooling | `cargo` only; SPIR-V shaders compiled via `wgpu`/`naga` | `cargo` + Meson (Blueprint, GResource); `g-ir-scanner` for any new C libraries | `cargo` + CMake; `moc` still required for the Qt side |
-| Maturity | Pre-1.0 (iced); COSMIC Epoch 1 (libcosmic) | Production — used in GNOME core apps (Papers, Loupe, Decoder) | Production — used in KDE apps (KDE Connect, NeoChat, Merkuro) |
-
-#### iced / libcosmic
-
-iced is a pure-Rust reactive UI library with no C or C++ in its stack. The `Widget` trait is a Rust trait; the renderer is `iced_wgpu`, which calls wgpu directly; state management follows the Elm architecture — the entire application state lives in a single Rust struct, every user interaction is a `Message` value, and `update` is a pure function that produces a new state (see Ch39e §1 for the full architecture). libcosmic extends iced with the COSMIC widget set and theming system.
-
-The absence of any C boundary means the borrow checker's guarantees extend all the way from widget layout to GPU command encoding. There are no `Arc<Mutex<_>>` wrappers around widget state to placate a foreign type system, no `unsafe` blocks to call GTK or Qt functions, no GObject refcount cycles to audit. The tradeoff is breadth: iced's widget catalogue is smaller than GTK4's or Qt's, the API is pre-1.0 (breaking changes between releases), and there is no GIR-style automatic binding to expose iced widgets to Python or JavaScript.
-
-#### gtk-rs
-
-gtk-rs is the official Rust binding to GTK4, GLib, GIO, GDK4, and libadwaita, generated from GIR type definitions via the `gir` tool. All GTK4 widgets, GObject signals, and GLib async primitives are available in Rust with idiomatic wrappers.
-
-The binding wraps GObject pointers in `glib::Object<T>` smart pointers that increment/decrement the GObject refcount on `clone`/`drop`. This is safe for ordinary use, but the model is reference-counting rather than Rust ownership — a signal closure that captures a widget clone can keep the widget alive past its logical lifetime, producing a reference cycle. The `glib::subclass` module lets Rust code define new GObject types with proper `impl ObjectImpl`, `impl WidgetImpl`, etc. implementations; `#[derive(CompositeTemplate)]` wires Blueprint-defined template children to Rust struct fields at compile time.
-
-For GNOME-target applications, gtk-rs is the production choice: libadwaita-rs exposes `AdwApplicationWindow`, `AdwPreferencesDialog`, `AdwNavigationSplitView`, and the full Adwaita widget set; Blueprint provides compile-time property and signal validation; `cargo` and Meson cooperate cleanly. The rendering path is GSK → Vulkan (on Wayland) — the same path as a C GTK4 application.
-
-The inherited complexity is the C GObject type system itself. Even with Rust macros smoothing the surface, the concepts underneath — `GType` registration, property `ParamSpec` descriptors, signal marshalling, `GValue` variant containers, `dispose`/`finalize` split — all originate in a C design from the 1990s. A gtk-rs application developer must understand GObject ownership and signal connection semantics that have no parallel in idiomatic Rust.
-
-#### cxx-qt
-
-cxx-qt, built on the `cxx` C++/Rust interop library, allows Rust structs to be exposed as `QObject` subclasses consumable from QML. The Rust side defines a struct annotated with `#[cxx_qt::bridge]`; the macro generates the `moc`-compatible C++ header and the cxx bridge glue. Q_PROPERTY values stored in the Rust struct are readable and writable from QML; Rust methods are invokable via `Q_INVOKABLE`; Qt signals can be emitted from Rust and connected to QML slots.
-
-```rust
-#[cxx_qt::bridge]
-mod ffi {
-    #[cxx_qt::qobject]
-    #[derive(Default)]
-    struct Counter {
-        #[qproperty]
-        count: i32,
-    }
-
-    impl qobject::Counter {
-        #[qinvokable]
-        pub fn increment(self: Pin<&mut Self>) {
-            let new = self.count() + 1;
-            self.set_count(new);
-        }
-    }
-}
-```
-
-The QML frontend consumes `Counter` as a normal `QObject` with a `count` property and an `increment()` invokable — the Rust implementation is invisible to QML. This makes cxx-qt the natural path for KDE teams that want to harden existing QML applications with Rust business logic without rewriting the UI layer.
-
-The tradeoff is that Qt remains a C++ dependency: `moc` still runs, CMake is still required alongside `cargo`, and the cxx bridge introduces `UniquePtr<T>` and `Pin<&mut T>` pointer types at the boundary that have no equivalent in ordinary Rust code. Memory safety holds within the Rust side; the Qt object graph on the C++ side follows Qt's parent/child ownership model, which is managed manually.
-
-#### Choosing Between the Three
-
-| If you are building… | Recommended framework |
-|----------------------|-----------------------|
-| A COSMIC desktop application | iced / libcosmic |
-| A GNOME / Flatpak application targeting Flathub | gtk-rs + libadwaita-rs |
-| A KDE application with existing QML UI | cxx-qt |
-| A cross-platform app (Linux + Windows + Android) in Rust | cxx-qt (via Qt's platform reach) or iced (via winit) |
-| A greenfield app with no desktop integration requirements | iced (smallest dependency surface) |
-| Strongest a11y on Linux today | gtk-rs (GTK4 AT-SPI2 maturity) |
-| Full Rust ownership semantics with no C/C++ boundary | iced / libcosmic |
-| Largest available widget catalogue | gtk-rs (full GTK4 + libadwaita) |
-
-All three rendering paths ultimately converge on the same Mesa Vulkan driver: iced via `wgpu` → `VkCommandBuffer`; gtk-rs via GSK's Vulkan renderer → `VkCommandBuffer`; cxx-qt via Qt RHI → `VkCommandBuffer`. The differentiation is entirely above the Vulkan API boundary.
+See **Ch39i §2** for the full four-way comparison covering architecture, display stack, accessibility, portals, theming, platform ecosystem, and the three application development models (QML+C++ vs GJS-over-C vs Rust), plus the Rust UI framework comparison (iced/libcosmic vs gtk-rs vs cxx-qt).
 
 ---
 
@@ -1046,7 +852,9 @@ COSMIC Desktop reached its stable **Epoch 1** release on December 11, 2025, conc
 - **wlroots compositors (Ch21)**: smithay is the Rust counterpart to wlroots; the `libinput` event chain and DRM paths are architecturally parallel. §2.1, §2.5.
 - **Mutter and KWin (Ch22)**: `cosmic-comp` is a third major desktop compositor alongside these; §9 compares the three.
 - **Mesa Vulkan and GLES drivers (Ch18, Ch19)**: application `wgpu` resolves to Vulkan (ANV/RADV/NVK) while the compositor's `GlowRenderer` uses GLES — both are Mesa. §2.6.
-- **Qt and GTK GPU rendering (Ch39)**: Ch39 §9 owns the iced/wgpu rendering mechanics this chapter builds on; §5.3's theme export targets GTK4 CSS and Qt platform themes so those toolkits' windows match on a COSMIC session.
+- **iced architecture (Ch39e)**: Ch39e owns the iced/wgpu rendering mechanics this chapter builds on — Elm model, `iced_wgpu::Engine`, custom shaders, and Wayland integration.
+- **GTK4 and Qt6 GPU rendering (Ch39c, Ch39a)**: §5.3's theme export targets GTK4 CSS and Qt platform themes so those toolkits' windows match on a COSMIC session.
+- **Desktop framework comparisons (Ch39i)**: §9 of this chapter is now in Ch39i §2 — the full four-way desktop comparison covering display stack, accessibility, portals, theming, and the QML+C++ vs GJS-over-C vs Rust development model.
 - **PipeWire and screen capture (Ch26, Ch38)**: `xdg-desktop-portal-cosmic` serves screencast requests via the compositor's `wlr-screencopy` implementation into a PipeWire stream. §2.4.
 - **xdg-desktop-portal (Ch23)**: COSMIC provides `xdg-desktop-portal-cosmic` for file dialogs, screenshots, and screencast; COSMIC apps use it directly when sandboxed. §1.4, §2.4.
 - **Flatpak (Ch111)**: `cosmic-store` aggregates Flathub; COSMIC apps run unmodified under Flatpak using portals. §1.4.

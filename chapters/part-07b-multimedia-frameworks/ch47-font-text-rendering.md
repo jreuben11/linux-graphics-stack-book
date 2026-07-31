@@ -871,7 +871,7 @@ Variable fonts introduce a challenge for glyph atlas caching: a glyph at weight 
 
 This chapter has described the foundational font and text rendering libraries that every higher-level component in the Linux graphics stack depends on. The key integration points are:
 
-**Qt and GTK (Ch39)**: Both toolkits integrate HarfBuzz for OpenType shaping and FreeType for rasterisation. Qt's `QFontEngineFT` wraps FreeType directly; GTK3/4 routes through Pango, which integrates both libraries. fontconfig provides font selection for both. The glyph atlas textures produced by Qt and GTK flow into their respective GPU rendering pipelines: Qt's `QRhi` abstraction and GTK's GSK Vulkan/GL renderers.
+**Qt and GTK (Ch39a, Ch39c)**: Both toolkits integrate HarfBuzz for OpenType shaping and FreeType for rasterisation. Qt's `QFontEngineFT` wraps FreeType directly; GTK3/4 routes through Pango, which integrates both libraries. fontconfig provides font selection for both. The glyph atlas textures produced by Qt and GTK flow into their respective GPU rendering pipelines: Qt's `QRhi` abstraction (Ch39a §15) and GTK's GSK Vulkan/GL renderers (Ch39c §3).
 
 **Skia (Ch37)**: Skia's `SkTypeface_FreeType` backend wraps FreeType for rasterisation. HarfBuzz shaping is used by Skia's text blob API. On Linux, Skia calls `FcFontMatch` (fontconfig) for font discovery when no explicit typeface is provided. The Skia glyph atlas described in §6.3 feeds the same GPU texture pipeline used by Chrome's Viz compositor (Ch36), making font rendering a key throughput consideration for web page compositing.
 

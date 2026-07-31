@@ -940,7 +940,7 @@ The expectation is that the underlying technology will be modernised incremental
 
 **GTK4 / webkitgtk-6.0 migration** is the most significant modernisation in the pipeline. Migrating Tao from GTK3 to GTK4 and Wry from `webkit2gtk-4.1` to `webkitgtk-6.0` would bring:
 
-- **GSK Vulkan renderer** for the window chrome on Wayland: GTK 4.16 defaults to the Vulkan GSK renderer on Wayland (Ch39), meaning window borders, toolbars, and overlay widgets would be Vulkan-composited rather than Cairo/OpenGL-rendered.
+- **GSK Vulkan renderer** for the window chrome on Wayland: GTK 4.16 defaults to the Vulkan GSK renderer on Wayland (Ch39c), meaning window borders, toolbars, and overlay widgets would be Vulkan-composited rather than Cairo/OpenGL-rendered.
 - **Improved HiDPI and fractional scaling**: GTK4's `wp_fractional_scale_v1` support is more complete than GTK3's scaling path.
 - **Better Wayland-native behaviour**: GTK4 has cleaner `xdg-shell` and `xdg-decoration-v1` integration.
 
@@ -977,7 +977,7 @@ Tracking issues: [tauri#12561](https://github.com/tauri-apps/tauri/issues/12561)
 
 ## 14. Integrations
 
-**Chapter 39 — GTK4 and the GNOME Application Stack**: Tao's GTK3 window creation (`ApplicationWindow`, `gtk::init()`, the GTK main loop) is the foundational GTK usage in Tauri. Chapter 39 covers the GTK4 object model, widget hierarchy, and GSK rendering in depth; the GTK3 patterns used by Tao are structurally identical to GTK4 but use Cairo rather than GSK for the window chrome. The planned GTK4 / webkitgtk-6.0 migration (§12) will bring Tauri's window management fully into the Chapter 39 architecture.
+**Chapter 39c — GTK4**: Tao's GTK3 window creation (`ApplicationWindow`, `gtk::init()`, the GTK main loop) is the foundational GTK usage in Tauri. Chapter 39c covers the GTK4 object model, widget hierarchy, and GSK rendering in depth; the GTK3 patterns used by Tao are structurally identical to GTK4 but use Cairo rather than GSK for the window chrome. The planned GTK4 / webkitgtk-6.0 migration (§12) will bring Tauri's window management fully into the Chapter 39c architecture.
 
 **Chapter 34 — ANGLE and WebGL**: The contrast between WebKitGTK's direct Mesa OpenGL ES path and Electron/Chromium's ANGLE-mediated Vulkan path (§11) is grounded in the ANGLE architecture documented in Chapter 34. Developers choosing between Tauri and Electron for WebGL-heavy applications should read that chapter to understand the performance implications of ANGLE's Vulkan backend.
 

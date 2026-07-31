@@ -35,6 +35,7 @@ throughout.
 | [39f](ch39f-libcosmic.md) | libcosmic / COSMIC | Rust | iced_wgpu | cosmic-comp (smithay) |
 | [39g](ch39g-flutter.md) | Flutter | Dart / C++ | Impeller (Vulkan) | GTK embedder / flutter-elinux |
 | [39h](ch39h-dear-imgui.md) | Dear ImGui | C++ | Vulkan / OpenGL3 / SDL_GPU | Via SDL3 or GLFW (no native Wayland backend) |
+| [39i](ch39i-desktop-framework-comparisons.md) | Cross-framework comparisons | — | — | Object systems (GObject/QObject/kobject); desktop env comparison (COSMIC/GNOME/KDE/elementary) |
 
 ---
 

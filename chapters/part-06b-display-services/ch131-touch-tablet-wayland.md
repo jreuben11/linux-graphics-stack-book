@@ -1074,7 +1074,7 @@ This chapter connects to the following chapters in the book:
 
 **Ch22 — Production Compositors** covers Mutter (GNOME), KWin (KDE Plasma), and Sway in depth. Mutter's Wacom settings panel integration, KWin's tablet configuration UI, and Sway's tablet button binding for floating window resize are compositor-specific tablet features built on the protocol layer described here.
 
-**Ch39 — Qt and GTK on Wayland** covers the toolkit Wayland backends at the level of window management, buffer submission, and input handling. The GDK Wayland device model (Section 8.1) and the Qt Wayland tablet plugin (Section 8.3) are introduced there; this chapter provides the tablet-specific deep dive.
+**Ch39c/Ch39a — GTK4/Qt6 on Wayland** covers the toolkit Wayland backends at the level of window management, buffer submission, and input handling. The GDK Wayland device model (Section 8.1) and the Qt Wayland tablet plugin (Section 8.3) are introduced there; this chapter provides the tablet-specific deep dive.
 
 **Ch130 — Wayland Protocol Extension Development** uses `zwp_tablet_manager_v2` as a case study in the design of Wayland extension protocols: how tool identity is maintained across proximity cycles, why the `frame` event is necessary for atomic multi-axis updates, how mode switching is designed to support compositor-side feedback overlays, and the rationale for tool type enumeration values mirroring kernel `BTN_TOOL_*` codes.
 

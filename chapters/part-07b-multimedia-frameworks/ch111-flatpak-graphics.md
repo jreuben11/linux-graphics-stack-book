@@ -1061,7 +1061,7 @@ This chapter connects to the following chapters in the book:
 
 **Ch38 — PipeWire**: The ScreenCast and Camera portal interfaces described in Section 6 of this chapter return PipeWire file descriptors. Ch38 covers the full PipeWire node graph, buffer negotiation, and DMA-BUF flow that follows once the sandbox has the PipeWire fd. For screen capture in sandboxed apps, both chapters are required reading.
 
-**Ch39 — GTK and Qt Rendering**: GTK4 applications inside Flatpak use `org.freedesktop.portal.FileChooser` for file dialogs automatically when `$FLATPAK_ID` is set. Qt 6 similarly routes through portals via `QFileDialog`. The GL extension provides the GPU driver that GTK4's NGL renderer or Qt's Vulkan backend loads.
+**Ch39c/Ch39a — GTK4 and Qt6**: GTK4 applications inside Flatpak use `org.freedesktop.portal.FileChooser` for file dialogs automatically when `$FLATPAK_ID` is set. Qt 6 similarly routes through portals via `QFileDialog`. The GL extension provides the GPU driver that GTK4's NGL renderer or Qt's Vulkan backend loads.
 
 **Ch50 — Firefox Flatpak (cross-ref)**: Firefox's Flatpak packaging is one of the most complete examples of the GL extension + VA-API + ffmpeg-full pattern in production. The VA-API decode case study in Section 7 of this chapter covers Firefox specifically.
 
