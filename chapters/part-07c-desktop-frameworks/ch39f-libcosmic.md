@@ -836,11 +836,13 @@ See **Ch39i §2** for the full four-way comparison covering architecture, displa
 
 COSMIC Desktop reached its stable **Epoch 1** release on December 11, 2025, concluding approximately one year of public alpha and beta testing. It shipped as the default desktop environment in Pop!_OS 24.04 LTS (also December 2025), which bundles Linux kernel 6.16, Mesa 25.1.5, and NVIDIA driver 580. [[Source](https://www.phoronix.com/news/Pop-OS-24.04-In-December)]
 
-**Post-launch point releases.** System76 ships rolling point updates to Epoch 1. The 1.0.2 release (January 2026) added configurable window shadow and rounded corner radii, network paths in the COSMIC Files application, and accessibility improvements. Point releases through 1.0.13 (May 2026) continue this pattern of feature polish and stability fixes. [[Source](https://system76.com/blog/post/cosmic-epoch-1-updates)]
+**Post-launch point releases.** System76 ships rolling point updates to Epoch 1. The 1.0.2 release (January 2026) added configurable window shadow and rounded corner radii, network paths in the COSMIC Files application, and accessibility improvements. The patch series continued through 1.0.16 (June 10, 2026), after which System76 moved to minor-version increments — 1.1.0 (June 23), 1.2.0 (June 30), 1.3.0 (July 14), 1.4.0 (July 22), and 1.5.0 (July 29, 2026) — shipping roughly every one to two weeks. [[Source](https://system76.com/blog/post/cosmic-epoch-1-updates)] [[Source](https://github.com/pop-os/cosmic-epoch/releases)]
 
 **Accessibility.** Accessibility is an active focus. The built-in screen reader became enabled by default in the COSMIC Initial Setup wizard as of 1.0.2, toggled at runtime with Super+Alt+S. COSMIC targets AT-SPI2 on Linux via the AccessKit bridge (the same mechanism used by iced — see Ch39e §8). Accessibility coverage is early but functional as of Epoch 1.
 
 **Compositor.** `cosmic-comp`, the Smithay-based Wayland compositor described in §2, shipped as part of the stable Epoch 1 release. It implements `xdg-shell`, `layer-shell`, `wlr-screencopy`, `wlr-output-management`, and XWayland support, with a plugin-friendly architecture designed for extension by the COSMIC session manager.
+
+Where GNOME could still matter to a COSMIC user on a hybrid-GPU laptop is compositor *maturity*, not GPU *selection* — both compositors reach the discrete GPU through the same kernel PRIME/DRM-lease machinery (Ch49, Ch126), so which GPU an application renders on is not the differentiator. Mutter's multi-GPU handling — DRM leasing, explicit sync, PRIME render-offload plumbing — has been hardened over many NVIDIA/Intel hybrid-laptop generations. `cosmic-comp`, built on the considerably younger `smithay` library, is still working through the same class of bugs: the 1.1.0–1.5.0 point releases alone fixed a panic when a monitor wakes from sleep, added a quirk for newer Intel GPUs, fixed texture corruption with multiple GPUs, and — as of 1.5.0 — stopped panicking when renderer creation fails after a GPU reset. [[Source](https://github.com/pop-os/cosmic-comp/pull/2453)] [[Source](https://github.com/pop-os/cosmic-comp/pull/2510)] [[Source](https://github.com/pop-os/cosmic-comp/pull/2504)] [[Source](https://github.com/pop-os/cosmic-comp/pull/2487)] In practice this shows up as occasional glitches around GPU wake/sleep, external-monitor hotplug, or fullscreen/Alt-Tab transitions on hybrid-GPU hardware — not as a difference in GPU-selection policy.
 
 **Epoch 2 and beyond.** System76 has not published a detailed Epoch 2 roadmap as of mid-2026. Development continues on HDR display support, additional COSMIC application polish, and expanding the libcosmic widget set. The Rust-first architecture positions COSMIC to adopt emerging Wayland protocols — color management, explicit sync, fractional scaling — as they stabilise upstream in Smithay and wlroots.
 
@@ -859,6 +861,7 @@ COSMIC Desktop reached its stable **Epoch 1** release on December 11, 2025, conc
 - **xdg-desktop-portal (Ch23)**: COSMIC provides `xdg-desktop-portal-cosmic` for file dialogs, screenshots, and screencast; COSMIC apps use it directly when sandboxed. §1.4, §2.4.
 - **Flatpak (Ch111)**: `cosmic-store` aggregates Flathub; COSMIC apps run unmodified under Flatpak using portals. §1.4.
 - **Rust in the graphics stack (Ch4, and the NVK/nova threads)**: COSMIC is the largest single instance of the pure-Rust-desktop theme — compositor, toolkit, config, and D-Bus (`zbus`) layers are all Rust. §1.3.
+- **Multi-GPU PRIME offload and hybrid graphics (Ch49, Ch126)**: `cosmic-comp` reaches a discrete GPU through the same kernel PRIME/DRM-lease path documented there; the Roadmap section's compositor-maturity discussion is about `cosmic-comp`'s newer hybrid-GPU hardening relative to Mutter, not a difference in GPU-selection mechanism.
 
 ---
 
@@ -874,6 +877,11 @@ COSMIC Desktop reached its stable **Epoch 1** release on December 11, 2025, conc
 - cosmic-comp (compositor) — <https://github.com/pop-os/cosmic-comp>
 - cosmic-comp state (`src/state.rs`) — <https://github.com/pop-os/cosmic-comp/blob/master/src/state.rs>
 - cosmic-comp Vulkan renderer tracking issue — <https://github.com/pop-os/cosmic-comp/issues/2055>
+- cosmic-epoch releases (point-release history) — <https://github.com/pop-os/cosmic-epoch/releases>
+- cosmic-comp: fix panic when monitor is waking up (1.1.0) — <https://github.com/pop-os/cosmic-comp/pull/2453>
+- cosmic-comp: quirk for newer Intel GPUs (1.2.0) — <https://github.com/pop-os/cosmic-comp/pull/2510>
+- cosmic-comp: fix texture corruption with multiple GPUs (1.3.0) — <https://github.com/pop-os/cosmic-comp/pull/2504>
+- cosmic-comp: don't panic when renderer creation fails after a GPU reset (1.5.0) — <https://github.com/pop-os/cosmic-comp/pull/2487>
 - cosmic-settings — <https://github.com/pop-os/cosmic-settings>
 - cosmic-store — <https://github.com/pop-os/cosmic-store>
 - cosmic-protocols — <https://github.com/pop-os/cosmic-protocols>
