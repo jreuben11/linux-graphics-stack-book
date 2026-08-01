@@ -1053,6 +1053,8 @@ Anti-cheat systems (EAC, BattlEye) running on Linux via Proton may explicitly se
 
 **Chapter 31 (Conformance testing / dEQP)**: Implicit layers active on a development machine can corrupt dEQP conformance runs. CI systems should set `VK_LOADER_LAYERS_DISABLE=*` or `DISABLE_MANGOHUD=1` / `DISABLE_VKBASALT=1` to ensure implicit layers do not interfere with conformance test frame comparisons.
 
+**Chapter 232 (GPU Generative AI and LLM Inference)**: §1's explicit-layer dispatch mechanism and §6's DLSS/XeSS color/depth/motion-vector buffer capture are the Vulkan-native instance of a broader pattern — Ch232 §8 traces that pattern's use elsewhere as an AI training-data and conditioning channel: Direct3D interposition for CV ground-truth generation (Playing for Data, DeepGTAV-PreSIL), renderer-native Annotator APIs (NVIDIA Omniverse Replicator), and structured-buffer conditioning for video-diffusion world models (NVIDIA Cosmos-Transfer).
+
 ---
 
 ## References
