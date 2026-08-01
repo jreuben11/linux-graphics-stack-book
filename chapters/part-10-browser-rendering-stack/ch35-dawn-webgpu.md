@@ -455,6 +455,24 @@ graph TD
 
 ## 8. Adapter Enumeration and Feature Detection on Linux
 
+### Chrome Command-Line Flags for WebGPU on Linux
+
+To get a working, GPU-backed `navigator.gpu` on Linux, two flags are enough:
+
+```bash
+google-chrome --enable-unsafe-webgpu --enable-features=Vulkan
+```
+
+- **`--enable-unsafe-webgpu`** exposes the `navigator.gpu` binding itself; on Linux, WebGPU has historically shipped behind this flag independent of the feature's status on other platforms (the same flag also gates the subgroup features discussed in §9.1).
+- **`--enable-features=Vulkan`** is not optional. Without it, Dawn never enumerates the real GPUs: both `requestAdapter({powerPreference: "high-performance"})` and `{powerPreference: "low-power"}` return the same software adapter (`vendor: "google"`, `architecture: "swiftshader"`) — CPU rendering, regardless of preference.
+
+Neither flag requires `--ozone-platform=x11`. That flag addresses a different, unrelated concern, because Chrome has **two independent Vulkan consumers** and only one of them touches Ozone:
+
+1. **Chrome's own on-screen compositor** — the Ozone surface factory that hands finished frames to the windowing system for presentation. Under native Wayland, `WaylandSurfaceFactory::CreateVulkanImplementation` logs `'--ozone-platform=wayland' is not compatible with Vulkan. Consider switching to '--ozone-platform=x11' or disabling Vulkan'` and the compositor falls back to OpenGL/ANGLE for on-screen presentation instead of a Vulkan swapchain. [Source](https://github.com/chromium/chromium/blob/main/ui/ozone/platform/wayland/gpu/wayland_surface_factory.cc) This log line is easy to misread as a WebGPU error; it is not — it concerns only whether the *browser's own UI compositing* is Vulkan-accelerated, and only matters if XWayland (`--ozone-platform=x11`) is also wanted for that separate goal.
+2. **Dawn**, WebGPU's backend, creates its own `VkInstance` and enumerates physical devices off-screen (§3), entirely independent of the Ozone surface factory above. Launching with `--ozone-platform=wayland --enable-unsafe-webgpu --enable-features=Vulkan` — the exact combination that logs the "not compatible with Vulkan" warning — still produces a full Vulkan device list in `chrome://gpu` (discrete GPU, integrated GPU, and the SwiftShader/llvmpipe software fallbacks, side by side), and `requestAdapter({powerPreference: "high-performance"})` correctly returns the discrete GPU under native Wayland; XWayland is not required.
+
+`navigator.gpu` is further gated by the WebGPU specification's `[SecureContext]` attribute: it is installed only on secure origins (`https:`, `localhost`, or `file:`). An opaque-origin page — including a browser-generated error page produced by a failed navigation — is never a secure context, so `navigator.gpu` is `undefined` there regardless of flags. This is a common false negative when scripting automated WebGPU capability checks: confirm the target page actually finished loading (rather than landing on an error page) before concluding the API is unsupported.
+
 ### requestAdapter and Physical Device Selection
 
 The JavaScript entry point `navigator.gpu.requestAdapter(options)` triggers `InstanceBase::EnumerateAdapters` in `dawn::native`, which calls `vkEnumeratePhysicalDevices` and constructs one `AdapterBase` (specifically `PhysicalDeviceVk`) per `VkPhysicalDevice`. The adapter is returned to JavaScript as a `GPUAdapter` through the DawnWire.
@@ -490,6 +508,26 @@ If any `requiredFeature` is not available, `requestDevice()` rejects with a `Typ
 On a system with both integrated and discrete GPU, Dawn creates two adapters. `navigator.gpu.requestAdapter({powerPreference: "low-power"})` returns the integrated adapter; `{powerPreference: "high-performance"}` returns the discrete. If a script calls `requestAdapter()` twice with different preferences, it may receive two `GPUDevice` objects backed by different `VkDevice`s on different physical devices. Sharing resources between them requires the `VK_KHR_external_memory_fd` path, which Dawn supports for canvas texture sharing but not yet for general cross-device buffer sharing in the WebGPU API.
 
 Chrome's GPU process lifetime is per-renderer-process (in some configurations) or shared across renderers (in others); device loss on one renderer's WebGPU device does not automatically propagate to another renderer using a different adapter.
+
+Directing WebGPU work to a specific GPU on a hybrid-graphics laptop (Ch49, Ch126) does not require the DRM render-node machinery that governs the rest of Chrome's Ozone/Wayland backend. `--render-node-override` (`switches::kRenderNodeOverride` in `ui/ozone/public/ozone_switches.cc`) "allows explicitly picking a DRM render node to create [a] `gbm_device` for rendering," but it only affects the browser's own Wayland `gbm_device` allocation and the VA-API video decoder's device selection (`media/gpu/vaapi/vaapi_wrapper.cc`) — it has no effect on Dawn. [Source](https://github.com/chromium/chromium/blob/main/ui/ozone/public/ozone_switches.cc) Dawn enumerates adapters through its own `VkInstance` call to `vkEnumeratePhysicalDevices` (`InstanceBase::EnumerateAdapters`, above), a path entirely independent of the browser's Ozone/Wayland render-node selection. In practice, `powerPreference` alone is sufficient to steer WebGPU onto a discrete NVIDIA GPU on such a system:
+
+| `requestAdapter()` call | Result |
+|---|---|
+| `{powerPreference: "high-performance"}` | Discrete GPU (e.g. `vendor: "nvidia"`, `architecture: "lovelace"`) |
+| `{powerPreference: "low-power"}` | Integrated GPU (e.g. `architecture: "gen-12lp"`) |
+| *(no argument)* | Falls back to Dawn's heuristic, which in practice selects the same adapter as `"high-performance"` |
+
+A minimal end-to-end test, from a fresh profile:
+
+```bash
+google-chrome --user-data-dir=/tmp/chrome-webgpu-test \
+  --enable-unsafe-webgpu --enable-features=Vulkan
+```
+
+```js
+const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+console.log(adapter.info.vendor, adapter.info.architecture);
+```
 
 ### WebGPU vs Vulkan: Capability Comparison Matrix
 
@@ -875,6 +913,10 @@ This chapter connects to several other chapters in the book:
 22. WebGPU compute for ML inference — surma.dev: https://surma.dev/things/webgpu/
 
 23. dawn.googlesource.com overview: https://dawn.googlesource.com/dawn/+/refs/heads/chromium-gpu-experimental/README.md
+
+24. Chromium `WaylandSurfaceFactory::CreateVulkanImplementation` (Wayland Ozone + Vulkan incompatibility): https://github.com/chromium/chromium/blob/main/ui/ozone/platform/wayland/gpu/wayland_surface_factory.cc
+
+25. Chromium `ozone_switches.cc` (`--render-node-override` definition): https://github.com/chromium/chromium/blob/main/ui/ozone/public/ozone_switches.cc
 
 ---
 
