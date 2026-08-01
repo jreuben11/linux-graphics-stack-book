@@ -76,13 +76,17 @@ A BVH partitions scene geometry into a tree of axis-aligned bounding boxes (AABB
 
 All three hardware vendors implement a **BVH4** structure (four child bounding boxes per internal node) at the level that is exposed to the driver, though they differ in leaf packing and memory layout. The GPU's texture memory subsystem is reused to fetch BVH node data because it already has the high-bandwidth, low-latency cache hierarchy needed for random pointer-chasing access patterns.
 
-The software traversal algorithm — even when partially or fully replaced by hardware — follows a stack-based descent:
+The software traversal algorithm — even when partially or fully replaced by hardware — follows a stack-based descent. This is a generic, simplified model covering box and triangle nodes only; it omits procedural (AABB) leaves, any-hit shader invocation, and ray-flag-driven early termination, which are covered in Section 3's shader stage discussion:
 
 1. Push the TLAS root node onto a local stack.
-2. Pop the top node. If it is an internal box node, intersect the ray against all four child AABBs. Push child nodes whose boxes were hit, in order of increasing intersection distance (closer children first, so they are tested first after popping).
+2. Pop the top node. If it is an internal box node, intersect the ray against all four child AABBs. Push the children whose boxes were hit onto the stack in order of *decreasing* intersection distance — the farthest hit child is pushed first, the nearest hit child is pushed last — so that the LIFO stack pops and tests the nearest child first.
 3. If the node is an instance node, apply the instance's world-to-object transform to the ray and push the root of the referenced BLAS.
-4. If the node is a triangle leaf, compute the full Möller–Trumbore ray/triangle intersection. On a confirmed hit that is closer than the current `tmax`, update `tmax` and record the hit.
+4. If the node is a triangle leaf, compute a ray/triangle intersection test. On a confirmed hit that is closer than the current `tmax`, update `tmax` and record the hit.
 5. Repeat until the stack is empty.
+
+*Note: needs verification.* The exact ray/triangle intersection algorithm executed by hardware intersection units is not publicly documented by any vendor. The classic Möller–Trumbore algorithm is the standard software reference, but it is not watertight at shared triangle edges and vertices; NVIDIA's RT Core patents (e.g., US11704863, "Watertight ray triangle intersection") instead describe a watertight algorithm derived from Woop et al. (*Journal of Computer Graphics Techniques*, 2013), which avoids that failure mode. The traversal step itself — evaluate the ray/triangle hit, update `tmax` on the closer result — holds regardless of the exact algorithm in silicon.
+
+This description also collapses TLAS and BLAS traversal onto a single shared stack for simplicity. Patent literature on NVIDIA's Tree Traversal Unit describes TLAS-level and BLAS-level traversal state as logically separate contexts, since the two levels operate in different coordinate spaces and an instance node behaves like a call that must return to resume TLAS traversal once the referenced BLAS is exhausted.
 
 AMD's `IMAGE_BVH_INTERSECT_RAY` instruction handles steps 2 and 4 in one clock, returning the sorted child pointers or the triangle hit result. NVIDIA's RT Cores execute the entire loop including stack management in fixed-function hardware. Intel's RTUs fall between the two: they traverse autonomously but signal the EU for any-hit and intersection shader invocations.
 
