@@ -20,12 +20,13 @@ This chapter focuses on the *algorithms and GPU kernels* that power generative A
 5. [Attention Kernel Optimizations](#5-attention-kernel-optimizations)
 6. [Speculative Decoding Algorithms](#6-speculative-decoding-algorithms)
 7. [Diffusion Model Inference Pipeline](#7-diffusion-model-inference-pipeline)
-8. [Diffusion Model Quantization and Optimization](#8-diffusion-model-quantization-and-optimization)
-9. [ROCm Inference Stack](#9-rocm-inference-stack)
-10. [Vulkan Compute Inference](#10-vulkan-compute-inference)
-11. [Linux Deployment Stack](#11-linux-deployment-stack)
-12. [Performance Profiling and Optimization](#12-performance-profiling-and-optimization)
-13. [Integrations](#13-integrations)
+8. [Rendering-Pipeline Interception as a Training-Data and Conditioning Channel](#8-rendering-pipeline-interception-as-a-training-data-and-conditioning-channel)
+9. [Diffusion Model Quantization and Optimization](#9-diffusion-model-quantization-and-optimization)
+10. [ROCm Inference Stack](#10-rocm-inference-stack)
+11. [Vulkan Compute Inference](#11-vulkan-compute-inference)
+12. [Linux Deployment Stack](#12-linux-deployment-stack)
+13. [Performance Profiling and Optimization](#13-performance-profiling-and-optimization)
+14. [Integrations](#14-integrations)
 
 ---
 
@@ -76,7 +77,7 @@ A diffusion model is a generative neural network that learns to reverse a gradua
 
 In practice, inference operates in a compressed latent space rather than pixel space. A variational autoencoder (VAE) encodes the target image into a latent representation roughly 8× smaller in each spatial dimension; all denoising steps operate in this latent space, and the VAE decoder reconstructs the final image. This compression makes UNet or DiT inference tractable on consumer GPU memory — a 1024×1024 image in FP32 requires 12 MB as raw pixels but only about 192 KB as a 128×128 latent.
 
-The number of denoising steps — typically 20 to 50 for high-quality output using schedulers such as DDIM or DPM-Solver — determines both latency and output quality. Each step is a full forward pass of the backbone network, making diffusion inference a repeated compute workload rather than an autoregressive decode loop. Unlike LLM inference, diffusion model steps are largely compute-bound rather than bandwidth-bound, and parallelization across the batch dimension is more effective. §7 and §8 cover the GPU kernel strategies specific to this workload.
+The number of denoising steps — typically 20 to 50 for high-quality output using schedulers such as DDIM or DPM-Solver — determines both latency and output quality. Each step is a full forward pass of the backbone network, making diffusion inference a repeated compute workload rather than an autoregressive decode loop. Unlike LLM inference, diffusion model steps are largely compute-bound rather than bandwidth-bound, and parallelization across the batch dimension is more effective. §7 and §9 cover the GPU kernel strategies specific to this workload.
 
 ---
 
@@ -321,7 +322,33 @@ ControlNet [Source: Zhang et al., "Adding Conditional Control to Text-to-Image D
 
 ---
 
-## 8. Diffusion Model Quantization and Optimization
+## 8. Rendering-Pipeline Interception as a Training-Data and Conditioning Channel
+
+The Vulkan layer mechanism described in Ch29 §1 — an explicit layer intercepting every dispatched command via the loader's `dispatch_key`/trampoline pattern — is one instance of a general technique: interposing on the channel between an application and the graphics API to observe or redirect its state. Ch29 §6 covers the production use of this pattern for neural upscaling, where DLSS and XeSS layers capture the color, depth, and motion-vector buffers a game already renders and forward them to an inference network. The same interposition idea, applied one layer up the stack — as a source of labeled training data for computer vision, as an observation channel for reinforcement learning, and as structured conditioning input for generative world models — has a substantial research and industry history, almost all of it built on Direct3D interposition rather than Vulkan layers.
+
+### Ground Truth from Graphics-API Interposition
+
+**Playing for Data** [Source: Richter, Vineet, Roth, Koltun, "Playing for Data: Ground Truth from Computer Games", ECCV 2016, https://arxiv.org/abs/1608.02192] produced pixel-accurate semantic segmentation labels for *Grand Theft Auto V* using a technique the authors call *detouring*: "We inject a wrapper between the game and the operating system, allowing us to record, modify, and reproduce rendering commands." Because the engine reuses the same mesh, texture, and shader resources across frames and scenes, hashing those resources as they cross the wrapper produces object signatures that persist over time — a human labels a resource once, and the label propagates automatically to every future frame that reuses it. The result: 25,000 pixel-labeled images produced in 49 hours, against an estimated 12 person-years for equivalent manual annotation at the density used for CamVid and Cityscapes, with no access to the game's source code or content.
+
+The follow-up **Playing for Benchmarks** [Source: Richter, Hayder, Koltun, "Playing for Benchmarks", ICCV 2017, https://arxiv.org/abs/1709.07322] applied the same interposition approach to a broader set of ground-truth modalities: "more than 250K high-resolution video frames, all annotated with ground-truth data for both low-level and high-level vision tasks, including optical flow, semantic instance segmentation, object detection and tracking, object-level 3D scene layout, and visual odometry," gathered across 184 km of simulated driving, riding, and walking, again "without access to [the simulated world's] source code or content."
+
+**DeepGTAV** [Source: https://github.com/aitorzip/DeepGTAV] and its extension **DeepGTAV-PreSIL** [Source: Hurl, Czarnecki, Waslander, "Precise Synthetic Image and LiDAR (PreSIL) Dataset for Autonomous Vehicle Perception", arXiv:1905.00160, https://arxiv.org/abs/1905.00160] used a different interposition point: Script Hook V, GTA V's native scripting hook, combined with a component reading back the game's Direct3D depth and stencil buffers. Per the PreSIL paper, "the depth and stencil buffers are obtained from the DirectX buffers" via callbacks synchronized to the render loop; the stencil buffer supplies per-pixel class segmentation, the depth buffer separates object instances and tightens 3D bounding boxes, and a synthetic LiDAR point cloud is generated by bilinearly interpolating the depth buffer along the angular resolution pattern of a Velodyne HDL-64E sensor. DeepGTAV was originally built as a research environment for autonomous-driving perception and control — a reinforcement-learning training loop wrapped around the same buffer-interception mechanism. *Note: the exact hook point and hooking library used by the depth/stencil extraction component are not documented in enough public detail to confirm beyond what the PreSIL paper states above; no more specific claim is made here.*
+
+None of these three projects use Vulkan; all hook Direct3D. A search of the CV/RL literature turns up no published Vulkan-layer equivalent — the DLSS/XeSS layers in Ch29 §6 remain the closest production Vulkan-native precedent for capturing exactly this kind of buffer, but they consume it internally for upscaling rather than exporting it as a labeled dataset. The explicit-layer mechanism in Ch29 §1 provides the plumbing a Vulkan-native "Playing for Data" would need; no published work has built it.
+
+### The Sanctioned Equivalent: Renderer-Native Annotator APIs
+
+Where the GTA V projects intercepted an API because the engine offered no other way out, modern synthetic-data platforms expose the same buffers as a first-class renderer feature. NVIDIA Omniverse Replicator's `omni.syntheticdata` module "provides low-level integration with Omniverse RTX Renderer... passing Arbitrary Output Variables (AOVs) from the renderer through to the Annotators" [Source: https://developer.nvidia.com/blog/build-custom-synthetic-data-generation-pipelines-with-omniverse-replicator/], producing "2D/3D bounding boxes, normals, depth, and more" — functionally the same color/depth/geometry buffer set that DLSS and XeSS capture via Vulkan layer interception in Ch29 §6, retrieved by API contract instead of interposition. A Randomizer stage varies scene parameters (assets, materials, lighting, camera pose); Annotators consume the AOVs; Writers serialize the result into DNN training formats — the same label-and-propagate data flow as Playing for Data, without the wrapper.
+
+### World Models and Structured Conditioning
+
+NVIDIA Cosmos, launched as a platform of world foundation models for physical AI (autonomous vehicles, robotics) in January 2025, extends this pattern into generative video. Cosmos-Transfer conditions video-diffusion world generation on structured control signals — "segmentation video, depth video, edge video, blur video," plus LiDAR and HD-map video in its autonomous-vehicle variant — combined through ControlNet and MultiControlNet conditioning [Source: https://github.com/nvidia-cosmos/cosmos-transfer1]. This is the same ControlNet mechanism described above: a parallel encoder path injecting a structured signal into the UNet's decoder skip connections. The control signal here is exactly the class of buffer (depth, segmentation) that Playing for Data and PreSIL extracted from a game's rendering pipeline by force, now supplied deliberately as the model's steering input.
+
+It is worth stating plainly what current world models do *not* do: the best-known real-time neural game engines skip structured-buffer interception entirely and train on raw video and input actions alone. GameNGen [Source: Valevski, Leviathan, Arar, Fruchter, "Diffusion Models Are Real-Time Game Engines", ICLR 2025, arXiv:2408.14837, https://arxiv.org/abs/2408.14837] trains an RL agent to play DOOM, records its raw frame-and-action trajectories, and trains a diffusion model on that recording alone — no depth, segmentation, or motion-vector buffer is extracted from the game. DIAMOND [Source: "Diffusion for World Modeling: Visual Details Matter in Atari", NeurIPS 2024, arXiv:2405.12399, https://arxiv.org/abs/2405.12399] trains an RL agent inside a diffusion world model built the same way, from Atari frames and, in a separate demonstration, from recorded *Counter-Strike: Global Offensive* video. DeepMind's Genie 2 [Source: https://deepmind.google/blog/genie-2-a-large-scale-foundation-world-model/, December 2024] generates playable, action-controllable environments from a single prompt image using the same raw-video training regime. Structured-buffer conditioning (Cosmos-Transfer) and raw-pixel world modeling (GameNGen, DIAMOND, Genie 2) are currently two separate design points in the same research space rather than a progression: the interception effort documented above buys controllability and label precision that pure video-to-video world models have not needed in order to reach competitive results.
+
+---
+
+## 9. Diffusion Model Quantization and Optimization
 
 ### INT8 Post-Training Quantization
 
@@ -361,7 +388,7 @@ The `xformers` library [Source: xformers, https://github.com/facebookresearch/xf
 
 ---
 
-## 9. ROCm Inference Stack
+## 10. ROCm Inference Stack
 
 ### HIP BLAS Tier
 
@@ -439,7 +466,7 @@ Known deployment issues:
 
 ---
 
-## 10. Vulkan Compute Inference
+## 11. Vulkan Compute Inference
 
 Vulkan compute provides a vendor-neutral path for inference on GPUs excluded from ROCm's hardware support matrix, including older AMD RDNA1, Intel Arc (ANV driver), ARM Mali (Panfrost), and Qualcomm Adreno (Turnip).
 
@@ -533,7 +560,7 @@ Dawn compiles WGSL to SPIR-V and dispatches via Vulkan on Linux. WebGPU inferenc
 
 ---
 
-## 11. Linux Deployment Stack
+## 12. Linux Deployment Stack
 
 ### Ollama
 
@@ -623,7 +650,7 @@ The `/dev/kfd` device provides the AMD compute path (via `amdkfd`); `/dev/dri/re
 
 ---
 
-## 12. Performance Profiling and Optimization
+## 13. Performance Profiling and Optimization
 
 ### Key Inference Metrics
 
@@ -684,20 +711,22 @@ For production inference servers, liquid cooling or high-airflow rack configurat
 
 ---
 
-## 13. Integrations
+## 14. Integrations
 
-**Ch25 (GPU Compute)**: establishes Vulkan compute pipeline fundamentals — descriptor sets, push constants, compute shader dispatch — that the Vulkan inference path (§10) builds on directly. Kompute and llama.cpp Vulkan backend both use the Vulkan compute primitives described there.
+**Ch29 (Upscaling, Effects, and Overlays)**: §8's rendering-pipeline interception discussion generalizes the Vulkan explicit-layer mechanism from Ch29 §1 (dispatch table interception, `dispatch_key`/trampoline pattern, JSON manifests) and the DLSS/XeSS buffer-capture use case from Ch29 §6 (color, depth, motion-vector buffers forwarded to a neural upscaler) into the broader pattern of graphics-API interposition as an AI observability channel — for training-data generation, RL observation, and world-model conditioning.
 
-**Ch141 (Vulkan Cooperative Matrices)**: `VK_KHR_cooperative_matrix` (§10) extends the cooperative matrix extension covered in Ch141. The GLSL cooperative matrix syntax shown in §10 follows the extension specification detailed in Ch141.
+**Ch25 (GPU Compute)**: establishes Vulkan compute pipeline fundamentals — descriptor sets, push constants, compute shader dispatch — that the Vulkan inference path (§11) builds on directly. Kompute and llama.cpp Vulkan backend both use the Vulkan compute primitives described there.
 
-**Ch152 (Rust GPU Ecosystem)**: `wgpu` and `naga` (Rust's WGSL compiler) provide an alternative path to WebGPU inference. Rust-based inference frameworks targeting `wgpu` can reach the same Dawn/Vulkan backend discussed in §10, with Rust type safety over the GPU dispatch layer.
+**Ch141 (Vulkan Cooperative Matrices)**: `VK_KHR_cooperative_matrix` (§11) extends the cooperative matrix extension covered in Ch141. The GLSL cooperative matrix syntax shown in §11 follows the extension specification detailed in Ch141.
 
-**Ch221 (GPU Algorithm Performance)**: the roofline analysis in §12 applies the performance model framework from Ch221 to LLM decode specifically. The arithmetic intensity argument (GEMV ≈ 2 FLOPs/byte → bandwidth-bound) uses the same roofline methodology developed there.
+**Ch152 (Rust GPU Ecosystem)**: `wgpu` and `naga` (Rust's WGSL compiler) provide an alternative path to WebGPU inference. Rust-based inference frameworks targeting `wgpu` can reach the same Dawn/Vulkan backend discussed in §11, with Rust type safety over the GPU dispatch layer.
+
+**Ch221 (GPU Algorithm Performance)**: the roofline analysis in §13 applies the performance model framework from Ch221 to LLM decode specifically. The arithmetic intensity argument (GEMV ≈ 2 FLOPs/byte → bandwidth-bound) uses the same roofline methodology developed there.
 
 **Ch226 (GEMM for Projection Layers)**: the QKV and FFN projection GEMMs (§2) are the primary GEMM workloads in LLM inference. Ch226 covers GEMM algorithmic variants (Winograd, Strassen, tiled blocked GEMM) that underlie both cuBLAS and rocBLAS implementations.
 
 **Ch227 (Sampling in Diffusion Schedulers)**: the DDIM and DPM-Solver++ scheduler algorithms (§7) are the diffusion-specific application of the numerical ODE solver methods covered in Ch227, which addresses general GPU-accelerated sampling and probability distribution operations.
 
-**Ch229 (Inference Algorithms Substrate)**: the foundational inference compute graph concepts — operator fusion, graph rewriting for inference, quantization calibration pipelines — developed in Ch229 underlie the MIGraphX graph compiler (§9) and the torch.compile/inductor path for diffusion models (§8).
+**Ch229 (Inference Algorithms Substrate)**: the foundational inference compute graph concepts — operator fusion, graph rewriting for inference, quantization calibration pipelines — developed in Ch229 underlie the MIGraphX graph compiler (§10) and the torch.compile/inductor path for diffusion models (§9).
 
 **Ch124 (Local LLM Inference on Linux)**: the deployment-layer counterpart to this chapter. Ch124 covers GGML executor internals, GGUF memory-mapped loading, Ollama server and GPU detection detail, ONNX Runtime Execution Providers, and KV-cache management strategies at the runtime API level. This chapter (Ch232) focuses on the algorithms and kernels that those runtimes implement: FlashAttention tiling, quantization schemes, speculative decoding, diffusion schedulers, and the ROCm compute library tier.
