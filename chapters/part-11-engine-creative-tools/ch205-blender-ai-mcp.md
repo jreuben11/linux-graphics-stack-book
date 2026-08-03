@@ -133,6 +133,22 @@ The `_process_queue` timer (see §4) dequeues commands on Blender's main thread,
 
 The official Blender Foundation server at [projects.blender.org/lab/blender_mcp](https://projects.blender.org/lab/blender_mcp) (v1.0.0, 27 April 2026) uses an identical two-process design, is bundled as a Blender Extension rather than a classic addon, and targets Blender 5.1+.
 
+> **Which server should you use?** The two implementations solve overlapping but not identical problems, and picking wrong costs a re-install later.
+>
+> | | `ahujasid/blender-mcp` | Blender Foundation `lab/blender_mcp` |
+> |---|---|---|
+> | Licence | MIT | GPL-3.0-or-later ([`blender_manifest.toml`](#72-extensions-blender-42), §7.2) |
+> | Distribution | classic addon, manual `.zip` install or `uvx blender-mcp` | Blender Extension, `extensions.blender.org` |
+> | Minimum Blender | 3.6 LTS and up | 5.1+ |
+> | Scene inspection / `execute_blender_code` / viewport screenshot | yes | yes |
+> | Tool surface | flat, 16 tools (§3) | narrower, inspection-first — read-only tools plus one write path (§3.1) |
+> | API docs grounded in bundled reference (anti-hallucination) | no | yes, `search_api_docs`/`get_python_api_docs`/`search_manual_docs` (§3.1) |
+> | PolyHaven HDRIs & textures, Sketchfab import, Hyper3D Rodin / Hunyuan3D generation (§7, §9.3) | yes | no |
+> | Auto-start TCP server on Blender launch | no (manual "Start Server" click) | yes, via an Auto Start preference (§14) |
+> | Maintainer | independent community project, 24,000+ stars | Blender Foundation (Blender Lab, incubating project) |
+>
+> Default to the **official server** if you're already on Blender 5.1+ and your workflow is the inspect-act-verify loop this chapter builds around (§3.1, §8): it has direct upstream backing, so it will track future `bpy` API changes without waiting on a third party, and its documentation tools are grounded in Blender's own bundled reference rather than the model's memory. Reach for **`ahujasid/blender-mcp`** instead if you need the generative-asset tools in §7/§9.3 (PolyHaven/Sketchfab/Hyper3D), or if you're pinned to a Blender version below 5.1. The two can coexist — they claim the same TCP port (9876), so only run one addon's server at a time. Both grant the AI arbitrary Python execution inside Blender via `execute_blender_code`; treat that tool the same way regardless of which server exposes it (§15).
+
 ### 2.2 The MCP Server Component
 
 `server.py` is a separate process that speaks MCP to the AI client and TCP to the Blender addon:
@@ -183,6 +199,8 @@ mcp = FastMCP("BlenderMCP", lifespan=server_lifespan)
 
 Each tool is decorated with `@mcp.tool()`. The FastMCP library handles JSON-RPC framing, tool-list advertisement, and error wrapping automatically.
 
+The official Blender Foundation server has the same shape — a FastMCP-style process that speaks JSON-RPC to the client and TCP to the addon on the same `localhost:9876` port — but a different distribution mechanism. Instead of a PyPI package fetched by `uvx`, it ships as an `.mcpb` bundle (Anthropic's packaging format for one-step MCP server installation) alongside the Blender Extension ZIP, so there is no separate `server.py` for a user to invoke manually.
+
 ### 2.3 Connecting Claude Code
 
 Add the server to Claude Code's MCP config (`~/.claude/settings.json` or project `.claude/settings.json`):
@@ -202,11 +220,13 @@ Add the server to Claude Code's MCP config (`~/.claude/settings.json` or project
 
 For Claude Desktop, add the same block under `mcpServers` in `claude_desktop_config.json` (`~/.config/Claude/claude_desktop_config.json` on Linux).
 
+The official server skips manual JSON entirely for Claude Desktop users: **Settings → Connectors → Add Connector**, then search "Blender" (or drag the downloaded `.mcpb` file onto the Connectors pane), installs and wires up the server in one step. On the Blender side, install the extension from [blender.org/lab/mcp-server](https://www.blender.org/lab/mcp-server/) — either directly from Blender's extension-acquisition screen or via "Install from Disk" for the downloaded ZIP — and enable the **Auto Start** preference (§14) so the TCP listener comes up with Blender itself. *Note: needs verification* — the exact `mcpServers` entry for pointing Claude Code (rather than Claude Desktop) at the official server could not be independently confirmed for this chapter; `projects.blender.org`'s own setup docs return HTTP 403 to automated fetching, so treat the Claude Code path as provisional until checked against the extension's bundled README.
+
 ---
 
 ## 3. MCP Tool Surface: What the AI Sees
 
-The base ahujasid/blender-mcp server exposes 16 tools, grouped into functional categories:
+The base ahujasid/blender-mcp server exposes 16 tools, grouped into functional categories. Three of those categories wrap third-party asset services rather than Blender itself, and are worth defining before reading the table: [Poly Haven](https://polyhaven.com) is a CC0-licensed library of HDRIs, PBR texture sets, and models, used here to pull in ready-made environment lighting and materials; [Sketchfab](https://sketchfab.com) is a hosting marketplace for pre-made 3D models (free and paid) that the AI can search and import directly into the scene; and Hyper3D Rodin (§9.3) is a generative model — from Deemos/Hyper3D — that produces a new mesh from a text prompt or reference image (text-to-3D / image-to-3D) rather than retrieving an existing one. In short, Poly Haven and Sketchfab *retrieve* assets someone else made; Hyper3D Rodin *generates* one from scratch.
 
 | Tool | Category | Description |
 |---|---|---|
@@ -230,6 +250,26 @@ The base ahujasid/blender-mcp server exposes 16 tools, grouped into functional c
 The `execute_blender_code` tool is the escape hatch: anything not covered by a dedicated tool can be accomplished by injecting arbitrary `bpy` Python. The AI can use it for one-off operations but structured tools are preferred because they return typed, predictable data that is easier to reason about.
 
 Alternative community implementations add substantially more surface area. `RFingAdam/mcp-blender` exposes 218 tools covering modelling, physics, animation, particle systems, and MSFS content creation. `glonorce/Blender_mcp` exposes 69 tool groups (550+ actions), 499 unit tests, a multilingual intent router (EN/TR/FR), and operates on TCP port 9879.
+
+### 3.1 The Official Server's Tool Surface
+
+The Blender Foundation server takes a narrower, inspection-first approach instead of chasing tool count:
+
+| Tool | Category | Description |
+|---|---|---|
+| `get_objects_summary` | Inspection | Lightweight list of objects in the current scene |
+| `get_object_detail_summary` | Inspection | Deep detail on one object: transform, modifiers, materials, constraints |
+| `get_blendfile_summary_datablocks` | Inspection | Per-type data-block counts (meshes, materials, textures, …) |
+| `get_blendfile_summary_usage_guess` | Inspection | Heuristic guess at what the file is for (modelling, animation, VFX, …) |
+| `search_api_docs` / `get_python_api_docs` | Documentation | Look up a `bpy` identifier, or list modules matching a pattern |
+| `search_manual_docs` | Documentation | Search the Blender user manual |
+| `get_screenshot_of_window_as_image` / `get_screenshot_of_area_as_image` | Inspection | PNG capture of the whole window or one editor area |
+| `jump_to_tab_by_name` / `jump_to_tab_by_space_type` / `jump_to_view3d_object_by_name` | Navigation | Change the active workspace tab or focus an object in the viewport, mirroring what a human would click |
+| `execute_blender_code` | Execution | The one write path: run arbitrary `bpy` Python, same role as the community server's tool of the same name |
+
+Every tool above `execute_blender_code` is read-only, which is a deliberate design choice rather than an oversight: the server is built around an inspect-first loop where the AI is expected to call `get_objects_summary`/`get_object_detail_summary` and `search_api_docs`/`get_python_api_docs` *before* writing any code, and the documentation tools are grounded in Blender's actual bundled RST reference rather than the model's training data — a hedge against recommending an operator that was renamed or removed since the model's knowledge cutoff. There is no PolyHaven/Sketchfab/Hyper3D-equivalent asset integration; scene population from external sources is out of scope for v1.0.0.
+
+*Note: needs verification* — this table is reconstructed from third-party integration guides that document the official server's tool names, not from the server's own source or changelog: `projects.blender.org` returns HTTP 403 to automated fetching, so the exact tool count, full parameter schemas, and any additional write-capable tools beyond `execute_blender_code` should be checked against the extension itself before being treated as authoritative.
 
 ---
 
@@ -272,6 +312,18 @@ The `bpy.app.timers` API guarantees that the registered function is called on Bl
 
 This pattern — enqueue on socket thread, execute on timer, return result via threading.Event — is used identically in ahujasid/blender-mcp, the official Blender Foundation server, and all serious community implementations.
 
+### 4.1 Is a Thread-Safe bpy Coming?
+
+No. There is no known Blender Foundation roadmap item to make `bpy`/RNA safe for concurrent access from multiple threads, and the constraint is unlikely to be lifted soon. Blender's own documentation states the rule without qualification: while a background thread is running, *no* code — not even the main thread — may call any `bpy`/Blender API function; only plain Python and non-Blender third-party modules are safe to touch from a worker thread ([Python Threads are Not Supported](https://docs.blender.org/api/current/info_gotchas_threading.html)).
+
+The root cause is architectural, not an oversight waiting to be patched: RNA property updates run through a global `bContext` pointer that reflects whatever the UI happens to be doing at that instant, and the DNA structs backing `bpy.data` are mutated lock-free on the assumption of single-threaded main-loop access — a bug class first reported in 2010 ([`developer.blender.org/T23401`](https://developer.blender.org/T23401)) and still open. The GIL doesn't help: it prevents two Python bytecodes from interleaving, but does nothing to stop a C struct being read while half-written by a concurrent caller. Community pressure is long-standing — a devtalk thread titled "Multithreading support (please :))" has run for years past 1000 replies — but volume of requests has not translated into a funded fix at the RNA/bpy level.
+
+Multithreading does exist deep inside Blender's C core — depsgraph evaluation, modifier stacks, Cycles path tracing, and compositor tiles all run on Blender's internal `BLI_task` thread pool — but none of it is reachable from, or exposes concurrent write access to, Python. Scripts still hit `bpy.data` strictly serially through the main thread, which is exactly why the timer-queue pattern above exists.
+
+One development worth watching rather than relying on: Python 3.14's free-threaded ("no-GIL") build reached officially supported status in 2026 (PEP 779), and Blender 5.x already ships Python 3.13. Removing CPython's GIL only removes *Python-level* serialization, though — it does nothing for Blender's unlocked C data structures, and could plausibly make latent races easier to trigger rather than fixing them, since the GIL previously hid many of them by accident.
+
+More concretely, Blender does not pin its own Python version independently — it tracks the [VFX Reference Platform](https://vfxplatform.com), an industry-wide coordinated dependency stack that the table in §5 (Python 3.13 = "VFX Platform 2026") already reflects. The VFX Platform 2027 proposal, discussed on a devtalk thread titled ["VFX Platform to stay on Python 3.13 in 2027 — Reasons to try to request 3.14 instead?"](https://devtalk.blender.org/t/vfx-platform-to-stay-on-python-3-13-in-2027-reasons-to-try-to-request-3-14-instead/44974), stays on Python 3.13 rather than moving to 3.14 — for a reason unrelated to threading: 3.14 would pull in PySide 6.10 and therefore Qt 6.10, and the coordinating studios were not ready to make that Qt jump for the 2027 cycle. Since Blender's Python version is downstream of this industry-wide pin, staying on 3.13 through the 2027 platform cycle means Blender does not gain *access* to Python 3.14's free-threaded build in that window at all — independent of whether `bpy`'s C-level thread-unsafety (above) would make it usable even if it did. *Note: needs verification* — this is reconstructed from search-engine snippets of the devtalk thread, not the thread's full text; `devtalk.blender.org` returns HTTP 403 to automated fetching, so the exact wording and any counter-arguments raised in the thread's replies should be checked directly before treating the 2027-cycle timeline as final.
+
 ---
 
 ## 5. Blender's Python API: The bpy Module
@@ -302,6 +354,57 @@ The `bpy` PyPI package (`pip install bpy==5.2.0`) provides a standalone build fo
 | `bpy.app` | Timers, handlers, version info, build flags |
 | `bpy.path` | Path utilities (`abspath`, `basename`, `ensure_ext`, …) |
 
+#### 5.1.1 bpy.ops — Operators
+
+Every entry under `bpy.ops.<namespace>.<name>(...)` wraps a C `wmOperatorType` and returns a Python `set` of result flags — `{'FINISHED'}`, `{'CANCELLED'}`, or `{'RUNNING_MODAL'}` for modal operators. Keyword arguments map directly to the operator's `bpy.props`-declared properties, so `bpy.ops.mesh.subdivide(number_cuts=2)` is equivalent to running Subdivide from the menu and typing `2` into the redo panel. Blender 4.0 replaced the old dict-based context override (`bpy.ops.object.delete({'selected_objects': [...]})`) with a context manager:
+
+```python
+import bpy
+
+with bpy.context.temp_override(selected_objects=[obj], active_object=obj):
+    bpy.ops.object.delete()
+```
+
+`temp_override()` is required whenever an operator needs a context attribute (an active object, an area of a particular editor type) that doesn't match whatever window/area happened to be focused when the MCP addon's TCP handler ran the command — a frequent source of `poll() failed` errors in AI-driven sessions, since the addon executes on Blender's main thread with whatever context existed at that instant (§4).
+
+#### 5.1.2 bpy.data — Data-Blocks
+
+`bpy.data` exposes one `bpy_prop_collection` per ID type — `bpy.data.objects`, `.meshes`, `.materials`, `.scenes`, `.images`, `.collections`, `.node_groups`, and more. Each collection supports name-based lookup (`bpy.data.objects["Cube"]`), iteration, and `.new()`/`.remove()` for creating or deleting data-blocks directly, bypassing the operator layer entirely:
+
+```python
+mesh = bpy.data.meshes.new("Plate")
+obj  = bpy.data.objects.new("Plate", mesh)
+bpy.context.collection.objects.link(obj)   # data-blocks exist independently of any scene until linked
+```
+
+Creating a data-block with `bpy.data.*.new()` does not make it visible anywhere — an `Object` must be linked into a `Collection`, and a `Collection` into the active `Scene`'s collection hierarchy, before it renders or appears in the outliner. This two-step create-then-link pattern is the most common mistake in AI-generated `bpy` code that "runs without error but nothing shows up."
+
+#### 5.1.3 bpy.context — Editor State
+
+`bpy.context` is a read-mostly view of whatever window, screen, area, and mode is currently active: `context.object`/`context.active_object`, `context.selected_objects`, `context.scene`, `context.view_layer`, `context.mode`. It reflects live UI state, not a stable snapshot — the same expression can return different values between two calls if the user (or a previous MCP command) changed the active object in between.
+
+The important gotcha for pipeline work (§14): when Blender runs with `--background`, there is no window, so most `context.window`/`context.area`/`context.screen`-dependent attributes are `None` and any operator whose `poll()` checks them fails immediately. Headless scripts must read and write through `bpy.data` and `bpy.context.view_layer` directly rather than relying on `bpy.ops` calls that assume an interactive editor is present.
+
+#### 5.1.4 bpy.types — RNA Type Hierarchy
+
+`bpy.types` is where every RNA-registered class lives, both Blender's built-ins (`bpy.types.Object`, `bpy.types.Mesh`, `bpy.types.Scene`) and the base classes an add-on subclasses to extend the UI: `Operator`, `Panel`, `PropertyGroup`, `Menu`, `UIList`, `AddonPreferences`. §7.1 walks through a complete `Operator`/`Panel`/`PropertyGroup` example with registration; the key point for MCP-driven code is that any new class must be registered with `bpy.utils.register_class()` (§5.1.6) before Blender's UI or `bpy.ops` can see it — defining a class is not enough.
+
+#### 5.1.5 bpy.props — Property Factory Functions
+
+`bpy.props` provides the factory functions used as class-body annotations on `Operator`, `PropertyGroup`, and `bpy.types.Scene`/`bpy.types.Object` extensions: `BoolProperty`, `IntProperty`, `FloatProperty`, `StringProperty`, `EnumProperty`, `PointerProperty` (a reference to another ID or `PropertyGroup`), and `CollectionProperty` (an ordered list of `PropertyGroup` instances). Each accepts `name`, `description`, `default`, and type-specific bounds (`min`/`max`/`subtype` for numeric types — `subtype='DISTANCE'` or `'COLOR'` changes both UI widget and unit display without changing the stored value). `PointerProperty`/`CollectionProperty` are what let an add-on attach custom, undo-aware, UI-editable state to Blender's own data-blocks, as in the `bpy.types.Scene.my_addon = bpy.props.PointerProperty(...)` line in §7.1 — a plain Python attribute assigned to `bpy.types.Scene` would not survive a `.blend` file save/reload or appear in the undo stack.
+
+#### 5.1.6 bpy.utils — Registration and Support Utilities
+
+`bpy.utils.register_class()`/`unregister_class()` are the calls that make a Python class visible to Blender's operator search, UI panels, and `bpy.ops` namespace — every add-on's `register()`/`unregister()` functions (§7.1) exist to wrap these two calls for a whole set of classes in one place. Beyond registration, `bpy.utils` carries a grab-bag of infrastructure an add-on needs but that doesn't belong in `bpy.data` or `bpy.ops`: `bpy.utils.previews` manages custom icon thumbnails for panels, `bpy.utils.resource_path()` returns Blender's config/scripts/system directories, and `bpy.utils.register_manual_map()` lets an add-on hook its own documentation into Blender's "online manual" right-click menu entries.
+
+#### 5.1.7 bpy.app — Application State
+
+`bpy.app` is read-only application metadata and the two extension points used throughout this chapter: `bpy.app.timers` (§4) for scheduling main-thread callbacks from a background socket thread, and `bpy.app.handlers` — lists of callbacks such as `depsgraph_update_post`, `load_post`, and `save_pre` that Blender invokes at specific lifecycle events, used by add-ons that need to react to scene changes rather than poll for them. `bpy.app.version`, `bpy.app.version_string`, and `bpy.app.binary_path` are the standard way for a script to branch on the running Blender version rather than assuming one, which matters given how much of the RNA/`bpy` surface changes between the versions in the table above.
+
+#### 5.1.8 bpy.path — Path Utilities
+
+A small module of path-normalisation helpers tailored to Blender's on-disk conventions: `bpy.path.abspath()` resolves Blender's `//`-prefixed relative paths (relative to the current `.blend` file, not the process's working directory) to absolute ones, `bpy.path.basename()` and `bpy.path.ensure_ext()` handle filenames, and `bpy.path.clean_name()` sanitises arbitrary strings into names safe for data-block IDs. Any MCP tool that accepts a filesystem path from the AI and later passes it to `bpy.ops.export_scene.*`/`import_scene.*` should round-trip it through `bpy.path.abspath()` first, since Blender treats `//textures/wood.png` as a valid, portable path relative to the saved file.
+
 ### 5.2 C Extension Modules
 
 | Module | Role |
@@ -311,6 +414,56 @@ The `bpy` PyPI package (`pip install bpy==5.2.0`) provides a standalone build fo
 | `gpu` | Shader programs, compute shaders, framebuffer management (GPU context required) |
 | `imbuf` | Pixel-level image manipulation |
 | `idprop` | Custom property data-blocks (arbitrary key-value per data-block) |
+
+#### 5.2.1 mathutils — Vector Math
+
+`Vector`, `Matrix`, `Quaternion`, and `Euler` are thin Python wrappers over Blender's internal C math library, used everywhere transforms are read or written:
+
+```python
+from mathutils import Vector, Matrix, Euler
+import math
+
+v = Vector((1.0, 0.0, 0.0))
+rot = Euler((0, 0, math.radians(90)), 'XYZ').to_matrix().to_4x4()
+v_rotated = rot @ v                       # matrix/vector multiplication uses @, not *
+
+obj.matrix_world = Matrix.Translation((0, 0, 2)) @ rot
+```
+
+`obj.location`, `obj.rotation_euler`, and `obj.matrix_world` all return `mathutils` types rather than plain tuples, so code that reads them back gets `Vector`/`Euler`/`Matrix` objects with the full set of arithmetic operators (`@` for matrix/vector and matrix/matrix products, mirroring NumPy's convention) rather than needing manual trigonometry.
+
+#### 5.2.2 bmesh — Mesh Editing
+
+`bmesh` is the editable half-edge mesh representation Blender's own mesh tools operate on internally; §5.4 already shows the `bm.verts`/`from_mesh`/`to_mesh` round-trip for direct vertex edits. Beyond raw vertex/edge/face access, `bmesh.ops` exposes the same primitive operations the mesh operators (§5.3.1) are built from — `bmesh.ops.subdivide_edges()`, `bmesh.ops.bevel()`, `bmesh.ops.triangulate()` — callable on a `BMesh` without going through `bpy.ops` and its context/`poll()` requirements at all, which makes `bmesh` the preferred tool for procedural mesh generation scripts that build geometry from scratch rather than editing an existing selection.
+
+#### 5.2.3 gpu — Custom Drawing and Compute
+
+The `gpu` module wraps Blender's GPU backend (OpenGL, Vulkan, or Metal depending on platform) for custom viewport drawing and GPU compute, independent of the render engine. A `GPUShader` pairs a vertex and fragment (and optional geometry) program; Blender ships built-in shaders — `'UNIFORM_COLOR'`, `'FLAT_COLOR'`, `'POLYLINE_UNIFORM_COLOR'` — for common cases so a script rarely needs to write GLSL by hand:
+
+```python
+import gpu
+from gpu_extras.batch import batch_for_shader
+
+coords = [(1, 1, 1), (-2, 0, 0), (-2, -1, 3), (0, 1, 1)]
+shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+batch  = batch_for_shader(shader, 'LINE_STRIP', {"pos": coords})
+
+def draw():
+    shader.uniform_float("color", (1, 1, 0, 1))
+    batch.draw(shader)
+
+bpy.types.SpaceView3D.draw_handler_add(draw, (), 'WINDOW', 'POST_VIEW')
+```
+
+`gpu.types.GPUOffScreen` renders to a texture rather than the visible viewport, which is how the `get_viewport_screenshot`/`get_screenshot_of_*` MCP tools (§3, §3.1) capture pixels without depending on window compositing — and, per §14.2, why headless rendering on Linux still needs a virtual display or EGL context even though nothing is shown on a physical screen.
+
+#### 5.2.4 imbuf — Image Buffers
+
+`imbuf` operates one level below `bpy.data.images`: it is the pixel-buffer type (`ImBuf`) that backs `bpy.types.Image` at runtime, exposed for scripts that want to load, generate, or write image data without creating a full `Image` data-block. `imbuf.load(filepath)` reads a file into an `ImBuf`; `imbuf.new(size, planes=32, buffer_type='FLOAT')` allocates a blank one; `imbuf.write(image, filepath=...)` writes it back out. Pixel data is reachable as a `memoryview` via the buffer's pixel-access context manager, which is significantly faster than iterating `Image.pixels` (a `bpy_prop_array` with per-element RNA overhead) for anything larger than a few thousand pixels — relevant to any AI-driven texture post-processing that touches every pixel rather than a handful of parameters.
+
+#### 5.2.5 idprop — Custom Properties
+
+`idprop` is the C extension backing arbitrary custom properties on any ID data-block — the `obj["my_key"] = 1.0` syntax available on every `Object`, `Mesh`, `Scene`, and so on, independent of the `bpy.props`/`PropertyGroup` system in §5.1.5. Where `PropertyGroup` requires a registered Python class, `idprop`-backed custom properties are schema-free key/value pairs (`int`, `float`, `str`, or nested arrays/groups) attached at runtime, which is how glTF exporters (§17) and many generative-asset pipelines round-trip metadata — provenance tags, generation seeds, source-asset IDs — through a `.blend` file without needing an add-on installed to read them back.
 
 ### 5.3 Key bpy.ops Categories
 
@@ -329,6 +482,81 @@ bpy.ops.pose        # armature_apply, select_all
 ```
 
 Every operator has a `poll()` classmethod that Blender calls before `execute()`. Many operators silently fail or raise `RuntimeError: Operator bpy.ops.mesh.subdivide.poll() failed` if called in the wrong context (wrong editor type, wrong object mode, no active object). The `execute_blender_code` MCP tool captures these errors and returns them to the AI so it can correct its approach.
+
+#### 5.3.1 bpy.ops.mesh and bpy.ops.object — Modelling
+
+Mesh operators only work in Edit Mode on the active mesh's selection; object operators work in Object Mode on the selected objects. AI-generated modelling code almost always needs an explicit mode switch between the two:
+
+```python
+bpy.ops.object.mode_set(mode='EDIT')
+bpy.ops.mesh.select_all(action='SELECT')
+bpy.ops.mesh.subdivide(number_cuts=2)
+bpy.ops.mesh.inset_faces(thickness=0.05)
+bpy.ops.object.mode_set(mode='OBJECT')
+
+bpy.ops.object.duplicate()
+bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+```
+
+`transform_apply` is the operator equivalent of "Apply" in the Object menu — it bakes the object's transform into the mesh data and resets `location`/`rotation_euler`/`scale` to identity, which matters for any downstream export (§17) or physics setup that assumes unit scale.
+
+#### 5.3.2 bpy.ops.material and bpy.ops.node — Shading
+
+`bpy.ops.material` manages material slots on an object; the shader graph itself is edited through `bpy.ops.node` when working interactively, though §7.3's `node_tree.nodes.new()`/`links.new()` pattern is more reliable for AI-generated code since it doesn't depend on a Shader Editor area being the active context:
+
+```python
+bpy.ops.object.material_slot_add()
+bpy.ops.material.new()
+obj.material_slots[-1].material.name = "Generated_Material"
+```
+
+#### 5.3.3 bpy.ops.render — Rendering
+
+A single call renders and optionally writes the result to `scene.render.filepath`:
+
+```python
+scene = bpy.context.scene
+scene.render.filepath = "//renders/frame_001.png"
+scene.render.image_settings.file_format = 'PNG'
+bpy.ops.render.render(write_still=True)          # single frame
+bpy.ops.render.render(animation=True)             # scene.frame_start .. frame_end
+```
+
+`write_still=True` is required to actually save the image — without it, `render()` produces the result in Blender's in-memory render buffer (viewable in the Image Editor) but writes nothing to disk, a frequent source of "the render ran but no file appeared" reports from AI-driven pipelines.
+
+#### 5.3.4 bpy.ops.import_scene and bpy.ops.export_scene — Interchange
+
+Format-specific operators, one function per format, taking a `filepath` and format-specific keyword arguments:
+
+```python
+bpy.ops.export_scene.gltf(filepath="//export/model.glb", export_format='GLB')
+bpy.ops.export_scene.fbx(filepath="//export/model.fbx", use_selection=True)
+bpy.ops.import_scene.gltf(filepath="//assets/downloaded.glb")
+```
+
+This is the operator family the community server's `download_polyhaven_asset`/`download_sketchfab_model` tools (§3) call internally after fetching a file, and the one Chapter 64's glTF pipeline discussion (§17) builds on for exporting AI-generated scenes to Three.js/React Three Fiber.
+
+#### 5.3.5 bpy.ops.action and bpy.ops.pose — Animation and Rigging
+
+`bpy.ops.action` inserts and manages keyframes on the active object's action; `bpy.ops.pose` operates on an armature's pose bones in Pose Mode:
+
+```python
+obj   = bpy.context.active_object
+scene = bpy.context.scene
+obj.location = (0, 0, 0)
+scene.frame_set(1)
+bpy.ops.anim.keyframe_insert(data_path="location")
+
+scene.frame_set(24)
+obj.location = (0, 0, 2)
+bpy.ops.anim.keyframe_insert(data_path="location")
+
+bpy.ops.object.mode_set(mode='POSE')
+bpy.ops.pose.select_all(action='SELECT')
+bpy.ops.pose.rot_clear()
+```
+
+For keyframing simple properties, `obj.keyframe_insert(data_path="location", frame=24)` — a method on the data-block itself rather than an operator call — avoids the context/mode requirements entirely and is generally preferred in generated scripts for the same reason direct `bpy.data` access is preferred over `bpy.ops` in §5.4.
 
 ### 5.4 Accessing and Modifying Data Directly
 
@@ -378,6 +606,18 @@ This design means:
 - The API reference at [docs.blender.org/api/current/](https://docs.blender.org/api/current/) is auto-generated from RNA via `sphinx_doc_gen.py`
 
 For the Blender MCP server, the RNA system is also what makes `execute_blender_code` robust: any code that runs in Blender's Python context has full access to the live RNA-wrapped scene, so the AI can inspect and modify any data-block by name.
+
+### 6.1 Are There Alternatives to bpy?
+
+Nothing that replaces `bpy`, but several projects route around it for specific tasks:
+
+- **Rust via PyO3.** Patterns like `rust_extension_api` wrap Rust logic into a Python wheel that Blender's extension system loads and that calls back into `bpy` for UI registration and data access. This substitutes the *implementation language* for performance-sensitive logic; it still goes through `bpy` for anything Blender-facing and does not bypass the GIL or the thread-safety constraints in §4.1.
+- **`bpy` as a standalone PyPI module** (§5) is a different embedding of the same API — useful for CI and server-side scripting without a Blender install, but not an alternative API surface.
+- **Pure-Python/Rust `.blend` file parsers that skip `bpy` entirely** — `tinyblend`, `blender-file-reader`, and the Rust crate `lukebitts/blend` — read (rarely write) `.blend` files directly from their on-disk DNA layout without launching Blender. None supports compressed `.blend` files or full write-back, so they work as asset-inspection tooling rather than a general substitute for scripting inside a running Blender.
+- **Geometry Nodes** is arguably Blender's own real answer to `bpy`'s limits: node graphs are evaluated through the multithreaded depsgraph in C, not single-threaded Python, so procedural work expressed as nodes sidesteps both the GIL and the RNA thread-safety constraint entirely. The Foundation's practical direction has trended toward moving more procedural logic into nodes rather than fixing `bpy`'s threading model.
+- **USD/Hydra** sidesteps `bpy` for cross-DCC scene interchange (asset handoff between Blender, other DCCs, and game engines), but that addresses the *interchange format*, not in-Blender scripting — it is not something an MCP server would use in place of `execute_blender_code`.
+
+The practical takeaway for MCP-driven workflows: `execute_blender_code` and direct `bpy.data` access (§5.4) remain the only way to script a *running* Blender session, and none of the above changes that.
 
 ---
 
@@ -775,6 +1015,7 @@ AI Render ([github.com/benrugg/AI-Render](https://github.com/benrugg/AI-Render))
 - Cloud API backends as alternatives
 - Per-frame prompt animation (the prompt text can be keyframed)
 - Batch processing of animation sequences
+- **ControlNet conditioning** ([wiki](https://github.com/benrugg/AI-Render/wiki/ControlNet)): rather than letting img2img denoise freely from the rendered frame, AI Render can pass a ControlNet preprocessor input — most commonly the scene's own depth pass, but also Canny edges or an OpenPose skeleton derived from armature bones — to Automatic1111's ControlNet extension. This constrains the diffusion output to respect Blender's actual scene geometry and object silhouettes frame-to-frame, which is what makes stylized-but-coherent animation sequences (rather than a slideshow of independently hallucinated frames) practical with a plain img2img backend.
 
 ### 12.3 Using Meshy AI Texturing on Existing Meshes
 
@@ -792,6 +1033,18 @@ curl https://api.meshy.ai/openapi/v2/ai-texture \
 ```
 
 The response follows the same async pattern as text-to-3D.
+
+### 12.4 Combining Dream Textures and AI Render
+
+Dream Textures (§12.1) and AI Render (§12.2) operate at different stages of the pipeline — one on scene assets before rendering, the other on rendered frames — and combining them covers ground that neither tool reaches alone:
+
+1. **Material and texture authoring with Dream Textures.** Generate base-colour and detail textures once, in UV space, before any camera or lighting is finalised: text-to-texture for tileable surfaces, Project Dream Texture (depth-to-image) to paint photorealistic detail directly onto existing low-poly or untextured geometry using the viewport's own depth as structure guidance, and inpainting to patch or restyle specific UV islands. Because this step edits `bpy.data.images`/material node graphs directly, its output is a persistent, reusable asset — the same generated texture survives across every subsequent render, camera angle, and animation frame.
+2. **A standard Cycles or EEVEE render with a depth pass.** Render the scene normally (§5.3.3), enabling the `Z`/`Mist` or `Denoising Normal`/`Depth` render pass (`view_layer.use_pass_z = True`) alongside the beauty pass. This depth data is the connective tissue between the two AI tools: it is the same kind of structure signal Dream Textures used in step 1, now captured per-frame for use in step 3.
+3. **Per-frame stylization with AI Render + ControlNet.** Feed each rendered frame through AI Render's img2img pipeline, conditioning the ControlNet extension on that frame's depth pass (§12.2) rather than letting Stable Diffusion denoise unconstrained. Depth conditioning is what prevents the "AI slideshow" failure mode — independently hallucinated geometry per frame — since every frame's diffusion output is pinned to the same underlying 3D structure Dream Textures' materials were authored against. The prompt itself can still be keyframed (§12.2) to evolve the visual style over the course of the shot, and Batch processing renders the full sequence unattended once a single test frame looks right.
+
+**Why this ordering, not the reverse.** Running AI Render's stylization *before* Dream Textures' material pass would defeat the purpose of ControlNet depth-conditioning — there would be no clean render to derive a depth pass from, and no stable base texture for the stylized look to stay consistent with across frames. Dream Textures establishes a persistent, geometry-correct asset; AI Render's job is purely post-render image transformation, and it needs that geometry-correct render (and its depth data) as an input, not the other way around.
+
+**MCP/Claude Code orchestration.** Because both add-ons expose registered operators, an agent driving this workflow via `execute_blender_code` can script the full chain without leaving the inspect-act-verify loop (§8): generate/apply a Dream Textures material, trigger `bpy.ops.render.render(write_still=True)` with the depth pass enabled, then call AI Render's own operators — `ai_render.generate_new_image_from_current` (single-frame img2img/ControlNet pass on the current render) or `ai_render.inpaint_from_last_sd_image` (targeted re-generation of a masked region of the last AI Render output) — before using `get_viewport_screenshot`/`get_screenshot_of_*` (§3, §3.1) to judge the stylized result and iterate on the prompt or ControlNet strength.
 
 ---
 
@@ -978,14 +1231,19 @@ for area in bpy.context.screen.areas:
 Several major Blender workflows have minimal or unusable Python API surface:
 
 **Sculpting.** The sculpt tool (`bpy.ops.sculpt.*`) exposes brush parameter settings but has no API for applying brush strokes programmatically with arbitrary position, pressure, and direction. Sculpted forms must be created by other means (displacement modifiers, imported meshes, procedural geometry) and then refined interactively.
+*Suggested workaround:* have the AI generate the coarse form procedurally — a displacement/multiresolution modifier driven by a noise or image texture, a metaball assembly converted to mesh, or an imported base mesh from Meshy/Hyper3D Rodin (§9) — and hand the result to a human for interactive sculpted refinement rather than attempting to script individual strokes. `get_object_info`/`get_viewport_screenshot` can still verify the procedural base before handoff.
 
 **Grease Pencil strokes.** Grease Pencil v3 (Blender 4.3+) has a Python API for reading and writing stroke point data, but stroke simulation (pressure sensitivity, velocity-dependent width) is not scriptable with the nuance a manual artist achieves.
+*Suggested workaround:* script the stroke *geometry* (point positions, layer/frame placement, colour) programmatically where the shape itself is what matters — diagrams, motion guides, simple vector-style art — and reserve manual drawing for strokes where pressure/velocity nuance is the point. Uniform-width strokes generated via the point-data API are usually indistinguishable from manual ones once rendered.
 
 **Physics simulation debugging.** Setting up rigid body, cloth, or fluid simulation parameters is fully scriptable. Diagnosing *why* a simulation produces wrong results — cloth self-intersecting, fluid leaking, rigid body jitter — requires interactive playback with parameter tweaking. There is no API for "play simulation and return quality metrics."
+*Suggested workaround:* bake the simulation headlessly (`bpy.ops.ptcache.bake_all()`), then have the AI inspect *proxy signals* rather than play back the animation itself — self-intersection can be approximated by sampling mesh bounding-box overlap or vertex-to-vertex distances across baked frames via `bpy.data`, and a rendered turntable of a few sampled frames via `get_viewport_screenshot` lets Claude's vision flag gross failures (fluid escaping its domain, an object clipping through the floor) even without true physical-accuracy metrics.
 
 **Video Sequence Editor.** The VSE Python API exists but is complex enough that generating correct strip timing, transitions, and audio sync from a script requires substantial error-prone bookkeeping. Claude can do it, but failures are common.
+*Suggested workaround:* apply the same Info-editor-generalisation pattern from §8.2 — assemble one representative cut manually in the VSE UI, copy the resulting `bpy.ops.sequencer.*` calls and strip properties from the Info log, and have Claude generalise that into a parameterised script rather than deriving VSE timing logic from the API reference alone.
 
 **Compositor node trees.** The compositing node graph uses the same `node_tree` API as material shaders, but the node type names and socket names differ and are not consistent across Blender versions. Claude frequently generates compositor node connections that silently fail to link because a socket name changed (e.g., `"Image"` vs `"Color"` depending on version and node type).
+*Suggested workaround:* before wiring links, have the script (or the AI via `execute_blender_code`) enumerate `node.inputs.keys()`/`node.outputs.keys()` on the actual nodes just created and match against that live list instead of a remembered socket name; alternatively, build the compositor graph once in the UI, save it as a `.blend` library file, and append it with `bpy.ops.wm.append()` the same way §15.6 recommends for Geometry Nodes.
 
 ### 15.4 The Visual Feedback Loop
 
@@ -999,14 +1257,20 @@ The practical constraint is latency: each round trip (tool call → Blender exec
 
 Claude's vision capability is competent at identifying gross problems (wrong hemisphere lighting, obviously incorrect scale, materials with clearly wrong albedo) but unreliable for fine-grained aesthetic judgements that experienced artists make intuitively.
 
+*Suggested mitigations:* match the render settings to the question being asked rather than always screenshotting at full fidelity — use EEVEE's viewport (not Cycles) for the screenshot itself, since interactive-rate rendering removes most of the round-trip latency and coarse composition/lighting-direction judgements don't need path-traced accuracy; batch several candidate parameter values into one `execute_blender_code` call (e.g., render three roughness values to three separate images in one pass) and screenshot once rather than looping one-value-at-a-time; and reserve the loop for the coarse decisions it's actually good at (§15.4 above), routing fine aesthetic tuning — the few-degree light nudges, the exact roughness value — back to a human turning a slider interactively, with the AI only re-entering the loop once a new coarse decision is needed.
+
 ### 15.5 Animation and Rigging
 
 Keyframe animation is fully scriptable through `bpy.data.objects[name].keyframe_insert()` and FCurve manipulation. Rigging is scriptable through armature creation, bone parenting, and constraint assignment. Both work; both are verbose and error-prone for complex cases:
 
 - **Armature construction**: bone head/tail positions must be specified in exact coordinates; an off-by-one in bone hierarchy causes the entire rig to deform incorrectly.
+  *Suggested solution:* for humanoid/creature rigs, skip manual bone-by-bone construction entirely and generate the armature from Blender's Rigify add-on (`bpy.ops.object.armature_human_metarig_add()` or another metarig preset) via `bpy.ops`, then have the AI reposition the metarig's bones to match the target mesh proportions before the single `bpy.ops.pose.rigify_generate()` call — this confines AI-authored coordinate math to bone *placement* rather than the far more error-prone hierarchy and roll/axis setup Rigify handles internally.
 - **IK chain setup**: requires setting `bone.use_ik_limit_x`, `bone.ik_stiffness_x`, `bone.ik_stretch` and adding an `INVERSE_KINEMATICS` constraint via `bpy.ops.pose.ik_add()`, which itself requires Pose mode context.
+  *Suggested solution:* Rigify-generated rigs (above) ship IK/FK switching already wired on the control bones, so the practical fix is the same one — prefer generating from a metarig over hand-assembling `INVERSE_KINEMATICS` constraints. Where a custom IK chain is unavoidable, use `temp_override()` (§5.1.1) to satisfy the Pose-mode `poll()` requirement rather than switching the UI's active mode, so the script doesn't depend on whatever mode Blender happened to be in when the MCP command arrived.
 - **NLA (Non-Linear Animation)**: the NLA editor Python API involves `action`, `nla_track`, and `nla_strip` objects whose timing relationships are easy to get wrong.
+  *Suggested solution:* apply the Info-editor-generalisation pattern (§8.2) — build one representative strip arrangement manually, read back the resulting `action`/`nla_track`/`nla_strip` properties from `bpy.data`, and have Claude generalise the *offsets between* strips (which is what's error-prone) from that concrete example rather than deriving NLA timing math from first principles.
 - **Shape keys**: creating and keying shape keys (`obj.shape_key_add()`, `key.keyframe_insert("value")`) is reliable for simple cases; driver-based shape key animation requires the driver API (`fcurve.driver`, `driver.variables`) which is complex.
+  *Suggested solution:* for the common case (a shape key value driven directly by another single property, such as a bone's rotation angle for a facial rig), use `driver_add()` and inspect the generated `FCurve.driver.expression`/`variables` structure afterward via `get_object_info`-style introspection to verify it before trusting it, rather than hand-writing the driver's internal graph; keep multi-variable or Python-expression drivers as a human-authored step.
 
 For AI-generated character assets from Meshy or Hyper3D Rodin, the most practical approach is to import the mesh and use Blender's auto-rigging tools (Rigify) via `bpy.ops`, which produces a complete rig from a rest-pose mesh with one operator call, rather than constructing the armature bone-by-bone.
 
@@ -1032,6 +1296,190 @@ bpy.ops.wm.append(
 ```
 
 This is significantly more robust than constructing node trees programmatically and is the pattern Claude should use for complex Geometry Nodes setups.
+
+### 15.7 Programmatic Verification Beyond Vision
+
+Every workaround in §15.2–§15.6 shares a weakness: the fallback verification step is `get_viewport_screenshot` plus Claude's vision analysis (§15.4), which is slow (a multi-second round trip per check) and imprecise (competent at gross errors, unreliable at fine ones). Most of what an AI needs to verify about a Blender scene — did this operator actually change anything, does this mesh have a hole in it, is this object floating above the floor, does this downloaded glTF have the material channels the target engine expects — is answerable as a structured boolean or number from `bpy`/`bmesh` data, without rendering a single pixel. The following techniques extend the inspect-act-verify loop (§8) with checks precise enough to replace a screenshot, and coarse enough to run on every step rather than being reserved for a final visual pass. None of these are bespoke to this chapter's MCP servers — either server's `execute_blender_code` (§3, §3.1) is sufficient to run all of them, and a production MCP deployment would typically promote the most-used ones to dedicated structured tools rather than re-generating the same Python each time.
+
+#### 15.7.1 Hit Testing and Ray Casting
+
+`Scene.ray_cast(depsgraph, origin, direction, distance=...)` casts against every visible object in the scene and returns `(result, location, normal, index, object, matrix)` — the same query the 3D cursor's "snap to surface" and physics engines use internally, now available to verify placement without a screenshot:
+
+```python
+import bpy
+from mathutils import Vector
+
+depsgraph = bpy.context.evaluated_depsgraph_get()
+scene = bpy.context.scene
+
+def is_resting_on_surface(obj, max_gap=0.001):
+    """Cast downward from the object's base to confirm it touches something."""
+    base = obj.matrix_world @ Vector((0, 0, obj.bound_box[0][2]))
+    hit, loc, normal, index, hit_obj, matrix = scene.ray_cast(
+        depsgraph, base + Vector((0, 0, 0.01)), Vector((0, 0, -1))
+    )
+    return hit and (base.z - loc.z) < max_gap
+```
+
+For a single known object rather than the whole scene, `Object.ray_cast(origin, direction, distance=...)` returns `(result, location, normal, index)` against that object alone — use `obj.evaluated_get(depsgraph)` first if the object has modifiers, since the un-evaluated `Object` exposes only the base mesh. This directly replaces the "does it look like it's floating?" judgement call from §15.4 with a numeric gap the AI can threshold on, and gives the physics-debugging gap in §15.3 a cheap self-intersection proxy: ray-cast between two objects' surfaces along their shared axis and check for a hit at a shallower distance than either object's own extent.
+
+**Existing tooling.** For actual geometric intersection between two objects — not just "is there a surface below this point" — `mathutils.bvhtree.BVHTree` is the module to reach for instead of hand-rolled ray sweeps: `BVHTree.FromObject(obj, depsgraph)` builds an acceleration structure per object, and `tree_a.overlap(tree_b)` returns the actual overlapping triangle-index pairs between two meshes, which is real intersection testing rather than a bounding-box approximation ([mathutils.bvhtree API reference](https://docs.blender.org/api/current/mathutils.bvhtree.html)). This is the more precise version of the AABB pre-filter in §15.7.3.
+
+#### 15.7.2 Geometry Analysis
+
+`bmesh` (§5.2.2) exposes the same primitives Blender's own mesh-cleanup tools use, callable read-only via the `bm.from_mesh()` pattern from §5.4 without needing Edit Mode or an operator `poll()` to pass:
+
+```python
+import bpy, bmesh
+
+def analyze_mesh(obj):
+    me = obj.data
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bm.normal_update()
+
+    report = {
+        "non_manifold_edges": sum(1 for e in bm.edges if not e.is_manifold),
+        "zero_area_faces":    sum(1 for f in bm.faces if f.calc_area() < 1e-8),
+        "ngons":              sum(1 for f in bm.faces if len(f.verts) > 4),
+        "signed_volume":      bm.calc_volume(signed=True),
+    }
+    bm.free()
+    return report
+```
+
+`edge.is_manifold` (true only when an edge borders exactly two faces) flags holes and non-watertight seams — the exact defect class that makes a mesh unsuitable for boolean operations, 3D printing, or physics collision. `calc_area()` near zero flags degenerate faces left over from a bad boolean or remesh. `calc_volume(signed=True)` going negative on a mesh that should be closed and outward-facing is a cheap global flipped-normals check, since a consistently outward-facing closed mesh always integrates to a positive volume. Running this immediately after any sculpting-workaround, boolean, or remesh step (§15.3) turns "does this mesh look broken?" into a pass/fail gate before the AI even requests a screenshot.
+
+**Existing tooling.** Much of this is already implemented, tested, and UI-exposed rather than needing to be hand-rolled:
+- **3D-Print Toolbox** (`object_print3d_utils`, bundled with Blender — enable it in Preferences → Add-ons) provides dedicated check operators for non-manifold edges, intersecting faces, and wall thickness, plus a **Make Manifold** operator that attempts automatic repair of bad normals, holes, and empty geometry ([3D Print Toolbox — Blender Manual](https://docs.blender.org/manual/en/4.0/addons/mesh/3d_print_toolbox.html), [source](https://github.com/blender/blender-addons/blob/main/object_print3d_utils/__init__.py)).
+- Blender's built-in **Mesh Analysis overlay** (`Mesh.statvis`, toggled via the viewport Overlays panel) computes five per-face heatmaps — Overhang, Thickness, Intersect, Distort, and Sharp — as a vertex-color layer, viewable directly or read back programmatically instead of writing the equivalent bmesh checks by hand ([Mesh Analysis — Blender Manual](https://docs.blender.org/manual/en/latest/modeling/meshes/mesh_analysis.html), [MeshStatVis API reference](https://docs.blender.org/api/current/bpy.types.MeshStatVis.html)); a third-party [Mesh Analysis Overlay extension](https://extensions.blender.org/add-ons/mesh-analysis-overlay/) adds further display modes.
+- The community add-on **MeshLint** bundles tris/ngons/non-manifold/interior-face/unapplied-scale checks into one panel ([rking/meshlint](https://github.com/rking/meshlint)), though it has seen little maintenance in recent Blender versions and should be checked for 4.x/5.x compatibility before relying on it.
+- Outside Blender entirely, the standalone Python library **`trimesh`** loads GLB/OBJ/STL/PLY directly and exposes `.is_watertight`, volume, convex hull, and ray-mesh queries as plain properties/methods — a maintained alternative for auditing a mesh (including one that never gets imported into Blender at all) with one dependency instead of bmesh-based scripting ([trimesh.org](https://trimesh.org/), [PyPI](https://pypi.org/project/trimesh/)).
+
+#### 15.7.3 Scene Analysis
+
+`get_scene_info`/`get_objects_summary` (§3, §3.1) return a flat object listing; the checks below turn that listing into the kind of audit §16.1's prompt toolkit asks for in natural language, as reusable code instead of freshly generated script each time:
+
+```python
+import bpy
+from mathutils import Vector
+
+def world_aabb(obj):
+    corners = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+    lo = Vector(min(c[i] for c in corners) for i in range(3))
+    hi = Vector(max(c[i] for c in corners) for i in range(3))
+    return lo, hi
+
+def aabb_overlap(obj_a, obj_b):
+    a_lo, a_hi = world_aabb(obj_a)
+    b_lo, b_hi = world_aabb(obj_b)
+    return all(a_lo[i] <= b_hi[i] and b_lo[i] <= a_hi[i] for i in range(3))
+
+def scene_audit(scene):
+    return {
+        "orphan_materials":  [m.name for m in bpy.data.materials if m.users == 0],
+        "orphan_images":     [i.name for i in bpy.data.images if i.users == 0],
+        "non_uniform_scale": [o.name for o in scene.objects
+                               if len(set(round(s, 4) for s in o.scale)) > 1],
+        "overlapping_pairs": [(a.name, b.name)
+                               for i, a in enumerate(scene.objects)
+                               for b in list(scene.objects)[i + 1:]
+                               if a.type == 'MESH' and b.type == 'MESH'
+                               and aabb_overlap(a, b)],
+    }
+```
+
+Every ID data-block carries a `.users` count, so a zero-user material or image is guaranteed orphaned regardless of how it got that way — useful for catching the "generated a material, never assigned it" mistake §5.1.2 warns about. Non-uniform scale is worth flagging proactively rather than discovering it downstream: it silently breaks physics collision shapes and can invert normals on export. AABB overlap is a coarse pre-filter — two objects' bounding boxes touching doesn't mean their geometry actually interpenetrates — but it is enough to prioritise which object pairs are worth a real ray-cast or `BVHTree.overlap()` check (§15.7.1) instead of testing every pair in a large scene at full precision.
+
+**Existing tooling.** Unlike geometry analysis (§15.7.2) and glTF analysis (§15.7.4 below), no widely-used add-on or library was found that specifically covers this combination of checks — orphan data-block detection, non-uniform-scale flagging, and cross-object overlap auditing at the scene level. This looks like genuine DIY territory: `.users`-based orphan detection and `bound_box`/`BVHTree`-based overlap checks are simple enough in isolation (as above) that no dedicated tool appears to have consolidated them, rather than one being deliberately avoided for some hidden reason. *Note: needs verification* — absence of a found tool is not proof none exists.
+
+#### 15.7.4 glTF Asset Analysis
+
+Assets arriving via Sketchfab/Meshy/Hyper3D Rodin (§3, §9) or leaving via the glTF export pipeline (§17) are worth validating structurally before they reach a game engine or Three.js, independent of whatever `.blend`-side checks already ran. [`gltf-validator`](https://github.com/KhronosGroup/glTF-Validator) (already used in §17's pipeline) checks spec conformance:
+
+```bash
+gltf_validator asset.glb --format json > report.json
+python3 -c "import json; r = json.load(open('report.json')); print(r['issues']['numErrors'], r['issues']['numWarnings'])"
+```
+
+For questions the validator doesn't answer — does this asset have the specific channels a target renderer expects? — [`pygltflib`](https://pypi.org/project/pygltflib/) parses the glTF JSON structure directly:
+
+```python
+from pygltflib import GLTF2
+
+gltf = GLTF2().load("asset.glb")
+print("extensions used:", gltf.extensionsUsed)
+print("materials:", len(gltf.materials or []))
+
+for i, mesh in enumerate(gltf.meshes or []):
+    for prim in mesh.primitives:
+        if prim.targets:
+            print(f"mesh {i}: {len(prim.targets)} morph targets")
+
+for skin in gltf.skins or []:
+    print(f"skin with {len(skin.joints)} joints — needs a skinning-capable renderer")
+```
+
+This is the structural equivalent of §15.3's compositor socket-name check applied to an external file rather than a live node tree: rather than assuming a downloaded or exported asset has the PBR channels, morph targets, or skin data a workflow needs, read the actual glTF JSON and branch on what is really there. It runs as ordinary Python outside Blender entirely — in the MCP server process or a CI step — so it applies equally to assets the AI never loads into Blender at all.
+
+**Existing tooling.** `pygltflib` above is the minimal, dependency-light option when only a few specific fields matter; for a fuller picture, **`gltf-transform inspect model.glb`** (from `@gltf-transform/cli`, already used elsewhere in this chapter's export pipeline for Draco/meshopt post-processing, §17) prints a structured report covering every scene, mesh, material, texture, and animation in the file — including which extensions are required to load it and how much of the file size is geometry versus textures — with `--format=csv`/`--format=md` for machine-readable output ([gltf-transform.dev/cli](https://gltf-transform.dev/cli)). `trimesh` (§15.7.2) is also a reasonable choice here since it loads GLB natively and gives `.is_watertight`/volume checks on top of the format-level inspection `gltf-transform` and `gltf-validator` provide — the three tools cover, respectively, geometric integrity, structural/spec conformance, and asset-budget reporting.
+
+#### 15.7.5 Operator Pre-Flight Checks
+
+Every `bpy.ops` entry supports calling `.poll()` without executing the operator, which turns the `poll() failed` `RuntimeError` from §15.2 into a checkable condition instead of a caught exception:
+
+```python
+import bpy
+
+def safe_call(op, label, **kwargs):
+    if not op.poll():
+        return {"error": f"{label}.poll() failed — wrong context, not executed"}
+    return {"result": op(**kwargs)}
+
+safe_call(bpy.ops.mesh.subdivide, "bpy.ops.mesh.subdivide", number_cuts=2)
+```
+
+This does not eliminate the context-setup problem §15.2 describes — the AI still has to know *why* `poll()` failed and how to fix it (wrong mode, no active object, wrong area type) — but it removes one full round trip per failure: instead of executing, hitting a traceback, parsing the error message, and retrying, `execute_blender_code` can check-then-call in a single pass and return a clean structured reason immediately.
+
+#### 15.7.6 Before/After Geometry Diffing
+
+The most common silent failure in AI-generated `bpy` code is an operator that returns `{'FINISHED'}` without actually changing anything — usually because the selection was empty or the wrong object was active. A cheap signature comparison catches this without any visual check at all:
+
+```python
+def mesh_signature(obj):
+    me = obj.data
+    return (len(me.vertices), len(me.edges), len(me.polygons),
+             tuple(round(d, 5) for d in obj.dimensions))
+
+before = mesh_signature(obj)
+bpy.ops.mesh.subdivide(number_cuts=2)
+after = mesh_signature(obj)
+
+if before == after:
+    raise RuntimeError("bpy.ops.mesh.subdivide ran but produced no detectable change")
+```
+
+This must run in Object Mode, or after `bmesh.update_edit_mesh(me)`/an Edit-to-Object mode toggle — `me.vertices`/`me.polygons` reflect the mesh's last synced state, not live edits still pending inside an active `BMesh` edit session (§5.2.2, §5.4). The same signature-comparison pattern generalises past mesh edits: comparing `len(bpy.data.objects)` before/after an import, or a material's node count before/after a generation step, catches the same class of "ran without error but did nothing" failure anywhere in the pipeline.
+
+#### 15.7.7 Pixel-Diff Screenshots
+
+Not every visual check needs Claude's vision model — a plain pixel difference between two `get_viewport_screenshot`/`get_screenshot_of_*` (§3, §3.1) captures can decide whether a full vision pass is even warranted, cutting the latency §15.4 flags for the common case where a parameter change was too small to matter yet:
+
+```python
+import base64
+from io import BytesIO
+from PIL import Image, ImageChops
+
+def screenshot_diff(png_b64_before: str, png_b64_after: str) -> float:
+    a = Image.open(BytesIO(base64.b64decode(png_b64_before))).convert("RGB")
+    b = Image.open(BytesIO(base64.b64decode(png_b64_after))).convert("RGB")
+    diff = ImageChops.difference(a, b).convert("L")
+    hist = diff.histogram()
+    weighted = sum(i * n for i, n in enumerate(hist))
+    return weighted / (a.width * a.height * 255)   # 0.0 identical, 1.0 fully different
+```
+
+This runs in the MCP server process or Claude Code's own environment, not inside Blender's `execute_blender_code` — Blender's bundled interpreter does not ship Pillow by default, but `get_viewport_screenshot` has already handed both images back as base64 PNG by the time this comparison is needed. A practical policy: skip the vision call entirely below some diff threshold (nothing meaningfully changed — likely a no-op or a change too small to matter), and only spend a vision round trip above it, reserving Claude's actual visual judgement for the cases in §15.4 it is genuinely needed for.
 
 ---
 
@@ -1656,15 +2104,38 @@ Provide the correct export command and any transform fixes needed.
 - [Blender MCP Server — Blender Foundation](https://www.blender.org/lab/mcp-server/) — Official Blender Lab project, v1.0.0 April 2026
 - [projects.blender.org/lab/blender_mcp](https://projects.blender.org/lab/blender_mcp) — Blender Foundation source repository
 - [Model Context Protocol specification](https://modelcontextprotocol.io) — Wire format, tool/resource schema
+- [Poly Haven](https://polyhaven.com) — CC0 HDRI/texture/model library used by the community server's PolyHaven tools
+- [Sketchfab](https://sketchfab.com) — 3D model marketplace used by the community server's Sketchfab tools
 - [FastMCP — Python SDK](https://gofastmcp.com) — FastMCP library used by blender-mcp server.py
 - [blender-mcp on PyPI](https://pypi.org/project/blender-mcp/) — `uvx blender-mcp` installation
 - [Blender Python API Overview](https://docs.blender.org/api/current/info_overview.html) — Official bpy module documentation
 - [bpy API reference — Blender 5.2](https://docs.blender.org/api/current/) — Auto-generated from RNA
+- [Python Threads are Not Supported — API reference](https://docs.blender.org/api/current/info_gotchas_threading.html) — Official statement of bpy's thread-safety limits
+- [Blender Developer T23401 — bContext isn't thread safe](https://developer.blender.org/T23401) — 2010 bug report underlying §4.1's root-cause explanation
+- [PEP 779 — Free-threaded Python](https://peps.python.org/pep-0779/) — 2026 official-support status for no-GIL CPython
+- [VFX Reference Platform](https://vfxplatform.com) — Industry-coordinated dependency stack (Python, Qt/PySide, …) that Blender's Python version tracks
+- [devtalk.blender.org — VFX Platform to stay on Python 3.13 in 2027](https://devtalk.blender.org/t/vfx-platform-to-stay-on-python-3-13-in-2027-reasons-to-try-to-request-3-14-instead/44974) — PySide 6.10/Qt 6.10 dependency cited as the reason for staying on 3.13
 - [bpy standalone on PyPI](https://pypi.org/project/bpy/) — Server-side bpy without Blender UI
 - [RNA — Blender Developer Documentation](https://developer.blender.org/docs/features/core/rna/) — DNA/RNA system design
 - [Blender Extensions system — 4.2](https://developer.blender.org/docs/release_notes/4.2/extensions/) — blender_manifest.toml, dependency wheels
 - [bpy.app.timers — API reference](https://docs.blender.org/api/current/bpy.app.timers.html) — Main-thread callback scheduling
 - [bpy.types.Operator — API reference](https://docs.blender.org/api/current/bpy.types.Operator.html) — Operator lifecycle: poll/invoke/execute/modal
+- [bpy.props — API reference](https://docs.blender.org/api/current/bpy.props.html) — Property factory functions and PropertyGroup usage
+- [bpy.utils — API reference](https://docs.blender.org/api/current/bpy.utils.html) — register_class/unregister_class, previews, resource_path
+- [mathutils — API reference](https://docs.blender.org/api/current/mathutils.html) — Vector/Matrix/Quaternion/Euler types
+- [gpu — API reference](https://docs.blender.org/api/current/gpu.html) — GPUShader/GPUBatch/GPUOffScreen, built-in shaders
+- [imbuf — API reference](https://docs.blender.org/api/current/imbuf.html) — ImBuf load/write/new and pixel-buffer access
+- [bmesh — API reference](https://docs.blender.org/api/current/bmesh.html) — BMesh/BMVert/BMEdge/BMFace, is_manifold, calc_area, calc_volume
+- [bpy.types.Object.ray_cast — API reference](https://docs.blender.org/api/current/bpy.types.Object.html#bpy.types.Object.ray_cast) — Single-object ray casting
+- [bpy.types.Scene.ray_cast — API reference](https://docs.blender.org/api/current/bpy.types.Scene.html#bpy.types.Scene.ray_cast) — Scene-wide ray casting via the depsgraph
+- [pygltflib on PyPI](https://pypi.org/project/pygltflib/) — Programmatic glTF/GLB JSON parsing outside Blender
+- [mathutils.bvhtree — API reference](https://docs.blender.org/api/current/mathutils.bvhtree.html) — BVHTree.FromObject/overlap for real triangle-level intersection testing
+- [3D Print Toolbox — Blender Manual](https://docs.blender.org/manual/en/4.0/addons/mesh/3d_print_toolbox.html) — Bundled non-manifold/intersection/thickness checks and Make Manifold repair
+- [Mesh Analysis — Blender Manual](https://docs.blender.org/manual/en/latest/modeling/meshes/mesh_analysis.html) — Built-in Overhang/Thickness/Intersect/Distort/Sharp overlay (MeshStatVis)
+- [Mesh Analysis Overlay — Blender Extensions](https://extensions.blender.org/add-ons/mesh-analysis-overlay/) — Third-party extension of the built-in overlay
+- [GitHub — rking/meshlint](https://github.com/rking/meshlint) — Community mesh-quality linting add-on (tris/ngons/non-manifold/interior faces)
+- [trimesh](https://trimesh.org/) — Standalone Python triangular-mesh library: watertight checks, ray casting, GLB/OBJ/STL/PLY loading
+- [glTF-Transform CLI — inspect](https://gltf-transform.dev/cli) — Structured per-file report of scenes/meshes/materials/textures/animations
 - [GitHub — glonorce/Blender_mcp](https://github.com/glonorce/Blender_mcp) — 69-tool community implementation with 499 tests
 - [GitHub — RFingAdam/mcp-blender](https://github.com/RFingAdam/mcp-blender) — 218-tool implementation for Blender 4.2/5.0
 - [Meshy AI — Text to 3D API](https://docs.meshy.ai/en/api/text-to-3d) — REST API reference, parameters, status codes
@@ -1678,6 +2149,7 @@ Provide the correct export command and any transform fixes needed.
 - [Sloyd.ai](https://www.sloyd.ai) — Procedural game-asset generation
 - [GitHub — carson-katri/dream-textures](https://github.com/carson-katri/dream-textures) — Stable Diffusion in Blender (8.2k stars, GPL-3.0)
 - [GitHub — benrugg/AI-Render](https://github.com/benrugg/AI-Render) — SD img2img render post-processing
+- [AI-Render wiki — ControlNet](https://github.com/benrugg/AI-Render/wiki/ControlNet) — Depth/Canny/OpenPose conditioning via Automatic1111's ControlNet extension
 - [openai/point-e on GitHub](https://github.com/openai/point-e) — Text → 3D point cloud, December 2022
 - [openai/shap-e on HuggingFace](https://huggingface.co/openai/shap-e) — Text/image → implicit neural representation, May 2023
 - [InstantMesh paper — arXiv:2404.07191](https://arxiv.org/abs/2404.07191) — Multi-view LRM reconstruction
