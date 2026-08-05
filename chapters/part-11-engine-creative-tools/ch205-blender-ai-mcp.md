@@ -608,7 +608,127 @@ This design means:
 
 For the Blender MCP server, the RNA system is also what makes `execute_blender_code` robust: any code that runs in Blender's Python context has full access to the live RNA-wrapped scene, so the AI can inspect and modify any data-block by name.
 
-### 6.1 Are There Alternatives to bpy?
+### 6.1 DNA Internals: SDNA, Versioning, and File Compatibility
+
+Every `.blend` file embeds a copy of the exact struct layout it was written with — a blob called **SDNA** (Structure DNA) — inside a `DNA1` file block. On load, `source/blender/blenloader/intern/readfile.cc` decodes that embedded blob via `DNA_sdna_from_data()` and compares it against the running build's own compiled-in layout, obtained via `DNA_sdna_current_get()` (both declared in `source/blender/makesdna/DNA_genfile.h`). [Source](https://projects.blender.org/blender/blender/raw/branch/main/source/blender/makesdna/DNA_genfile.h) `DNA_struct_get_compareflags()` produces a per-struct diff between the file's layout and the current build's layout, and `DNA_struct_reconstruct()` uses that diff to copy an old-format struct's fields into the current in-memory layout field-by-field — this reconstruction step is what lets a modern Blender open a `.blend` file written by a build from years earlier without a fixed, versioned binary format.
+
+Struct-layout drift (renamed fields, renamed structs) is patched ahead of reconstruction by `blo_do_versions_dna()`, while larger semantic migrations — converting old data to a new representation entirely, not just renaming a field — live in hand-written functions under `source/blender/blenloader/intern/versioning_*.cc` (e.g. `versioning_500.cc` on current main, containing functions like `do_version_scene_remove_use_nodes()`). A comment in `versioning_common.cc` states the versioning philosophy directly: IDs created fresh during `do_versions_after_setup()` already conform to the current code's version "by definition" and must not be versioned again. Migrations that require a fully-loaded `Main` database (rather than a single library read in isolation) run later, via `BLO_read_do_version_after_setup()`. [Source](https://projects.blender.org/blender/blender/raw/branch/main/source/blender/blenloader/intern/versioning_common.cc)
+
+**Endian handling has been deliberately narrowed, not removed outright.** The `FD_FLAGS_SWITCH_ENDIAN` flag still exists in the `eFileDataFlag` enum in `readfile.hh`, and is still set when a file's header byte order doesn't match the running system's. But on current main it is used only as a rejection gate, not an active conversion path:
+
+```c
+// source/blender/blenloader/intern/readfile.cc (paraphrased structure, current main)
+if (fd->flags & FD_FLAGS_SWITCH_ENDIAN) {
+    BLI_STATIC_ASSERT(ENDIAN_ORDER == L_ENDIAN, "Blender only builds on little endian systems")
+    BKE_reportf(reports, RPT_ERROR,
+        "Blend file '%s' created by a Big Endian version of Blender, "
+        "support for these files has been removed in Blender 5.0...");
+    blo_filedata_free(fd);
+    fd = nullptr;
+}
+```
+
+Downstream reconstruction code asserts it can never be reached with the flag set (`BLI_assert((fd->flags & FD_FLAGS_SWITCH_ENDIAN) == 0)`). [Source](https://projects.blender.org/blender/blender/raw/branch/main/source/blender/blenloader/intern/readfile.cc) Big-endian support was deprecated in Blender 4.5 LTS (files trigger a warning) and the endian-swapping code itself was removed in Blender 5.0 — the stated rationale being that big-endian targets (e.g. Debian s390x builds) were extremely lightly tested with limited maintainer bandwidth to keep the conversion path correct. Old big-endian files can still be converted to little-endian using Blender 4.5 LTS, which is maintained until mid-2027. [Source](https://projects.blender.org/blender/blender/issues/125759) [Source](https://devtalk.blender.org/t/big-endian-support-deprecation-removal/39098)
+
+Note: needs verification — the current `BHead` block-header struct (the per-block header preceding each chunk of file data, historically carrying a 4-character block-code tag, payload length, old pointer for relink, an SDNA struct index, and an element count) could not be located under its expected name in `readfile.hh`/`BLO_readfile.hh` on current main at time of writing; the field layout above reflects legacy documentation and an older source mirror, not a verified current-main struct definition.
+
+### 6.2 RNA Internals: Property Types and the Dependency Graph
+
+RNA properties are not all the same shape. `source/blender/makesrna/RNA_types.hh` defines a `PropertyType` enum with seven variants:
+
+```c
+// source/blender/makesrna/RNA_types.hh, current main
+enum PropertyType {
+  PROP_BOOLEAN = 0,
+  PROP_INT = 1,
+  PROP_FLOAT = 2,
+  PROP_STRING = 3,
+  PROP_ENUM = 4,
+  PROP_POINTER = 5,
+  PROP_COLLECTION = 6,
+};
+```
+[Source](https://projects.blender.org/blender/blender/raw/branch/main/source/blender/makesrna/RNA_types.hh)
+
+`PROP_POINTER` and `PROP_COLLECTION` are what let RNA express relationships between data-blocks (an `Object`'s `data` pointer, a `Scene`'s collection of objects) as first-class, introspectable properties rather than opaque C pointers — the same metadata that lets `sphinx_doc_gen.py` (§6) walk the whole scene graph to generate API docs.
+
+The link from "a script changed a property" to "the viewport/render re-evaluates" runs through the dependency graph, and RNA's `update` callback is the wiring between them. At definition time, `RNA_def_property_update()` (`source/blender/makesrna/RNA_define.hh`) attaches either a notify-flag or a full callback function to a property:
+
+```c
+// source/blender/makesrna/RNA_define.hh, current main
+void RNA_def_property_update(PropertyRNA *prop, int noteflag, const char *updatefunc);
+void RNA_def_property_update_runtime(PropertyRNA *prop, RNAPropertyUpdateFunc func);
+```
+[Source](https://projects.blender.org/blender/blender/raw/branch/main/source/blender/makesrna/RNA_define.hh)
+
+When a property is written — including from `bpy_rna.c`'s Python setters — `RNA_property_update()` / `RNA_property_update_main()` (`source/blender/makesrna/RNA_access.hh`) run and invoke whatever was registered via `RNA_def_property_update`. [Source](https://projects.blender.org/blender/blender/raw/branch/main/source/blender/makesrna/RNA_access.hh) That registered callback typically calls `DEG_id_tag_update(ID *id, unsigned int flags)` (`source/blender/depsgraph/DEG_depsgraph.hh`) with one or more `ID_RECALC_*` flags defined in `source/blender/makesdna/DNA_ID.h` — `ID_RECALC_TRANSFORM`, `ID_RECALC_GEOMETRY`, `ID_RECALC_SHADING`, `ID_RECALC_ANIMATION`, `ID_RECALC_SELECT`, and `ID_RECALC_PARAMETERS` among them — which mark exactly what changed on that data-block so the depsgraph's next evaluation pass only recomputes what actually needs it. [Source](https://projects.blender.org/blender/blender/raw/branch/main/source/blender/depsgraph/DEG_depsgraph.hh) [Source](https://projects.blender.org/blender/blender/raw/branch/main/source/blender/makesdna/DNA_ID.h)
+
+This chain has a documented gap that matters directly for MCP-driven scripting: a property with no registered update callback never calls `RNA_property_update`'s dispatch logic, so the depsgraph is never tagged. [Blender issue #113930](https://projects.blender.org/blender/blender/issues/113930) documents exactly this for custom (ID) properties — see §6.3 — set via Python without a matching update handler: the render engine and dependency graph simply don't notice the change. For an AI agent calling `execute_blender_code`, this means a property write that "worked" (no exception, value visibly changed in `bpy.data`) is not proof that a subsequent render or viewport redraw will reflect it — native RNA properties defined with `RNA_def_property_update` are dependable here, custom properties are not, without an explicit `id.update_tag()` or similar nudge. Note: needs verification — the internal body of `RNA_property_update`'s dispatch logic in `source/blender/makesrna/intern/rna_access.cc` was not directly inspected at time of writing; the chain described above is assembled from header declarations and the corroborating bug report, not a verified read of that function's implementation.
+
+### 6.3 ID Properties vs RNA-Native Properties
+
+Not every attribute reachable from `bpy` is a compiled RNA property backed by a dedicated DNA struct field. Blender also has a fully generic, dynamically-typed **ID Properties** system — this is the mechanism behind Python's `obj["my_custom_prop"] = 5` custom-property syntax, and behind most add-on-defined persistent state.
+
+The `IDProperty` struct (`source/blender/makesdna/DNA_ID.h`, current main) is self-describing in a way a native RNA/DNA field is not — it carries its own runtime type tag and name string per instance, rather than relying on compile-time RNA metadata:
+
+```c
+// source/blender/makesdna/DNA_ID.h, current main
+struct IDProperty {
+  struct IDProperty *next = nullptr, *prev = nullptr;
+  eIDPropertyType type = IDP_STRING;
+  char subtype = 0;
+  eIDPropertyFlag flag = {};
+  char name[64] = "";
+  IDPropertyData data;
+  int len = 0;
+  int totallen = 0;
+  IDPropertyUIData *ui_data = nullptr;
+};
+```
+[Source](https://projects.blender.org/blender/blender/raw/branch/main/source/blender/makesdna/DNA_ID.h)
+
+Supported type tags (`source/blender/blenkernel/BKE_idprop.hh`) include `IDP_INT`, `IDP_BOOLEAN`, `IDP_FLOAT`, `IDP_DOUBLE`, `IDP_STRING`, `IDP_ARRAY`, `IDP_IDPARRAY`, `IDP_ID`, and `IDP_GROUP` — the last of which is how ID Properties nest, since a group is itself a list of `IDProperty` entries. [Source](https://projects.blender.org/blender/blender/raw/branch/main/source/blender/blenkernel/BKE_idprop.hh) Every ID data-block has one top-level `IDP_GROUP`-type property acting as its custom-property bag, accessed via `IDP_GetProperties()` / `IDP_EnsureProperties()` and populated with `IDP_AddToGroup()`.
+
+The practical distinction: a native RNA property is a fixed struct field whose name, type, range, and update behavior are all fixed at compile time by `makesrna` (§6.4) — cheap to introspect, dependable for depsgraph tagging (§6.2), and validated by RNA before a write is accepted. An ID Property is a runtime key/value blob attached to any ID block, with no compile-time schema, no guaranteed update-callback wiring, and — per the §6.2 gap — a real risk of silently not triggering re-evaluation. This is precisely the tradeoff Blender itself has been moving away from for user-facing configuration: Blender's 5.2 LTS release notes describe Geometry Nodes modifier "inputs," previously exposed as ID-property paths (`object.modifiers["geonode_mod"]["socket_1"][1]`), being replaced with proper RNA properties (`object.modifiers["geonode_mod"].socket_1.y`). [Source](https://developer.blender.org/docs/release_notes/5.2/python_api/) Note: needs verification — that release-notes page returned an access error when fetched directly at time of writing; the claim above is corroborated by third-party 5.2 coverage and matches Blender's documented direction, but the exact wording should be re-checked against the live page before being quoted verbatim.
+
+For MCP tooling specifically, this distinction is worth surfacing to an AI agent modifying scene data: preferring RNA-native properties where one exists, and calling an explicit depsgraph tag (rather than assuming a plain attribute write is enough) when writing custom/ID properties that need to affect a subsequent render.
+
+### 6.4 makesrna and makesdna: The Build-Time Codegen Pipeline
+
+Both `makesrna` and `makesdna` are not merely groups of source files — they are small C++ programs that get **compiled into standalone executables and then run as part of the Blender build itself**, before the "real" Blender binary compiles. This is confirmed directly in the CMake build definitions rather than inferred:
+
+```cmake
+# source/blender/makesdna/intern/CMakeLists.txt, current main
+add_executable(makesdna ${SRC} ${SRC_DNA_INC})
+
+add_custom_command(
+  OUTPUT
+    ${CMAKE_CURRENT_BINARY_DIR}/dna.cc
+    ${CMAKE_CURRENT_BINARY_DIR}/dna_defaults.cc
+    ${CMAKE_CURRENT_BINARY_DIR}/dna_struct_ids.cc
+    ${CMAKE_CURRENT_BINARY_DIR}/dna_type_offsets.h
+    ${CMAKE_CURRENT_BINARY_DIR}/dna_verify.cc
+  COMMAND
+    ${CMAKE_COMMAND} -E env ${PLATFORM_ENV_BUILD}
+    "$<TARGET_FILE:makesdna>"
+    ${CMAKE_CURRENT_BINARY_DIR}/dna.cc
+    ${CMAKE_CURRENT_BINARY_DIR}/dna_type_offsets.h
+    ${CMAKE_CURRENT_BINARY_DIR}/dna_verify.cc
+    ${CMAKE_CURRENT_BINARY_DIR}/dna_struct_ids.cc
+    ${CMAKE_CURRENT_BINARY_DIR}/dna_defaults.cc
+    ${CMAKE_SOURCE_DIR}/source/blender/makesdna/
+  DEPENDS makesdna
+)
+```
+[Source](https://projects.blender.org/blender/blender/raw/branch/main/source/blender/makesdna/intern/CMakeLists.txt)
+
+`$<TARGET_FILE:makesdna>` is CMake's generator-expression for "the path to the just-built `makesdna` binary" — the build system compiles `makesdna` first, then executes it against `source/blender/makesdna/`'s own struct headers to introspect their layout and emit `dna.cc` (the embedded SDNA blob described in §6.1), `dna_type_offsets.h`, `dna_verify.cc` (compile-time offset/size assertions), `dna_struct_ids.cc`, and `dna_defaults.cc`.
+
+`makesrna` follows the identical pattern in `source/blender/makesrna/intern/CMakeLists.txt`: `add_executable(makesrna ...)` followed by a custom command that runs `$<TARGET_FILE:makesrna>` against the DNA and RNA source trees, generating one `rna_*_gen.cc` per `rna_*.cc` definition file (the naming derived by regex substitution on the source file list, confirming the `rna_*.cc` → `rna_*_gen.cc` mapping) in a single invocation rather than once per file. [Source](https://projects.blender.org/blender/blender/raw/branch/main/source/blender/makesrna/intern/CMakeLists.txt) The source files backing both tools still exist under their expected names on current main — `source/blender/makesdna/intern/makesdna.cc` and `source/blender/makesrna/intern/makesrna.cc` — now compiled as C++ rather than C. `makesdna.cc`'s own header comment describes its job plainly: it creates a file with a long string of numbers encoding the Blender file format.
+
+The practical consequence for anyone debugging DNA/RNA-related crashes or version-migration bugs: `makesdna` and `makesrna` output is generated code, produced fresh on every build from the current struct/RNA-definition sources — it is never checked into the repository, so "which struct layout shipped in build X" is fully determined by that build's source tree, not by any separately-versioned artifact.
+
+### 6.5 Are There Alternatives to bpy?
 
 Nothing that replaces `bpy`, but several projects route around it for specific tasks:
 
@@ -2216,6 +2336,19 @@ Three threads worth tracking for anyone building on this chapter's patterns:
 - [devtalk.blender.org — VFX Platform to stay on Python 3.13 in 2027](https://devtalk.blender.org/t/vfx-platform-to-stay-on-python-3-13-in-2027-reasons-to-try-to-request-3-14-instead/44974) — PySide 6.10/Qt 6.10 dependency cited as the reason for staying on 3.13
 - [bpy standalone on PyPI](https://pypi.org/project/bpy/) — Server-side bpy without Blender UI
 - [RNA — Blender Developer Documentation](https://developer.blender.org/docs/features/core/rna/) — DNA/RNA system design
+- [DNA_genfile.h — Blender source, main branch](https://projects.blender.org/blender/blender/raw/branch/main/source/blender/makesdna/DNA_genfile.h) — SDNA decode/compare/reconstruct API (§6.1)
+- [versioning_common.cc — Blender source, main branch](https://projects.blender.org/blender/blender/raw/branch/main/source/blender/blenloader/intern/versioning_common.cc) — do_versions philosophy and shared migration helpers (§6.1)
+- [readfile.cc — Blender source, main branch](https://projects.blender.org/blender/blender/raw/branch/main/source/blender/blenloader/intern/readfile.cc) — Big-endian file rejection path, FD_FLAGS_SWITCH_ENDIAN (§6.1)
+- [Blender issue #125759 — Deprecate and Remove Big-Endian Support](https://projects.blender.org/blender/blender/issues/125759) — Endian support removed in Blender 5.0 (§6.1)
+- [RNA_types.hh — Blender source, main branch](https://projects.blender.org/blender/blender/raw/branch/main/source/blender/makesrna/RNA_types.hh) — PropertyType enum (§6.2)
+- [RNA_define.hh — Blender source, main branch](https://projects.blender.org/blender/blender/raw/branch/main/source/blender/makesrna/RNA_define.hh) — RNA_def_property_update and callback typedefs (§6.2)
+- [RNA_access.hh — Blender source, main branch](https://projects.blender.org/blender/blender/raw/branch/main/source/blender/makesrna/RNA_access.hh) — RNA_property_update dispatch declarations (§6.2)
+- [DEG_depsgraph.hh — Blender source, main branch](https://projects.blender.org/blender/blender/raw/branch/main/source/blender/depsgraph/DEG_depsgraph.hh) — DEG_id_tag_update (§6.2)
+- [DNA_ID.h — Blender source, main branch](https://projects.blender.org/blender/blender/raw/branch/main/source/blender/makesdna/DNA_ID.h) — ID_RECALC_* flags and the IDProperty struct (§6.2, §6.3)
+- [Blender issue #113930 — Custom property updates don't trigger depsgraph](https://projects.blender.org/blender/blender/issues/113930) — Documented update-callback gap for ID Properties (§6.2, §6.3)
+- [BKE_idprop.hh — Blender source, main branch](https://projects.blender.org/blender/blender/raw/branch/main/source/blender/blenkernel/BKE_idprop.hh) — IDProperty type tags and group accessors (§6.3)
+- [makesdna CMakeLists.txt — Blender source, main branch](https://projects.blender.org/blender/blender/raw/branch/main/source/blender/makesdna/intern/CMakeLists.txt) — makesdna built and run as a build-time code generator (§6.4)
+- [makesrna CMakeLists.txt — Blender source, main branch](https://projects.blender.org/blender/blender/raw/branch/main/source/blender/makesrna/intern/CMakeLists.txt) — makesrna built and run as a build-time code generator (§6.4)
 - [Blender Extensions system — 4.2](https://developer.blender.org/docs/release_notes/4.2/extensions/) — blender_manifest.toml, dependency wheels
 - [bpy.app.timers — API reference](https://docs.blender.org/api/current/bpy.app.timers.html) — Main-thread callback scheduling
 - [bpy.types.Operator — API reference](https://docs.blender.org/api/current/bpy.types.Operator.html) — Operator lifecycle: poll/invoke/execute/modal
