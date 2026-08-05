@@ -32,6 +32,7 @@ This chapter examines the full stack: the two-component Blender MCP bridge and i
 - [15. Practical Limits of AI-Driven Blender](#15-practical-limits-of-ai-driven-blender)
 - [16. A Prompt Toolkit for Common Blender Operations](#16-a-prompt-toolkit-for-common-blender-operations)
 - [17. Blender glTF Export for Three.js and React Three Fiber](#17-blender-gltf-export-for-threejs-and-react-three-fiber)
+- [18. Roadmap](#18-roadmap)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -923,6 +924,25 @@ SF3D ([stable-fast-3d.github.io](https://stable-fast-3d.github.io)) generates a 
 
 InstantMesh ([InstantMesh paper](https://arxiv.org/abs/2404.07191)) combines multi-view diffusion (generating 6 canonical views from a single input) with a transformer-based reconstruction model that produces an explicit mesh. The reconstruction model is trained end-to-end on the multi-view output, allowing it to handle occlusions that single-view methods cannot resolve.
 
+### 10.6 Neural Reconstruction: NeRFStudio and 3D Gaussian Splatting
+
+Everything in §10.1–§10.5 generates 3D content from a text prompt or a single image. Neural reconstruction methods — NeRF and 3D Gaussian Splatting (3DGS) — instead reconstruct a scene from many photographs of something that already exists, and Blender's role shifts from a target for AI-generated meshes to a data source and a viewer. **Chapter 115 — NeRFStudio, Neural Radiance Fields, and 3D Gaussian Splatting** covers the reconstruction techniques themselves in depth; this section covers only the Blender-side plumbing that connects to them.
+
+**Blender as a synthetic training-data generator: BlenderNeRF.** [`maximeraafat/BlenderNeRF`](https://github.com/maximeraafat/BlenderNeRF) (1,000+ stars, MIT) solves the opposite problem from importing a reconstruction — it exports camera poses and rendered images *from* a Blender scene, in the `transforms.json` format NeRFStudio/Instant-NGP expect for training, so that a synthetic (rendered, not photographed) scene can be used as NeRF/3DGS training data. It ships three camera-generation operators, exposed as ordinary Blender operators an MCP agent can call via `execute_blender_code`:
+
+```python
+bpy.ops.object.subset_of_frames()   # SOF: render a manually keyframed camera as the training set
+bpy.ops.object.train_test_cameras() # TTC: split into train/test camera sets for evaluation
+bpy.ops.object.camera_on_sphere()   # COS: synthesize a camera sphere around the subject
+```
+
+Output format is NeRF/NGP-style `transforms.json` — **not** COLMAP — and an optional "Gaussian Points" setting additionally writes a `points3d.ply` file to seed 3DGS training with an initial point cloud rather than random initialization. Note: needs verification — BlenderNeRF's last tagged release (v6) predates Blender 5.x; compatibility with current Blender versions should be checked before relying on it in a pipeline.
+[Source: BlenderNeRF README](https://github.com/maximeraafat/BlenderNeRF)
+
+**Importing a trained splat back into Blender: KIRI Engine's 3DGS Render.** Going the other direction — bringing an already-trained Gaussian Splat `.ply` into Blender to composite against native Cycles/EEVEE geometry — is covered by [`Kiri-Innovation/3dgs-render-blender-addon`](https://github.com/Kiri-Innovation/3dgs-render-blender-addon) (1,100+ stars, Apache-2.0, requires Blender 5.1+), the most actively maintained option in this space. It exposes three modes (**Edit**, **Render**, **Mesh 2 3DGS**) and only accepts `.ply` files that actually contain 3DGS data — attempting to import an ordinary point-cloud `.ply` produces an error rather than a silent misinterpretation. Its "Combine with Native Render" feature composites the splat render against standard Blender render output, which is the piece that makes hybrid scenes (photorealistic reconstructed backdrop, hand-modeled foreground props) possible. Note: needs verification — whether splats render through Cycles, EEVEE, or an internal rasterizer is not documented by the add-on itself.
+
+**The MCP gap.** Unlike the Meshy/Hyper3D generative pipeline (§9) or the ComfyUI integration (§12.5), no documented AI-agent or MCP-driven workflow ties BlenderNeRF or 3DGS import together end-to-end — there is no equivalent of AI Render's `ai_render.generate_new_image_from_current` operator convention to script against. The mechanism exists in principle (an agent can call BlenderNeRF's operator IDs above via `execute_blender_code` exactly as it would any other operator, per §15.7.5's pre-flight-check pattern), but as of this writing this is an unexplored combination rather than an established one.
+
 ---
 
 ## 11. AI Denoising in Cycles: OIDN and OptiX
@@ -1045,6 +1065,20 @@ Dream Textures (§12.1) and AI Render (§12.2) operate at different stages of th
 **Why this ordering, not the reverse.** Running AI Render's stylization *before* Dream Textures' material pass would defeat the purpose of ControlNet depth-conditioning — there would be no clean render to derive a depth pass from, and no stable base texture for the stylized look to stay consistent with across frames. Dream Textures establishes a persistent, geometry-correct asset; AI Render's job is purely post-render image transformation, and it needs that geometry-correct render (and its depth data) as an input, not the other way around.
 
 **MCP/Claude Code orchestration.** Because both add-ons expose registered operators, an agent driving this workflow via `execute_blender_code` can script the full chain without leaving the inspect-act-verify loop (§8): generate/apply a Dream Textures material, trigger `bpy.ops.render.render(write_still=True)` with the depth pass enabled, then call AI Render's own operators — `ai_render.generate_new_image_from_current` (single-frame img2img/ControlNet pass on the current render) or `ai_render.inpaint_from_last_sd_image` (targeted re-generation of a masked region of the last AI Render output) — before using `get_viewport_screenshot`/`get_screenshot_of_*` (§3, §3.1) to judge the stylized result and iterate on the prompt or ControlNet strength.
+
+### 12.5 ComfyUI and ComfyScript Integration
+
+Automatic1111's Web UI (the backend AI Render targets in §12.2) is a fixed pipeline with configuration knobs. ComfyUI ([github.com/comfyanonymous/ComfyUI](https://github.com/comfyanonymous/ComfyUI)) is a node-graph diffusion engine instead — every stage of the pipeline (model load, conditioning, sampling, ControlNet, upscaling) is an explicit, rewireable node — which makes it a natural fit for Blender's own node-based mental model, and several projects connect the two directly rather than through Automatic1111's fixed API.
+
+**Direct Blender↔ComfyUI add-ons.** Two actively maintained options take different integration approaches:
+- [`alexisrolland/ComfyUI-Blender`](https://github.com/alexisrolland/ComfyUI-Blender) (GPL-3.0, Blender 5.0-compatible as of v4.0.0) is the closest existing equivalent to §12.4's combined workflow, packaged as a single add-on. A workflow is authored in ComfyUI using the project's own Blender-specific I/O nodes (`blender_input_load_image`, `blender_input_load_mask`, `blender_input_load_3d`, `blender_output_save_image`, `blender_output_save_glb`, among others), then exported as API-format JSON and imported into the Blender add-on, which auto-generates a UI panel from the workflow's inputs and outputs. On the Blender side, the add-on ships its own render operators — `render_depth_map`, `render_lineart`, `render_preview`, `render_view` — plus `create_material`/`project_material` to bring a generated image back as a material projected onto the mesh. This is a complete scene → control-pass → diffusion → reimport loop, built specifically around Blender's compositor rather than a generic image round-trip.
+- [`AIGODLIKE/ComfyUI-BlenderAI-node`](https://github.com/AIGODLIKE/ComfyUI-BlenderAI-node) (GPL-3.0) takes the opposite approach: it embeds ComfyUI's own node graph *inside* Blender's node editor as a custom node-tree type, so the diffusion workflow is edited in the same UI as Blender's shader/geometry nodes rather than in a separate ComfyUI browser tab.
+
+**ComfyScript.** [`Chaoses-Ib/ComfyScript`](https://github.com/Chaoses-Ib/ComfyScript) (MIT) is a Python front end for ComfyUI: it transpiles an exported ComfyUI workflow into an equivalent Python script and exposes every ComfyUI node as a directly callable, type-hinted Python function, runnable against either a local ComfyUI install or a remote instance over its API. Where the two add-ons above wire a fixed workflow into Blender's UI, ComfyScript is the better fit when an AI agent needs to *construct or modify* the diffusion workflow itself as part of a scripted pipeline, rather than run one that a human already built and exported.
+
+**AI Render's ComfyUI backend: shipped code, unmerged branch.** AI Render (§12.2) has real, substantial ComfyUI backend code — `sd_backends/comfyui_api.py`, `operators_comfyui.py`, a dedicated UI panel — but it lives on the upstream repo's [`comfyui-support` branch](https://github.com/benrugg/AI-Render/tree/comfyui-support), not on `main`, and has never been merged into a release. It requires installing the add-on from that branch's ZIP directly rather than through the normal release. Treat this as real but unshipped: functional per its own `README_comfy.md`, explicitly labeled work-in-progress, and not present in the AI Render most users install.
+
+**MCP/Claude Code orchestration.** `blender-mcp` (§2) has no built-in ComfyUI tool, but community ComfyUI MCP servers exist — e.g. [`artokun/comfyui-mcp`](https://github.com/artokun/comfyui-mcp) — that an agent can hold alongside a Blender MCP connection simultaneously, the same two-server pattern used elsewhere in this chapter for Meshy/Hyper3D (§9). In principle this lets an agent drive the full loop itself: call `execute_blender_code` to render a depth/line-art pass, call the ComfyUI MCP server's tools to run a ComfyScript-defined or pre-built workflow against that pass, then call `execute_blender_code` again to load the returned image as a texture — mirroring §12.4's pipeline but with ComfyUI's node graph in place of Automatic1111/ControlNet. Note: needs verification — this is a plausible mechanism given each piece's documented capabilities individually, not a published, end-to-end tutorial; no worked example combining a Blender MCP server and a ComfyUI MCP server this way was found at the time of writing. `alexisrolland/ComfyUI-Blender`'s packaged operators (above) are the more concretely documented path to the same result today.
 
 ---
 
@@ -2080,13 +2114,72 @@ Provide the correct export command and any transform fixes needed.
 
 ---
 
+## 18. Roadmap
+
+The workflows in this chapter sit on two independently governed timelines: Blender Foundation's own three-release-a-year cadence, and the Model Context Protocol specification maintained by Anthropic and the wider MCP community. Both move fast enough that the API surface this chapter targets — `bpy`, the Geometry Nodes modifier RNA, and the MCP wire format itself — should be expected to shift within a year of this draft.
+
+### 18.1 Blender Release Cadence
+
+Blender ships three releases a year, one of which is a Long-Term Support (LTS) release maintained with monthly bug-fix updates for two years; non-LTS releases are supported only until the next release ships.
+
+| Release | Date | LTS | EOL |
+|---|---|---|---|
+| 4.2 LTS | July 2024 | ✓ | July 2026 |
+| 4.5 LTS | July 15, 2025 | ✓ | July 2027 |
+| 5.0 | November 18, 2025 | — | — |
+| 5.1 | March 2026 | — | — |
+| 5.2 LTS | July 14, 2026 | ✓ | July 2028 |
+| 5.3 | November 2026 (planned) | — | — |
+
+[Source: Blender Releases](https://www.blender.org/releases/) · [Source: Blender 5.2 LTS Release](https://www.blender.org/press/blender-5-2-lts-release/)
+
+At the time of writing, **5.2 LTS** (released July 2026) is the current recommended baseline for production add-ons and MCP-driven pipelines, superseding 4.5 LTS. §4.1's note on the VFX Reference Platform staying on Python 3.13 through the 2027 platform year applies independently of this cadence — Blender's own release schedule and the VFX Platform's Python pin are set by different bodies and do not move in lockstep.
+
+### 18.2 What Blender 5.2 LTS Changes for AI-Driven Workflows
+
+Two Python API changes in 5.2 LTS are directly relevant to workarounds described earlier in this chapter:
+
+- **`gpu.init()` for background mode.** Previously, calling into the `gpu` module while running with `--background` raised `SystemError: GPU API is not available in background mode`, which is why §14.2 recommends a virtual display (`Xvfb`/EGL) purely to get a GPU context for scripted rendering. `gpu.init()` initializes the GPU backend explicitly in headless mode, narrowing the cases where a virtual display is still required to genuinely interactive (viewport-dependent) operations rather than all off-screen GPU work.
+- **Geometry Nodes modifier inputs move from custom properties to RNA.** §15.6 notes that Geometry Nodes' Python surface is fragile because inputs were historically set via ID-properties (`modifier["Input_2"] = 5.0`, keyed by an opaque per-tree identifier). 5.2 LTS replaces this with proper RNA — `modifier.properties.inputs.<identifier>.value`, `.type`, and `.attribute_name`, with a parallel `.outputs.<identifier>.attribute_name` for output attribute mapping. This doesn't fix the node-identifier fragility §15.6 describes for *constructing* node trees, but it does make *driving* an existing Geometry Nodes setup from Python considerably more discoverable and typo-resistant than string-keyed custom properties.
+
+[Source: Blender 5.2 LTS Python API Release Notes](https://developer.blender.org/docs/release_notes/5.2/python_api/) — Note: needs verification (developer.blender.org returns HTTP 403 to automated fetching; the summary above is reconstructed from third-party citations of the release notes and should be checked against the live page before publication.)
+
+### 18.3 The Blender MCP Server's Place in Blender Lab
+
+The official Blender Foundation MCP server (§2, referenced in this chapter's tooling comparisons) lives under **Blender Lab**, an incubator track for experimental Blender Foundation projects that is explicitly not part of Blender's numbered release roadmap. Lab projects have no committed release timeline or version-parity guarantee with the main Blender release train; the MCP server reached v1.0.0 in April 2026 as a Lab milestone, not a Blender point release. Practically, this means an MCP-driven pipeline that depends on the official server should track Blender Lab's own repository and activity reports directly, rather than assuming the server's feature set advances in step with `bpy` itself.
+
+[Source: Blender Lab](https://www.blender.org/lab/) · [Source: MCP Server — Blender Lab](https://www.blender.org/lab/mcp-server/)
+
+### 18.4 Model Context Protocol Specification Roadmap
+
+The MCP specification itself is on a faster and less predictable cadence than Blender. The protocol's 2026 roadmap abandons date-based release planning in favor of four Working-Group-owned priority areas:
+
+- **Transport evolution and scalability** — improving HTTP streaming transport for horizontal scaling, stateless sessions, and server discoverability via `.well-known` metadata.
+- **Agent communication** — refining the experimental **Tasks** primitive (long-running, poll-able server operations) with retry semantics and result-expiry policies, based on production feedback.
+- **Governance maturation** — a contributor ladder and delegation of Specification Enhancement Proposal (SEP) review to domain-expert Working Groups.
+- **Enterprise readiness** — audit trails, SSO integration, gateway behavior, and configuration portability, deliberately left under-specified to invite community input.
+
+The **2026-07-28** specification release formally locks in an extensions framework — Tasks, MCP Apps, and Enterprise Managed Authorization (EMA) all now live behind that framework rather than as ad hoc additions to the core spec — plus a formal deprecation policy with a twelve-month minimum window. For the Blender MCP integrations in this chapter, the most consequential of these is the Tasks primitive: long-running operations like a Cycles bake or a Meshy generation job (§9–§11) are natural fits for a poll-able task rather than a blocking tool call, though neither MCP server discussed in this chapter has adopted Tasks as of this writing.
+
+[Source: The 2026 MCP Roadmap](https://blog.modelcontextprotocol.io/posts/2026-mcp-roadmap/) · [Source: The 2026-07-28 Specification](https://blog.modelcontextprotocol.io/posts/2026-07-28/)
+
+### 18.5 Long-Term Direction
+
+Three threads worth tracking for anyone building on this chapter's patterns:
+
+- **Headless GPU access is normalizing.** `gpu.init()` (§18.2) is one data point in a broader trend of background-mode Blender gaining parity with interactive Blender — relevant to every pipeline in §14.
+- **MCP is moving from wiring to infrastructure.** The shift from release-based to priority-area planning, and the Tasks primitive specifically, signal that MCP servers built today as thin `execute_python`-style bridges (§3) will likely be expected to expose structured, long-running, poll-able operations rather than one blocking call per request.
+- **Blender Lab is a leading indicator, not a commitment.** Because Lab projects (including the official MCP server) sit outside the numbered release roadmap, the community `ahujasid/blender-mcp` server (§2) remains the more stable dependency for production use until — and unless — Blender Lab's MCP server graduates into a supported, versioned part of Blender proper.
+
+---
+
 ## Integrations
 
 **Chapter 42 — Blender GPU: Cycles and EEVEE** establishes the GPU rendering architecture (GPUBackend abstraction, VKBackend/Vulkan, Cycles multi-backend compute) that the Blender Python API scripts and MCP server operate on top of. Add-on scripts that modify materials interact with the same shader compilation pipeline described there.
 
-**Chapter 94 — ComfyUI and ComfyScript** covers the node-graph AI image generation workflow that is the primary alternative to Dream Textures for diffusion-based texture generation on Linux. ComfyUI's scripting interface (ComfyScript) has a similar "AI-writes-Python" paradigm to the Blender MCP workflow described here.
+**Chapter 94 — ComfyUI and ComfyScript** covers the node-graph AI image generation workflow itself in depth; §12.5 of this chapter covers only the Blender-side integration (ComfyUI-Blender, ComfyUI-BlenderAI-node, AI Render's unmerged ComfyUI branch) that connects it to a running Blender session. ComfyScript's "AI-writes-Python-against-a-node-graph" paradigm mirrors the Blender MCP workflow described here closely enough that the two are natural to pair behind a single agent.
 
-**Chapter 115 — NeRFStudio, Neural Radiance Fields, and 3D Gaussian Splatting** covers the open-source 3D reconstruction approaches (NeRF, 3DGS) that underpin some AI 3D generation tools. The NeRF representation is also the output format of Shap-E.
+**Chapter 115 — NeRFStudio, Neural Radiance Fields, and 3D Gaussian Splatting** covers the open-source 3D reconstruction approaches (NeRF, 3DGS) themselves in depth; §10.6 of this chapter covers only the Blender-side plumbing (BlenderNeRF's training-data export, KIRI Engine's splat import) that connects Blender to that reconstruction pipeline. The NeRF representation is also the output format of Shap-E.
 
 **Chapter 124 — Local LLM Inference on Linux GPUs** covers the model serving infrastructure (llama.cpp, Ollama, vLLM) that the official Blender MCP server targets when running without cloud AI subscriptions. Any local LLM exposed via an MCP-compatible endpoint can drive Blender MCP in place of Claude.
 
@@ -2107,6 +2200,12 @@ Provide the correct export command and any transform fixes needed.
 - [Poly Haven](https://polyhaven.com) — CC0 HDRI/texture/model library used by the community server's PolyHaven tools
 - [Sketchfab](https://sketchfab.com) — 3D model marketplace used by the community server's Sketchfab tools
 - [FastMCP — Python SDK](https://gofastmcp.com) — FastMCP library used by blender-mcp server.py
+- [Blender Releases](https://www.blender.org/releases/) — Release schedule and version history
+- [Blender 5.2 LTS Release](https://www.blender.org/press/blender-5-2-lts-release/) — Press release, July 2026
+- [Blender 5.2 LTS Python API Release Notes](https://developer.blender.org/docs/release_notes/5.2/python_api/) — gpu.init() and Geometry Nodes modifier RNA changes
+- [Blender Lab](https://www.blender.org/lab/) — Incubator track for experimental Blender Foundation projects, outside the numbered release roadmap
+- [The 2026 MCP Roadmap](https://blog.modelcontextprotocol.io/posts/2026-mcp-roadmap/) — Priority-area planning, Tasks primitive, governance changes
+- [The 2026-07-28 MCP Specification](https://blog.modelcontextprotocol.io/posts/2026-07-28/) — Extensions framework (Tasks, MCP Apps, EMA) and deprecation policy
 - [blender-mcp on PyPI](https://pypi.org/project/blender-mcp/) — `uvx blender-mcp` installation
 - [Blender Python API Overview](https://docs.blender.org/api/current/info_overview.html) — Official bpy module documentation
 - [bpy API reference — Blender 5.2](https://docs.blender.org/api/current/) — Auto-generated from RNA
@@ -2136,6 +2235,14 @@ Provide the correct export command and any transform fixes needed.
 - [GitHub — rking/meshlint](https://github.com/rking/meshlint) — Community mesh-quality linting add-on (tris/ngons/non-manifold/interior faces)
 - [trimesh](https://trimesh.org/) — Standalone Python triangular-mesh library: watertight checks, ray casting, GLB/OBJ/STL/PLY loading
 - [glTF-Transform CLI — inspect](https://gltf-transform.dev/cli) — Structured per-file report of scenes/meshes/materials/textures/animations
+- [BlenderNeRF](https://github.com/maximeraafat/BlenderNeRF) — Exports Blender camera paths as NeRF/NGP training datasets
+- [3DGS Render by KIRI Engine](https://github.com/Kiri-Innovation/3dgs-render-blender-addon) — Imports and renders trained 3D Gaussian Splats inside Blender
+- [ComfyUI](https://github.com/comfyanonymous/ComfyUI) — Node-graph Stable Diffusion engine
+- [ComfyUI-Blender](https://github.com/alexisrolland/ComfyUI-Blender) — Packaged scene→control-pass→diffusion→reimport add-on
+- [ComfyUI-BlenderAI-node](https://github.com/AIGODLIKE/ComfyUI-BlenderAI-node) — Embeds the ComfyUI node graph inside Blender's node editor
+- [ComfyScript](https://github.com/Chaoses-Ib/ComfyScript) — Python front end transpiling ComfyUI workflows into callable functions
+- [AI Render — comfyui-support branch](https://github.com/benrugg/AI-Render/tree/comfyui-support) — Unmerged, work-in-progress ComfyUI backend for AI Render
+- [comfyui-mcp](https://github.com/artokun/comfyui-mcp) — Community MCP server for a local ComfyUI instance
 - [GitHub — glonorce/Blender_mcp](https://github.com/glonorce/Blender_mcp) — 69-tool community implementation with 499 tests
 - [GitHub — RFingAdam/mcp-blender](https://github.com/RFingAdam/mcp-blender) — 218-tool implementation for Blender 4.2/5.0
 - [Meshy AI — Text to 3D API](https://docs.meshy.ai/en/api/text-to-3d) — REST API reference, parameters, status codes
