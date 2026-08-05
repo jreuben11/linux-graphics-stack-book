@@ -1445,7 +1445,7 @@ spec:
 ```
 [Source](https://github.com/AcademySoftwareFoundation/OpenCue/blob/master/rest_gateway/README.md)
 
-This manifest only covers the REST Gateway container itself; it assumes an already-reachable `opencue-cuebot:8443`, which is the piece with no official chart (see the note at the end of the production-deployment steps below) — treat this YAML as a real, sourced example for one component of the stack, not evidence of a turnkey full-stack Kubernetes deployment.
+This manifest only covers the REST Gateway container itself, and it assumes an already-reachable `opencue-cuebot:8443`. Correction to an earlier draft of this section: OpenCue's Kubernetes story is not absent, just uneven across components — the docs site carries an equally detailed Kubernetes deployment guide for **CueWeb** (the web frontend), with its own `Deployment`, `Service`, `Secret`, `Ingress` with TLS/cert-manager annotations, and a `HorizontalPodAutoscaler`. [Source](https://docs.opencue.io/docs/getting-started/deploying-cueweb/) What's genuinely missing, confirmed by an empty [Artifact Hub search](https://artifacthub.io/packages/search?ts_query_web=opencue) for any published chart, is (a) an official Helm chart tying any of these manifests together, and (b) Kubernetes-specific guidance for **Cuebot and RQD themselves** — the docs pages for both (linked below) cover only Docker containers, a bare JRE/JAR, or `pip install`, with Kubernetes mentioned nowhere on either page. A studio wanting the whole stack (Postgres, Cuebot, RQD, REST Gateway, CueWeb) on Kubernetes has real per-component manifests to start from for two of the five pieces, but has to write Cuebot's and RQD's own manifests and wire the set together itself.
 
 **Installing on Linux: the sandbox.** For local development and testing, the OpenCue repository ships a Docker Compose sandbox that runs PostgreSQL, Cuebot, and RQD each in their own container. [Source](https://github.com/AcademySoftwareFoundation/OpenCue/blob/master/docker-compose.yml) The documented bring-up, reproduced verbatim, requires Python 3.7+, pip, Docker, and Docker Compose v2+ already installed:
 
@@ -1516,7 +1516,7 @@ docker run -td --name rqd01 \
 pip install opencue-rqd
 rqd
 ```
-[Source](https://docs.opencue.io/docs/getting-started/deploying-rqd/) Note: needs verification — no official ASWF-maintained Helm chart for a Kubernetes production deployment could be confirmed; treat Kubernetes/container-orchestrated Cuebot deployment as something a studio assembles itself from these Docker images rather than an out-of-the-box artifact.
+[Source](https://docs.opencue.io/docs/getting-started/deploying-rqd/) Note: needs verification — no official ASWF-maintained Helm chart for OpenCue exists (confirmed via an empty [Artifact Hub search](https://artifacthub.io/packages/search?ts_query_web=opencue)), and neither Cuebot's nor RQD's own deployment docs mention Kubernetes at all — unlike CueWeb and the REST Gateway (above), which do have sourced per-component Kubernetes manifests. Treat container-orchestrated Cuebot/RQD deployment as something a studio assembles itself from these Docker images, not an out-of-the-box artifact.
 
 ### 9.7 Landscape Beyond Flamenco
 
@@ -1726,6 +1726,8 @@ Because Lab projects have no committed timeline, treat both as directional signa
 71. [Flamenco — flamenco-openapi.yaml (raw source)](https://projects.blender.org/studio/flamenco/raw/branch/main/pkg/api/flamenco-openapi.yaml) — `POST /api/v3/jobs` (`submitJob`) request/response schema; `SubmittedJob` fields including `worker_tag`
 
 72. [OpenCue — REST Gateway README](https://github.com/AcademySoftwareFoundation/OpenCue/blob/master/rest_gateway/README.md) — grpc-gateway architecture, JWT token minting, full interface-to-endpoint mapping, and example Kubernetes `Deployment`/`Service` manifest (no Helm chart)
+
+73. [OpenCue — Deploying CueWeb](https://docs.opencue.io/docs/getting-started/deploying-cueweb/) — Full Kubernetes deployment guide for the CueWeb frontend: `Deployment`/`Service`/`Secret` manifests, Ingress with TLS/cert-manager annotations, `HorizontalPodAutoscaler`, and fluent-bit ConfigMap-based log aggregation
 
 ---
 
