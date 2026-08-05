@@ -21,6 +21,10 @@ Readers who have worked through the kernel driver chapters (Parts I–III), the 
   - [1.4 What is Cycles?](#14-what-is-cycles)
   - [1.5 What is EEVEE?](#15-what-is-eevee)
   - [1.6 What is GPU Compute in the Context of Rendering?](#16-what-is-gpu-compute-in-the-context-of-rendering)
+  - [1.7 What is PBR?](#17-what-is-pbr)
+  - [1.8 What is a BVH?](#18-what-is-a-bvh)
+  - [1.9 EEVEE vs Cycles: Choosing an Engine](#19-eevee-vs-cycles-choosing-an-engine)
+  - [1.10 What is the DNA/RNA System?](#110-what-is-the-dnarna-system)
 - [2. EEVEE Next: The Vulkan Rewrite](#2-eevee-next-the-vulkan-rewrite)
 - [3. Cycles GPU Backend: Multi-Backend Compute Architecture](#3-cycles-gpu-backend-multi-backend-compute-architecture)
 - [4. GLSL/SPIR-V Shader Compilation in Blender](#4-glslspir-v-shader-compilation-in-blender)
@@ -28,6 +32,8 @@ Readers who have worked through the kernel driver chapters (Parts I–III), the 
 - [6. Viewport Rendering: GHOST, Wayland, and GPU Memory](#6-viewport-rendering-ghost-wayland-and-gpu-memory)
 - [7. Cycles as a GPU Compute Workload: Performance Characteristics](#7-cycles-as-a-gpu-compute-workload-performance-characteristics)
 - [8. Debugging Blender GPU Issues on Linux](#8-debugging-blender-gpu-issues-on-linux)
+- [9. Distributed Rendering: Flamenco and Render Farms on Linux](#9-distributed-rendering-flamenco-and-render-farms-on-linux)
+- [Roadmap](#roadmap)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -143,6 +149,59 @@ GPU compute, in the context of Blender, refers to dispatching general-purpose pa
 On Linux this maps to distinct kernel subsystems. AMD GPUs expose a compute command queue through the `amdgpu` Kernel Fusion Driver (KFD); HIP's `hipModuleLaunchKernel()` targets it. NVIDIA GPUs are reached via `nvidia-uvm.ko` and `libcuda.so` as the userspace interface to the GPU compute units. Intel Arc hardware is addressed through the `i915` or `xe` kernel driver's compute engine. In each case, the compute dispatch bypasses vertex processing and rasterization hardware entirely, sending kernel code directly to the programmable shader processors — Compute Units on AMD, Streaming Multiprocessors on NVIDIA, Execution Units on Intel — via the appropriate hardware command ring.
 
 This distinction matters for performance analysis: Cycles behaves as a memory-bandwidth-bound high-performance compute workload on scenes dominated by BVH traversal (random pointer-chasing through acceleration structures) and shifts toward compute-bound behavior on scenes with complex procedural materials. It responds to tuning levers — wave size, L2 cache capacity, memory bandwidth — that differ from those that govern rasterization workloads. Section 7 analyses these characteristics per backend on current Linux hardware.
+
+### 1.7 What is PBR?
+
+Physically-based rendering (PBR) is a shading approach that parameterizes materials using measurable, energy-conserving quantities — surface color, metallic response, roughness, index of refraction — rather than the ad-hoc ambient/diffuse/specular coefficients of earlier shading models. Because the underlying reflectance model conserves energy and is grounded in real optical behavior, a PBR material looks approximately correct across a wide range of lighting environments instead of needing to be hand-tuned per scene.
+
+Blender exposes PBR through a single shared shader node, the **Principled BSDF**, used identically by both Cycles and EEVEE. As of the current Blender manual (verified against the 4.2, 4.5, and 5.0/latest manual builds), the node is described as being "based on the **OpenPBR Surface** shading model, and provides parameters compatible with similar PBR shaders found in other software, such as the Disney and Standard Surface models" — a broader framing than the node's original basis in Disney's 2012 "principled" BRDF. [Source](https://docs.blender.org/manual/en/latest/render/shader_nodes/shader/principled.html) Its top-level inputs are **Base Color**, **Roughness**, **Metallic**, **IOR**, **Alpha**, and **Normal**, with additional layered parameter groups for **Diffuse**, **Subsurface**, **Specular** (an **IOR Level** and **Tint** control — the node's older "Specular"/"Specular Tint" naming was reworked in the Blender 4.0 "Principled v2" overhaul), **Transmission**, **Coat**, **Sheen**, and **Emission**. [Source](https://docs.blender.org/manual/en/latest/render/shader_nodes/shader/principled.html)
+
+For specular reflection, the node evaluates a microfacet distribution — either **GGX** or **Multiscatter GGX**, which accounts for light bouncing between multiple microfacets and avoids the energy loss (visible as excessive darkening at high roughness) that plain single-scatter GGX exhibits. Multiscatter GGX became the default distribution as part of the Blender 4.0 Principled v2 overhaul. [Source](https://projects.blender.org/blender/blender/issues/99447)
+
+Cycles and EEVEE evaluate the same Principled BSDF definition through entirely different mechanisms. Cycles evaluates it exactly, via unbiased stochastic importance sampling during path tracing — each ray bounce samples the BSDF according to its distribution, and the result converges to the correct answer as samples accumulate. EEVEE cannot afford stochastic sampling at real-time rates, so it evaluates the same node through precomputed lookup tables and probe-convolution approximations — for light-probe prefiltering specifically, EEVEE-Next convolves using a spherical-Gaussian-based technique rather than the classic prefiltered-GGX environment map used by some real-time renderers — tuned so the real-time result visually matches Cycles' ground truth. [Source](https://developer.blender.org/docs/features/eevee/) Note: needs verification — the precise mathematical content of EEVEE's internal BxDF lookup table, and whether Linearly Transformed Cosines are used for area-light integration, could not be confirmed against a primary Blender source at time of writing.
+
+A separate, still-open effort tracks adding a first-class **OpenPBR** node to Blender (distinct from Principled BSDF merely *describing itself* as OpenPBR-based). As of mid-2026 this remains an active, unshipped development issue; full unification of the two node concepts has been discussed as a possible Blender 6.0-or-later change, not a near-term one. [Source](https://projects.blender.org/blender/blender/issues/156437)
+
+### 1.8 What is a BVH?
+
+A bounding volume hierarchy (BVH) is a tree of nested bounding boxes built over scene geometry to accelerate ray-scene intersection tests. Each internal node stores an axis-aligned bounding box (AABB) enclosing all primitives beneath it; leaf nodes store the actual triangles. When a ray is tested against the tree, any node whose bounding box the ray misses lets the traversal skip the entire subtree beneath it, avoiding a brute-force test against every triangle in the scene. [Source](https://pbr-book.org/4ed/Primitives_and_Intersection_Acceleration/Bounding_Volume_Hierarchies) For a well-balanced hierarchy this reduces the expected cost of a ray query from linear in the primitive count to roughly logarithmic — though this is an average-case property of a well-constructed tree, not a guaranteed worst-case bound; a poorly balanced BVH degrades toward linear traversal cost.
+
+Cycles' own developer documentation describes a **two-level BVH**: a per-object (per-mesh) BVH over each object's triangles, plus a top-level BVH over object instances that lets the same mesh BVH be reused across many instanced copies without rebuilding it. This is conceptually similar to — though independently named from — the bottom-level/top-level acceleration structure split (BLAS/TLAS) used by hardware ray-tracing APIs such as Vulkan RT and DXR. [Source](https://developer.blender.org/docs/features/cycles/bvh/) Cycles' own software BVH builder constructs this hierarchy using a surface area heuristic (SAH) with spatial splits; where Cycles instead relies on Intel's **Embree** library — for CPU rendering and for Intel GPU rendering via oneAPI — Embree provides its own independent SAH-based builders, including a high-quality spatial-split SAH builder and a faster Morton-code builder for interactive use. [Source](https://developer.blender.org/docs/features/cycles/bvh/) [Source](https://github.com/RenderKit/embree/blob/master/README.md)
+
+Hardware-accelerated BVH traversal is not limited to a single vendor: NVIDIA's **OptiX** backend builds and traverses the BVH via dedicated RT Cores through the OptiX API (not Cycles' own builder), and AMD's **HIPRT** and Apple's **MetalRT** backends provide equivalent hardware-RT-capable BVH paths on their respective platforms. Cycles' own software "Custom" BVH builder and traverser remain the fallback for any device that has no dedicated hardware-RT or Embree path available. [Source](https://developer.blender.org/docs/features/cycles/bvh/) Note: needs verification — Cycles' own device documentation lists CPU, CUDA, OptiX, HIP, oneAPI, and Metal as supported devices; the "experimental Vulkan compute" backend referenced elsewhere in this chapter was not found in that list and its current backend/BVH status should be re-checked against the Blender release in use.
+
+BVH traversal's performance characteristics on GPUs follow from its access pattern: descending the tree means following pointers to child nodes scattered through memory, which — on large production scenes whose BVH exceeds GPU cache capacity — tends to make traversal a memory-bandwidth-bound operation rather than a compute-bound one. This general principle is well established in GPU ray-tracing architecture literature; Section 7 discusses it in the specific context of Cycles' Linux performance characteristics. Note: needs verification of any specific quantitative memory-bandwidth or cache-miss figures for Cycles' BVH traversal — a frequently cited academic source on this could not be accessed to confirm exact numbers at time of writing.
+
+### 1.9 EEVEE vs Cycles: Choosing an Engine
+
+EEVEE and Cycles are, and are planned to remain, two distinct rendering engines rather than converging into one. When Blender's Render & Cycles and Eevee & Viewport teams were folded into a single Rendering module in 2021, the module reorganisation was explicitly organisational, not a signal of an engine merger: "Note that Cycles and Eevee remain separate renderers. We will [continue to] work together to ensure feature compatibility." [Source](https://code.blender.org/2021/02/render-modules-update/) Blender's own Vulkan documentation is equally explicit that the Vulkan backend will never carry Cycles' workload: "It doesn't (and isn't planned or viable to) use Vulkan for running Cycles" — Vulkan's scope is the `gpu` module (UI, viewport, EEVEE), not Cycles' compute dispatch. [Source](https://developer.blender.org/docs/features/gpu/vulkan/) No newer Blender source proposing an engine merger was found at time of writing; treat "separate indefinitely" as the current state of public information, not a permanent guarantee.
+
+The practical choice between them follows from what each engine trades away:
+
+| | EEVEE | Cycles |
+|---|---|---|
+| Rendering approach | Rasterization + screen-space/probe-based approximations | Unbiased Monte Carlo path tracing |
+| Global illumination | Approximated (screen-space ray tracing since EEVEE Next, light probes, no full path-traced GI) | Physically accurate, converges with sample count |
+| Interactivity | Real-time viewport feedback | Progressive refinement; final frames are typically minutes, not milliseconds |
+| Feature ceiling | Closing gaps steadily (see below) but still screen-space-approximate | Superset — every EEVEE-visible effect has a Cycles equivalent, plus volumetric caustics, SSS accuracy, and unlimited light bounces |
+| Light linking | Supported via the EEVEE Shading panel, with one gap: emissive mesh objects only support light linking under Cycles; Grease Pencil objects support it under neither engine | Supported, including emissive mesh objects |
+| Farm/batch suitability | Used for fast preview or stylized final renders where turnaround matters more than physical accuracy | The default choice for VFX-grade or photorealistic farm rendering |
+
+[Source](https://docs.blender.org/manual/en/latest/render/lights/light_linking.html)
+
+EEVEE Next (shipped as the production EEVEE in Blender 4.2 LTS) narrowed the practical gap considerably: screen-space ray tracing now applies to all BSDFs rather than a limited BSDF count, the visible-light limit rose to 4096, subsurface scattering and volumetrics were rewritten, and Virtual Shadow Maps replaced the old cascade/cubemap shadow system — bringing EEVEE's UI and feature surface noticeably closer to Cycles'. [Source](https://developer.blender.org/docs/release_notes/4.2/eevee/) The remaining gap is architectural rather than incidental: EEVEE is a screen-space/probe-based approximation by design, so scenes depending on accurate multi-bounce indirect light transport, caustics, or unlimited light bounces still require Cycles regardless of how far EEVEE's feature parity advances.
+
+In practice: prototype lookdev, previsualisation, and turnaround-sensitive stylized final renders lean toward EEVEE; VFX compositing plates, photorealistic product/architectural renders, and anything destined for a render farm (Section 9) default to Cycles.
+
+### 1.10 What is the DNA/RNA System?
+
+Blender's scene data is described by two cooperating but distinct systems, both referenced throughout this chapter as the source of the `Mesh`, `Material`, `Light`, and `Object` structures that feed the GPU pipeline.
+
+**DNA** is Blender's low-level, versioned binary struct layer, implemented under `source/blender/makesdna/`. Every `.blend` file embeds "Structure DNA" (SDNA) — a full binary description of the exact C struct layouts used to write that file. When Blender loads a file, it compares the file's embedded SDNA against the SDNA of the currently running build and, where struct layouts have diverged, runs versioning/conversion code to migrate old data forward. This mechanism is what gives `.blend` files their long-lived backward (and substantial forward) compatibility rather than requiring a fixed on-disk format. [Source](https://developer.blender.org/docs/features/core/dna/)
+
+**RNA** is the reflection and property-access layer built on top of (but, per Blender's own documentation, no longer strictly bound to) DNA. Definitions compiled by `makesrna` from `rna_*.cc` source files generate runtime property structs with getters/setters, UI metadata (ranges, units, tooltips), update callbacks that notify the dependency graph and UI of changes, and the override/animation-driver metadata that Blender's animation and library-override systems rely on. Most of the Python `bpy` API is itself generated from RNA definitions rather than hand-written. Blender's own documentation is explicit that RNA has outgrown its original role: "While RNA was originally designed to wrap and extend DNA-defined data, it has since evolved into a more general-purpose runtime data definition system... independent of DNA." [Source](https://developer.blender.org/docs/features/core/rna/)
+
+The relationship, then, is layered rather than one merely wrapping the other: DNA is the on-disk storage and versioning contract, while RNA is the runtime introspection and access layer that Python scripting, the UI system, and the dependency graph all consume — increasingly as its own general-purpose system rather than a thin shim over DNA. Note: needs verification — a specific claim that the GPU/`draw` module reads scene data through RNA property access versus reading DNA structs directly (and how the dependency graph's Shading component specifically invalidates `GPUMaterial` caches) could not be confirmed against primary Blender source at time of writing; treat any such mechanism as unconfirmed until checked against `source/blender/draw/` and `source/blender/depsgraph/`.
 
 ---
 
@@ -817,6 +876,30 @@ In the RenderDoc capture, EEVEE's passes appear as labelled groups: `Shadow Pass
 
 ---
 
+## 9. Distributed Rendering: Flamenco and Render Farms on Linux
+
+Everything in this chapter so far describes a single machine rendering a single frame. Production use of Cycles in particular — where a physically accurate final frame can take minutes per frame at high sample counts — routinely requires spreading a render across many machines. Blender's official, open-source answer to this is Flamenco.
+
+### 9.1 Flamenco Architecture
+
+Flamenco follows a Manager/Worker model exposed over an OpenAPI-described HTTP interface. A single **Manager** process holds the job queue and serves an API that **Worker** processes poll for tasks; a "Blender render" job type splits a render (by frame or frame-chunk) into individual tasks that Workers pick up, execute via a headless Blender invocation, and report back to the Manager. [Source](https://flamenco.blender.org/faq/) This is a substantially simpler architecture than large VFX-studio farm managers — Flamenco's own documentation positions it explicitly as the lightweight alternative to systems like OpenCue, aimed at small studios and individual artists rather than large render farms with complex scheduling requirements.
+
+### 9.2 GPU-Aware Dispatch on Linux
+
+A detail worth flagging for anyone deploying Flamenco on Linux GPU hardware: **Flamenco itself has no concept of per-worker GPU device selection**. Which Cycles device (CPU, HIP, CUDA, OptiX, oneAPI) a Worker renders with is determined entirely by that machine's own Blender preferences, configured before the Worker process starts — Flamenco does not expose a job-level "use this GPU" parameter. [Source](https://flamenco.blender.org/faq/)
+
+For multi-GPU Linux render nodes, Flamenco's own FAQ documents the practical workaround: run one Blender installation per GPU, each with its Cycles device preference pinned to a single card, and start one Flamenco Worker process per installation. A four-GPU box therefore runs as four independent Workers from Flamenco's point of view, not one Worker that load-balances across four devices. [Source](https://flamenco.blender.org/faq/) Note: needs verification — community-maintained third-party job types reportedly exist to make OptiX/Cycles device selection more explicit at the job level, but a specific, currently maintained project could not be confirmed at time of writing.
+
+### 9.3 Cloud Deployment
+
+A documented cloud deployment pattern — referred to by the Blender Studio team as "Flamenco Orchestra" — uses Python tooling with OpenTofu (the open-source Terraform fork) to provision Manager and Worker instances on commodity cloud providers (Hetzner, DigitalOcean, GCP were named). GPU-backed droplets/instances are provisioned specifically for OptiX-accelerated Cycles rendering, while CPU spot instances handle the CPU rendering path for cost efficiency. [Source](https://studio.blender.org/blog/scaling-render-power-with-flamenco-orchestra/)
+
+### 9.4 Landscape Beyond Flamenco
+
+Flamenco is Blender's dominant *official* render-farm story, but it is not the only tool in use. Larger VFX pipelines that already run OpenCue or commercial farm managers (e.g., Thinkbox Deadline) integrate Cycles/EEVEE renders as just another job type in those existing systems rather than adopting Flamenco. At the smaller end, hobbyist and small-studio setups frequently build custom SSH- or script-based dispatch across a handful of machines instead of running a full Manager/Worker deployment. Note: needs verification — this characterization of the smaller-scale landscape is based on community discussion rather than a primary architecture document, and should not be read as a comprehensive survey of every tool in use.
+
+---
+
 ## Roadmap
 
 ### Near-term (6–12 months)
@@ -840,6 +923,15 @@ In the RenderDoc capture, EEVEE's passes appear as labelled groups: `Shadow Pass
 - **Full deprecation of the OpenGL backend**: Now that Vulkan is the default in 5.1, the OpenGL path (`GLBackend`) is expected to enter a maintenance-only phase and eventually be removed. The removal timeline is undecided; the OpenGL path is retained for legacy GPU hardware that lacks Vulkan 1.2 support. [Source](https://developer.blender.org/docs/features/gpu/vulkan/)
 - **Cycles Vulkan compute backend promotion from experimental**: The Vulkan compute path in `intern/cycles/device/vulkan/` is currently experimental. Long-term it is intended as the portable compute backend for hardware that supports Vulkan but not HIP, CUDA, or oneAPI — including future RISC-V GPU targets and embedded Linux devices with Vulkan drivers (e.g., Raspberry Pi 5 with `v3dv`). Note: needs verification of timeline.
 - **GPU-accelerated compositing pipeline**: The existing CPU-bound compositor is a known bottleneck for VFX pipelines. A GPU compositing path using Vulkan compute dispatches through `GPUStorageBuf` and shader nodes is under exploratory discussion; this would complement the GPU sequencer work and complete the GPU acceleration story across all Blender pipeline stages. Note: needs verification of implementation details.
+
+### Blender Lab: Experimental GPU Rendering Projects
+
+Separate from the numbered release roadmap above, Blender Lab is Blender's incubator track for exploratory projects; Blender's own framing is explicit that Lab work carries no release commitment: "Lab activities are initially not part of the current Blender roadmap, and do not have a release timeline or target." [Source](https://www.blender.org/lab/) Two current Lab projects are directly relevant to this chapter's subject matter:
+
+- **Volume Rendering** (In Progress) — described as making unbiased volume rendering research practical for GPUs and production rendering. This maps to the open pull request implementing unbiased Cycles volume rendering via a global Volume Octree and weighted delta tracking. [Source](https://www.blender.org/lab/) [Source](https://projects.blender.org/blender/blender/pulls/128389)
+- **Light Transport** (Planned) — aims to integrate advanced light transport methods into Cycles and make them GPU-friendly, targeting the same rendering-quality territory (better multi-bounce and caustic handling) referenced in the medium-term light-transport item above, but as exploratory Lab research rather than a scheduled feature. [Source](https://www.blender.org/lab/)
+
+Because Lab projects have no committed timeline, treat both as directional signals of where Cycles' GPU rendering quality is headed rather than features to plan around.
 
 ---
 
@@ -910,6 +1002,46 @@ In the RenderDoc capture, EEVEE's passes appear as labelled groups: `Shadow Pass
 21. [Cycles CPU Kernel Dispatch — GitHub](https://github.com/blender/cycles/blob/main/src/device/cpu/kernel.cpp) — `CPUKernels` constructor; macro-based multi-arch dispatch (scalar, AVX2) without ISPC; ISPC used only in Embree/OIDN dependencies, not in the path-tracing kernel
 
 22. [EEVEE-Next: Virtual Shadow Map Initial Implementation](https://projects.blender.org/blender/blender/commit/a0f52400890) — Commit introducing tilemap-based virtual shadow atlas replacing legacy cascade/cubemap system
+
+23. [Blender Manual — Principled BSDF](https://docs.blender.org/manual/en/latest/render/shader_nodes/shader/principled.html) — Current parameter layout (Base Color, Roughness, Metallic, IOR, layered Specular/Subsurface/Transmission/Coat/Sheen groups); OpenPBR Surface basis statement; GGX/Multiscatter GGX distribution options
+
+24. [Blender Issue #99447 — Principled v2 BSDF](https://projects.blender.org/blender/blender/issues/99447) — Blender 4.0 Principled BSDF overhaul; Multiscatter GGX made default distribution; Specular/Specular Tint renamed to IOR Level/Tint
+
+25. [Blender Issue #156437 — OpenPBR Support](https://projects.blender.org/blender/blender/issues/156437) — Open tracking issue for a first-class OpenPBR node, distinct from Principled BSDF's OpenPBR-based description
+
+26. [Blender Issue #145127 — OpenPBR Compatibility](https://projects.blender.org/blender/blender/issues/145127) — Predecessor issue discussing potential Principled BSDF/OpenPBR node unification, tentatively floated for Blender 6.0 or later
+
+27. [Blender Developer Docs — EEVEE](https://developer.blender.org/docs/features/eevee/) — EEVEE's design goal of matching Cycles shading results in real time
+
+28. [Blender Pull #118354 — EEVEE-Next Sphere Light-Probe Convolution](https://projects.blender.org/blender/blender/pulls/118354) — Spherical-Gaussian-based light-probe prefiltering used as the non-ray-traced specular fallback
+
+29. [pbrt Book, 4th Edition — Bounding Volume Hierarchies](https://pbr-book.org/4ed/Primitives_and_Intersection_Acceleration/Bounding_Volume_Hierarchies) — General BVH construction and traversal theory; AABB tree structure and subtree-skipping mechanism
+
+30. [Blender Developer Docs — Cycles BVH](https://developer.blender.org/docs/features/cycles/bvh/) — Cycles' own two-level BVH terminology (per-object BVH + top-level instance BVH); custom SAH/spatial-split builder; per-backend hardware-RT vs. software BVH breakdown (OptiX, HIPRT, MetalRT, Embree, Custom)
+
+31. [Embree README — RenderKit](https://github.com/RenderKit/embree/blob/master/README.md) — Embree's SAH-based BVH builders (high-quality spatial-split SAH, standard SAH, fast Morton builder) and `RTC_BUILD_QUALITY` build modes
+
+32. [Blender Developer Docs — Cycles Devices](https://developer.blender.org/docs/features/cycles/devices/) — Current Cycles device list (CPU, CUDA, OptiX, HIP, oneAPI, Metal, Multi)
+
+33. [Blender Render Modules Update — code.blender.org](https://code.blender.org/2021/02/render-modules-update/) — Confirms Render & Cycles and Eevee & Viewport teams merged organisationally into one Rendering module while the two engines remain separate
+
+34. [Blender Developer Docs — Vulkan](https://developer.blender.org/docs/features/gpu/vulkan/) — States Vulkan is not planned or viable as a Cycles compute backend; Vulkan's scope is the `gpu` module (UI, viewport, EEVEE)
+
+35. [Blender Manual — Light Linking](https://docs.blender.org/manual/en/latest/render/lights/light_linking.html) — Light linking supported in both EEVEE and Cycles shading panels; emissive mesh object and Grease Pencil support caveats
+
+36. [Blender 4.2 Release Notes — EEVEE](https://developer.blender.org/docs/release_notes/4.2/eevee/) — EEVEE Next feature set: screen-space ray tracing for all BSDFs, 4096 visible light limit, Virtual Shadow Maps, rewritten SSS/volumetrics
+
+37. [Blender Developer Docs — DNA](https://developer.blender.org/docs/features/core/dna/) — Structure DNA (SDNA) binary struct description embedded in `.blend` files; versioning/conversion on load
+
+38. [Blender Developer Docs — RNA](https://developer.blender.org/docs/features/core/rna/) — RNA reflection/property-access layer generated by `makesrna`; explicit statement that RNA has evolved beyond being a DNA wrapper
+
+39. [Blender Lab](https://www.blender.org/lab/) — Incubator track listing, including the Volume Rendering (In Progress) and Light Transport (Planned) GPU-rendering projects; explicit no-roadmap-commitment framing
+
+40. [Blender Pull #128389 — WIP: Cycles Unbiased Volume Rendering](https://projects.blender.org/blender/blender/pulls/128389) — Global Volume Octree and weighted delta tracking implementation underlying the Blender Lab Volume Rendering project
+
+41. [Flamenco FAQ](https://flamenco.blender.org/faq/) — Manager/Worker architecture; confirms no per-worker GPU device selection feature; documented multi-GPU workaround of one Blender install and one Worker per GPU
+
+42. [Scaling Render Power with Flamenco Orchestra — Blender Studio](https://studio.blender.org/blog/scaling-render-power-with-flamenco-orchestra/) — Cloud deployment pattern using Python and OpenTofu across Hetzner/DigitalOcean/GCP; GPU instances for OptiX, CPU spot instances for Cycles CPU rendering
 
 ---
 
