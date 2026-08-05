@@ -884,9 +884,55 @@ Everything in this chapter so far describes a single machine rendering a single 
 
 Flamenco follows a Manager/Worker model exposed over an OpenAPI-described HTTP interface. A single **Manager** process holds the job queue and serves an API that **Worker** processes poll for tasks; a "Blender render" job type splits a render (by frame or frame-chunk) into individual tasks that Workers pick up, execute via a headless Blender invocation, and report back to the Manager. [Source](https://flamenco.blender.org/faq/) This is a substantially simpler architecture than large VFX-studio farm managers — Flamenco's own documentation positions it explicitly as the lightweight alternative to systems like OpenCue, aimed at small studios and individual artists rather than large render farms with complex scheduling requirements.
 
+```mermaid
+graph TD
+    subgraph "Artist Machine"
+        Blender["Blender +\nFlamenco Add-on"]
+    end
+    subgraph "Flamenco Manager"
+        Manager["flamenco-manager\n(:8080 HTTP API + Web UI)"]
+        DB[("SQLite\nflamenco-manager.sqlite")]
+        Shaman["Shaman\n(file transfer)"]
+    end
+    subgraph "Shared Storage"
+        Storage[("shared_storage_path\n(NFS)")]
+    end
+    subgraph "Worker Pool"
+        W1["flamenco-worker\ntag: EEVEE"]
+        W2["flamenco-worker\ntag: Cycles GPU"]
+        W3["flamenco-worker\n(untagged)"]
+    end
+    Blender -- "1. submit job" --> Manager
+    Blender -- "2. upload .blend + assets" --> Shaman
+    Manager --> DB
+    Shaman --> Storage
+    W1 -- "3. poll for tasks" --> Manager
+    W2 -- "3. poll for tasks" --> Manager
+    W3 -- "3. poll for tasks" --> Manager
+    W1 -- "4. read scene / write frames" --> Storage
+    W2 -- "4. read scene / write frames" --> Storage
+    W3 -- "4. read scene / write frames" --> Storage
+```
+
 ### 9.2 Configuration and Usage on Linux
 
-Flamenco ships as a standalone Go binary archive rather than a distro package: each release download (e.g. `flamenco-3.9.3-linux-amd64.tar.gz`) contains **two separate executables**, `flamenco-manager` and `flamenco-worker`, plus the Manager's embedded web UI and a Blender add-on ZIP baked into the Manager binary at build time. [Source](https://flamenco.blender.org/download/) [Source](https://flamenco.blender.org/development/building/) The quickstart's entire manager-side bring-up is a single command with no flags — `flamenco-manager` — which opens a browser-based "Flamenco Setup Assistant" the first time it finds no config file next to it. [Source](https://flamenco.blender.org/usage/quickstart/)
+Flamenco ships as a standalone Go binary archive rather than a distro package: each release download (e.g. `flamenco-3.9.3-linux-amd64.tar.gz`) contains **two separate executables**, `flamenco-manager` and `flamenco-worker`, plus the Manager's embedded web UI and a Blender add-on ZIP baked into the Manager binary at build time. [Source](https://flamenco.blender.org/download/) [Source](https://flamenco.blender.org/development/building/)
+
+**Installing on Linux.** There is no package-manager path (no `apt`/Flatpak/Snap package) — installation is download, extract, and run:
+
+```bash
+# On the Manager machine:
+curl -LO https://flamenco.blender.org/downloads/flamenco-3.9.3-linux-amd64.tar.gz
+tar xzf flamenco-3.9.3-linux-amd64.tar.gz
+cd flamenco-3.9.3-linux-amd64
+./flamenco-manager          # first run opens the Setup Assistant in a browser
+
+# On each Worker machine (repeat the download/extract, then):
+./flamenco-worker           # auto-discovers the Manager, or use -manager <url>
+```
+[Source](https://flamenco.blender.org/download/)
+
+The quickstart lays out the full bring-up sequence this way: download Flamenco onto every machine; create a directory on shared storage (e.g. a NAS) reachable at the *same path* from every machine; install Blender at the same path on every render machine; run `flamenco-manager` on whichever machine will coordinate the farm and step through its Setup Assistant, pointing it at the shared storage and Blender path; download the bundled Blender add-on from a link in the Manager's web UI and install it into each artist's Blender; save the `.blend` file into the shared storage; then render via the Flamenco panel in Blender's Output Properties. [Source](https://flamenco.blender.org/usage/quickstart/) The quickstart's own manager-side command is exactly the bare `flamenco-manager` invocation shown above, with no flags — the browser-based Setup Assistant only appears the first time it finds no `flamenco-manager.yaml` next to the executable.
 
 **Manager configuration file.** Once generated (by the Setup Assistant, or by hand), `flamenco-manager.yaml` looks like this — the documented example, reproduced verbatim (the docs note it is illustrative, not an exhaustive field reference: `database_check_period` and `mqtt.client.clientID` are documented separately but not shown here):
 
@@ -1024,6 +1070,49 @@ A detail worth flagging for anyone deploying Flamenco on Linux GPU hardware, dis
 
 All three deploy the same logical topology inside a provider VPC: a Manager droplet/instance exporting NFS-backed shared storage at `/mnt/nfs-share`, and N Worker nodes mounting that same path — satisfying Flamenco's shared-storage requirement (§9.2) entirely within the cloud farm. [Source](https://projects.blender.org/studio/flamenco-orchestra)
 
+**Installing the local toolchain.** Orchestra itself installs nothing on your machine beyond the OpenTofu CLI and an SSH key — the actual Manager/Worker software is installed remotely by each provider's cloud-init scripts when `tofu apply` runs:
+
+```bash
+# OpenTofu (Linux: see opentofu.org/docs/intro/install for distro packages;
+# the upstream README's own example targets macOS via Homebrew)
+brew install opentofu
+tofu version
+
+# SSH key, if you don't already have one
+ssh-keygen -t ed25519 -C "your_email@example.com"
+
+# Clone the repository and enter the provider directory you want
+git clone https://projects.blender.org/studio/flamenco-orchestra.git
+cd flamenco-orchestra/do        # or gcp/ or hz/
+```
+[Source](https://projects.blender.org/studio/flamenco-orchestra/raw/branch/main/README.md) Note: needs verification — the README's own OpenTofu install snippet is macOS-specific (`brew install opentofu`); no Linux-specific install command is given in the repository docs themselves, so a Linux user should follow OpenTofu's own installation docs (a static binary download, or distro packages on some distributions) rather than assume Homebrew is available.
+
+```mermaid
+graph TD
+    subgraph "Local Machine"
+        Artist["Artist / Pipeline"]
+        Tofu["tofu apply\n./manage.py"]
+    end
+    subgraph "Cloud VPC (DigitalOcean / GCP / Hetzner)"
+        CManager["Flamenco Manager\n(:8080, Blender preinstalled)"]
+        NFS[("NFS Volume\n/mnt/nfs-share")]
+        GW1["GPU Worker 1\n(L40S / RTX 6000)"]
+        GW2["GPU Worker 2"]
+        GWN["GPU Worker N"]
+    end
+    Artist -- "edit terraform.tfvars" --> Tofu
+    Tofu -- "provision" --> CManager
+    Tofu -- "provision" --> GW1
+    Tofu -- "provision" --> GW2
+    Tofu -- "provision" --> GWN
+    Artist -- "manage.py sync-cache" --> NFS
+    NFS -- "manage.py sync-renders" --> Artist
+    CManager --> NFS
+    GW1 --> NFS
+    GW2 --> NFS
+    GWN --> NFS
+```
+
 **Configuring a deployment: `terraform.tfvars`.** Each provider directory ships a `terraform.tfvars.example` to copy and edit. The DigitalOcean example, reproduced verbatim:
 
 ```hcl
@@ -1155,9 +1244,52 @@ Where Flamenco is Blender's own lightweight answer to render-farm management, Op
 
 **Origin and governance.** OpenCue originated at Sony Pictures Imageworks as an evolution of Sony's internal queuing system, "Cue 3," used in production "over the past 15 years to schedule and manage tens of thousands of shots over hundreds of projects (over 150,000 simultaneous cores run so far)" before Sony and Google Cloud open-sourced it. [Source](https://www.aswf.io/news/openexr-and-opencue-join-aswf/) It is now hosted by the Academy Software Foundation (ASWF) alongside OpenEXR; newly accepted ASWF projects start in incubation and later graduate to full adoption. [Source](https://www.aswf.io/news/openexr-and-opencue-join-aswf/) Note: needs verification — OpenCue's current exact ASWF maturity stage (incubation vs. graduated) could not be confirmed directly at time of writing.
 
-**Architecture.** OpenCue's components are more numerous and more separated than Flamenco's two-binary model: **Cuebot** is the central Java scheduler/dispatch server (a typical deployment runs a single shared Cuebot instance, clusterable for scale), backed by **PostgreSQL** for all job/host/state data. [Source](https://docs.opencue.io/docs/concepts/opencue-overview/) **RQD** (Render Queue Daemon) is the per-render-host agent — the canonical implementation is Python (`pip install opencue-rqd`), communicating with Cuebot over gRPC; a newer Rust reimplementation ("openrqd") is documented as protocol-compatible and production-ready for most cases, with container/sandboxing features still experimental. [Source](https://docs.opencue.io/docs/getting-started/deploying-rqd/) [Source](https://docs.opencue.io/docs/reference/rust-rqd/) Around this core sit several separate client tools: **CueGUI** (job monitoring/admin, including a "CueCommander" host-management view), **CueSubmit** (a Qt/PySide2 job-submission app, standalone or embedded as a plug-in inside Maya/Nuke), **CueAdmin** and **Cueman** (admin CLIs), **PyCue** (the Python gRPC client API), **PyOutline** (a Python library for programmatically building job specifications), and an optional REST Gateway that translates HTTP calls to gRPC for non-Python clients. [Source](https://docs.opencue.io/docs/concepts/opencue-overview/)
+**Architecture.** OpenCue's components are more numerous and more separated than Flamenco's two-binary model: **Cuebot** is the central Java scheduler/dispatch server (a typical deployment runs a single shared Cuebot instance, clusterable for scale), backed by **PostgreSQL** for all job/host/state data. [Source](https://docs.opencue.io/docs/concepts/opencue-overview/) **RQD** (Render Queue Daemon) is the per-render-host agent, communicating with Cuebot over gRPC. The original, longer-standing implementation is Python (installable via `pip install opencue-rqd`), but OpenCue's own current deployment guide explicitly labels it **deprecated** and recommends the newer Rust reimplementation ("openrqd") instead, citing improved performance and resource efficiency — a correction worth calling out since the Python package remaining on PyPI could otherwise read as the recommended path. [Source](https://docs.opencue.io/docs/getting-started/deploying-rqd/) [Source](https://docs.opencue.io/docs/reference/rust-rqd/) Around this core sit several separate client tools: **CueGUI** (job monitoring/admin, including a "CueCommander" host-management view), **CueSubmit** (a Qt/PySide2 job-submission app, standalone or embedded as a plug-in inside Maya/Nuke), **CueAdmin** and **Cueman** (admin CLIs), **PyCue** (the Python gRPC client API), **PyOutline** (a Python library for programmatically building job specifications), and an optional REST Gateway that translates HTTP calls to gRPC for non-Python clients. [Source](https://docs.opencue.io/docs/concepts/opencue-overview/)
+
+```mermaid
+graph TD
+    subgraph "Client Tools"
+        CueGUI["CueGUI\n(monitoring / CueCommander)"]
+        CueSubmit["CueSubmit\n(submission GUI /\nMaya-Nuke plug-in)"]
+        CueAdmin["CueAdmin / Cueman\n(admin CLI)"]
+        PyOutline["PyOutline / PyCue\n(scripted submission)"]
+    end
+    subgraph "Control Plane"
+        REST["REST Gateway"]
+        Cuebot["Cuebot\n(Java scheduler/dispatch)"]
+        PG[("PostgreSQL")]
+    end
+    subgraph "Render Hosts"
+        RQD1["RQD\n(Python or Rust agent)"]
+        RQD2["RQD"]
+        RQDN["RQD"]
+        Proc["blender -b -noaudio ...\n(child process)"]
+    end
+    CueGUI -- gRPC --> Cuebot
+    CueSubmit -- gRPC --> Cuebot
+    CueAdmin -- gRPC --> Cuebot
+    PyOutline -- gRPC --> Cuebot
+    REST -- "HTTP → gRPC" --> Cuebot
+    Cuebot --> PG
+    Cuebot -- "dispatch frame" --> RQD1
+    Cuebot -- "dispatch frame" --> RQD2
+    Cuebot -- "dispatch frame" --> RQDN
+    RQD1 -- "launch" --> Proc
+```
 
 **Job model and multi-tenant scheduling.** OpenCue's job hierarchy is **Show → Job → Layer → Frame**: a Show groups all work for a production; a Job is a collection of Layers submitted as one script; a Layer holds a frame range and the command to run; a Frame is one concrete command invocation. [Source](https://www.opencue.io/docs/concepts/glossary/) Farm-sharing across productions is handled by **Allocations** (groups of render hosts tied to a facility and a tag), **Subscriptions** (which associate a Show with one or more Allocations, effectively granting that show a quota/slice of shared farm capacity), and **Tags** (assigned to both hosts and layers — a layer's frames only dispatch to a host sharing that tag). [Source](https://www.opencue.io/docs/concepts/glossary/) This Show/Subscription/Allocation layer is the piece Flamenco has no equivalent of at all — Flamenco assumes one farm serving one pool of work, not a shared facility partitioned by quota across simultaneous productions.
+
+```mermaid
+graph TD
+    Show["Show\n(production)"] --> Job["Job\n(submitted script)"]
+    Job --> Layer["Layer\n(command + frame range\n+ Service: cores/mem/GPU)"]
+    Layer --> Frame["Frame\n(one command invocation)"]
+
+    Facility["Facility"] --> Allocation["Allocation\n(hosts, tagged)"]
+    Show -.-> Subscription["Subscription\n(Show's quota of an Allocation)"]
+    Allocation -.-> Subscription
+    Subscription -. "grants capacity to" .-> Job
+```
 
 **GPU-aware scheduling — the key contrast with Flamenco's tags.** Resource requirements (cores, memory, and GPU) are declared per Layer via a **Service** object, and OpenCue's Service model exposes genuinely quantitative GPU fields, not just a routing tag:
 
@@ -1177,7 +1309,76 @@ CueGUI's host/frame monitoring surfaces matching live GPU accounting per host �
 
 **Blender integration is native-but-thin, not DIY-only.** CueSubmit's standalone GUI ships a dedicated Blender job type — its source builds the render invocation directly (`blender -b -noaudio <file> ...` with output path/format fields from the submission form), so submitting an existing `.blend` file from outside Blender requires no custom code. [Source](https://github.com/AcademySoftwareFoundation/OpenCue/blob/master/cuesubmit/cuesubmit/Submission.py) What OpenCue does *not* ship is an in-Blender addon: CueSubmit's PySide2 plug-in mode is documented only for Maya and Nuke, with no Blender entry, [Source](https://github.com/AcademySoftwareFoundation/opencue.io/blob/master/content/docs/Getting%20started/installing-cuesubmit.md) and OpenCue's own DCC-integration tutorial's Blender example is a custom operator/panel that an artist writes themselves, calling into PyOutline's `outline.cuerun.launch()` to build and submit the job from inside Blender's UI. [Source](https://docs.opencue.io/docs/tutorials/dcc-integration/) In practice: submitting a finished file needs no coding via CueSubmit; a "Render → Submit to OpenCue" button *inside* Blender is something a studio's pipeline team builds itself, the same way most in-house Maya/Nuke-adjacent submission buttons are pipeline-specific rather than shipped by OpenCue.
 
-**Linux deployment.** For local development and testing, the OpenCue repository ships a `docker-compose.yml` that runs PostgreSQL, Cuebot, and RQD each in their own container ("the sandbox environment"). [Source](https://github.com/AcademySoftwareFoundation/OpenCue/blob/master/docker-compose.yml) For real render nodes, RQD is installed natively — via the `opencue-rqd` PyPI package or built from source into a Python virtualenv (the deployment guide's example targets Ubuntu 22.04). [Source](https://docs.opencue.io/docs/getting-started/deploying-rqd/) Note: needs verification — no official ASWF-maintained Helm chart for a Kubernetes production deployment could be confirmed; treat Kubernetes/container-orchestrated Cuebot deployment as something a studio assembles itself from the Docker images rather than an out-of-the-box artifact.
+**Installing on Linux: the sandbox.** For local development and testing, the OpenCue repository ships a Docker Compose sandbox that runs PostgreSQL, Cuebot, and RQD each in their own container. [Source](https://github.com/AcademySoftwareFoundation/OpenCue/blob/master/docker-compose.yml) The documented bring-up, reproduced verbatim, requires Python 3.7+, pip, Docker, and Docker Compose v2+ already installed:
+
+```bash
+# Prepare the host
+sudo gpasswd -a $USER docker        # log out/in afterward
+mkdir -p /tmp/rqd/logs /tmp/rqd/shots
+
+git clone https://github.com/AcademySoftwareFoundation/OpenCue.git
+cd OpenCue
+
+# Build and start the sandbox (PostgreSQL + Cuebot + RQD)
+docker build -t opencue/cuebot -f cuebot/Dockerfile .
+docker compose up                    # keep this terminal running
+
+# In a second terminal: install the Python client tools from source
+cd OpenCue
+python3 -m venv sandbox-venv
+source sandbox-venv/bin/activate
+sandbox/install-client-sources.sh    # installs PyCue, PyOutline, cueadmin,
+                                      # cueman, cuesubmit, cuegui
+
+# Verify
+cueadmin -lh                         # lists the sandbox render host
+cuesubmit &                          # submit a test job through the GUI
+cuegui &                             # monitor it
+
+# Tear down
+docker compose --profile all down    # stop and remove containers
+docker compose --profile all down -v # also remove DB/Prometheus/Grafana volumes
+rm -rf sandbox-venv
+```
+[Source](https://docs.opencue.io/docs/quick-starts/quick-start-linux/)
+
+**Installing on Linux: production.** A real deployment separates the three roles onto (at minimum) a database host, a Cuebot host (6 GB RAM minimum, low-latency link to PostgreSQL), and one RQD install per render node. Cuebot has three install paths — a pre-built Docker image, a self-built Docker image, or a plain JRE running the released JAR — the pre-built path being the fewest steps:
+
+```bash
+export DB_NAME=cuebot_local
+export DB_USER=cuebot
+export DB_PASS=<changeme>
+export DB_HOST_IN_DOCKER=<IP address of the database host>
+export CUE_FS_ROOT="$HOME/opencue-demo"   # shared/NFS render-asset root
+mkdir -p "$CUE_FS_ROOT"
+
+docker pull opencue/cuebot
+docker run -td --name cuebot -p 8080:8080 -p 8443:8443 opencue/cuebot \
+  --datasource.cue-data-source.jdbc-url=jdbc:postgresql://$DB_HOST_IN_DOCKER/$DB_NAME \
+  --datasource.cue-data-source.username=$DB_USER \
+  --datasource.cue-data-source.password=$DB_PASS \
+  --log.frame-log-root.default_os="${CUE_FS_ROOT}/logs"
+```
+[Source](https://docs.opencue.io/docs/getting-started/deploying-cuebot/)
+
+RQD then goes on every render host, pointed at that Cuebot instance. Following the current guidance to prefer Rust RQD:
+
+```bash
+export CUEBOT_HOSTNAME=<hostname or IP of the Cuebot host>
+
+# Recommended: build and run Rust RQD from source
+docker build -t opencue/rqd -f rust/Dockerfile.rqd rust/
+docker run -td --name rqd01 \
+  --env OPENRQD__GRPC__CUEBOT_ENDPOINTS=${CUEBOT_HOSTNAME}:8443 \
+  --volume "${CUE_FS_ROOT}:${CUE_FS_ROOT}" \
+  --add-host host.docker.internal:host-gateway \
+  opencue/rqd
+
+# Bare-metal alternative: pip install (Python RQD; deprecated but still published)
+pip install opencue-rqd
+rqd
+```
+[Source](https://docs.opencue.io/docs/getting-started/deploying-rqd/) Note: needs verification — no official ASWF-maintained Helm chart for a Kubernetes production deployment could be confirmed; treat Kubernetes/container-orchestrated Cuebot deployment as something a studio assembles itself from these Docker images rather than an out-of-the-box artifact.
 
 ### 9.6 Landscape Beyond Flamenco
 
@@ -1373,6 +1574,14 @@ Because Lab projects have no committed timeline, treat both as directional signa
 64. [Flamenco Orchestra — DigitalOcean terraform.tfvars.example](https://projects.blender.org/studio/flamenco-orchestra/raw/branch/main/do/terraform.tfvars.example) — Verbatim example Terraform/OpenTofu variables file for the DigitalOcean GPU worker module
 
 65. [Flamenco Orchestra — DigitalOcean manage.py](https://projects.blender.org/studio/flamenco-orchestra/raw/branch/main/do/manage.py) — Source of the actual `argparse` CLI (`status`/`list`/`ssh`/`apply`/`destroy`/`recreate`/`sync-cache`/`sync-renders`/`update-blender`); confirms no autoscaling logic and a README/script-name discrepancy
+
+66. [Flamenco — Quickstart](https://flamenco.blender.org/usage/quickstart/) — Full end-to-end bring-up sequence: shared storage, per-machine Blender install, Setup Assistant, add-on installation, submission
+
+67. [OpenCue — Quick start for Linux](https://docs.opencue.io/docs/quick-starts/quick-start-linux/) — Verbatim Docker Compose sandbox bring-up; client-tool virtualenv install via `sandbox/install-client-sources.sh`; `cueadmin`/`cuesubmit`/`cuegui` verification steps
+
+68. [OpenCue — Deploying Cuebot](https://docs.opencue.io/docs/getting-started/deploying-cuebot/) — Production Cuebot install options (pre-built Docker image, self-built image, bare JRE + JAR) with verbatim `docker run` invocation
+
+69. [OpenCue — Deploying RQD](https://docs.opencue.io/docs/getting-started/deploying-rqd/) — Confirms Python RQD is deprecated in favor of Rust RQD; verbatim `docker build`/`docker run`/`pip install opencue-rqd` install paths
 
 ---
 
