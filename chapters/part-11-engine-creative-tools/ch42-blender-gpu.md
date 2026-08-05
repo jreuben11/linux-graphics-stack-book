@@ -1038,7 +1038,7 @@ WantedBy=multi-user.target
 
 `CPUSchedulingPolicy=idle` and `Nice=19` are worth flagging for a render-node deployment specifically: they tell the Linux scheduler to only run the Worker process itself when nothing else needs the CPU, so it doesn't compete with the headless Blender render process it launches as a child. Note: needs verification — the upstream docs are internally inconsistent about this flag's exact name: the systemd unit above spells it `-restart-exit-code`, while a nearby paragraph on the same page spells it `-restart-exit-status`, and the YAML key is `restart_exit_code`; the Flamenco Go source itself was not reachable to resolve which spelling the binary actually accepts, so treat this as an upstream documentation inconsistency rather than a resolved fact, and verify against `flamenco-worker -help` output before scripting around it.
 
-**Routing jobs to specific machines: tags, not automatic GPU detection.** Flamenco's actual mechanism for steering work toward particular hardware is manually-assigned **worker tags**, assigned per-Worker entirely through the Manager's web interface rather than a config file or CLI command: a job carries at most one tag (or none), and a tagged job is only offered to Workers carrying that same tag, while an untagged job goes to any Worker. [Source](https://flamenco.blender.org/usage/worker-configuration/tags/) Tags are free-form admin-chosen strings — Blender Studio's own documentation examples use names like `EEVEE`, `Cycles`, and `Cycles GPU` — and Flamenco has no built-in awareness of what a tag is "for"; the docs are explicit that "Flamenco doesn't know what you want to use the tags for." [Source](https://flamenco.blender.org/usage/worker-configuration/tags/) This confirms the point in §9.1 concretely: tags are a coarse, manually-maintained pool-routing mechanism, not automatic GPU-capability detection — actual device selection still happens inside each machine's own Blender configuration, and (contrast with §9.5) there is no quantitative resource field like OpenCue's `minGpuMemory` to express "route this to a worker with at least N GB of VRAM free."
+**Routing jobs to specific machines: tags, not automatic GPU detection.** Flamenco's actual mechanism for steering work toward particular hardware is manually-assigned **worker tags**, assigned per-Worker entirely through the Manager's web interface rather than a config file or CLI command: a job carries at most one tag (or none), and a tagged job is only offered to Workers carrying that same tag, while an untagged job goes to any Worker. [Source](https://flamenco.blender.org/usage/worker-configuration/tags/) Tags are free-form admin-chosen strings — Blender Studio's own documentation examples use names like `EEVEE`, `Cycles`, and `Cycles GPU` — and Flamenco has no built-in awareness of what a tag is "for"; the docs are explicit that "Flamenco doesn't know what you want to use the tags for." [Source](https://flamenco.blender.org/usage/worker-configuration/tags/) This confirms the point in §9.1 concretely: tags are a coarse, manually-maintained pool-routing mechanism, not automatic GPU-capability detection — actual device selection still happens inside each machine's own Blender configuration, and (contrast with §9.6) there is no quantitative resource field like OpenCue's `minGpuMemory` to express "route this to a worker with at least N GB of VRAM free."
 
 **Multi-GPU nodes, more precisely.** Blender's device-ordering across multiple identical GPUs is not guaranteed stable enough to pin reliably from Blender's own render preferences alone, so Flamenco's FAQ recommends a more involved workaround than a single shared Blender install: run **one separate Blender installation per GPU**, each pinned to its specific card using the GPU vendor's own selection tooling (rather than relying solely on Blender's preferences panel), and start one Flamenco Worker per Blender install, with each Worker's `$PATH` pointing at its own dedicated Blender binary. [Source](https://flamenco.blender.org/faq/) A single-GPU-per-machine node is simpler — there, plain Blender render preferences are sufficient, and one Worker per machine is all that's needed.
 
@@ -1056,7 +1056,66 @@ WantedBy=multi-user.target
 
 A detail worth flagging for anyone deploying Flamenco on Linux GPU hardware, distinct from the tag-based routing above: **Flamenco itself has no concept of automatic per-worker GPU device detection or selection**. Which Cycles device (CPU, HIP, CUDA, OptiX, oneAPI) a Worker renders with is determined entirely by that machine's own Blender configuration, set up before the Worker process starts — Flamenco does not expose a job-level "use this GPU" parameter, only the coarse worker-tag mechanism described in §9.2. [Source](https://flamenco.blender.org/faq/) Note: needs verification — community-maintained third-party job types reportedly exist to make OptiX/Cycles device selection more explicit at the job level, but a specific, currently maintained project could not be confirmed at time of writing.
 
-### 9.4 Cloud Deployment: Flamenco Orchestra
+### 9.4 Flamenco's REST API and Generated Clients
+
+Everything the Manager's web UI, the Blender add-on, and the Worker binary do is itself a client of one HTTP API: Flamenco Manager is controlled through an API defined by an OpenAPI 3 specification, checked into the source tree at `pkg/api/flamenco-openapi.yaml`, and explorable live via the "API" link in the top-right corner of the Manager's own web interface. [Source](https://flamenco.blender.org/development/flamenco-api/) There is no separate hand-written REST layer to keep in sync — Go, Python, and JavaScript client libraries are all generated from that one YAML file, and are the actual libraries used respectively by the Worker binary, the Blender add-on, and the web frontend, so the same operations documented here are what those components call internally rather than a parallel "public API" surface. [Source](https://flamenco.blender.org/development/flamenco-api/)
+
+The specification groups operations by tag (`meta`, `jobs`, `workers`, …); each operation's `operationId` becomes the generated function name, e.g. `getVersion` under the `meta` tag:
+
+```yaml
+# pkg/api/flamenco-openapi.yaml
+paths:
+  /api/v3/version:
+    get:
+      summary: Get the Flamenco version of this Manager
+      operationId: getVersion
+      tags: [meta]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FlamencoVersion" }
+```
+[Source](https://flamenco.blender.org/development/flamenco-api/)
+
+```python
+from flamenco.manager import ApiClient, Configuration
+from flamenco.manager.apis import MetaApi
+
+configuration = Configuration(host="http://localhost:8080")
+api_client = ApiClient(configuration)
+meta_api = MetaApi(api_client)
+version = meta_api.get_version()
+print(f"Found {version.name} version {version.version}")
+```
+[Source](https://flamenco.blender.org/development/flamenco-api/)
+
+Job submission — the operation the Blender add-on calls when an artist clicks "Submit" — is `POST /api/v3/jobs`, taking a `SubmittedJob` body and returning the compiled `Job` (Flamenco expands the job into individual tasks server-side, driven by the job type's own compiler script; see §9.2's built-in job types):
+
+```bash
+curl -X POST http://localhost:8080/api/v3/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "3D render",
+    "type": "simple-blender-render",
+    "priority": 50,
+    "submitter_platform": "linux",
+    "settings": {
+      "blendfile": "/render/sf/jobs/scene123.blend",
+      "render_output_root": "/render/sf/frames/scene123",
+      "render_output_path": "/render/sf/frames/scene123/render/######",
+      "frames": "1-10",
+      "chunk_size": 3,
+      "fps": 24,
+      "format": "PNG"
+    }
+  }'
+```
+[Source](https://projects.blender.org/studio/flamenco/raw/branch/main/pkg/api/flamenco-openapi.yaml)
+
+`worker_tag` on that same body is the API-level hook for the tag-based routing described in §9.2 — set it to a tag ID to restrict the job to Workers carrying that tag, or omit it to let any Worker pick it up. Unlike OpenCue's REST Gateway (§9.6), Flamenco Manager's API has no separate authentication layer of its own — it is designed to sit behind the same trust boundary as `shared_storage_path`, i.e. a private network or an operator-provided reverse proxy, and does not issue or require bearer tokens. Note: needs verification — no Kubernetes manifests, Helm chart, or container-orchestration guidance for Flamenco Manager/Worker could be found in either the main Flamenco repository or its documentation site; both binaries are designed and documented purely as bare-metal/VM systemd services (§9.2) with a required POSIX-consistent shared filesystem, and Flamenco Orchestra's own cloud tooling (§9.5) deploys them the same way onto plain cloud VMs rather than onto Kubernetes.
+
+### 9.5 Cloud Deployment: Flamenco Orchestra
 
 **Motivation.** Blender Studio's own blog explains the problem Flamenco Orchestra solves in concrete production terms: "the final weeks of production are always intense. Shots are locked, lighting is finalized, and suddenly we need to render thousands of frames at full quality. Our in-house render farm handles daily work well, but during these crunch periods, we often need to scale up quickly." Rather than provision permanent hardware that sits idle most of the year, the studio turns to cloud compute for these bursts. [Source](https://studio.blender.org/blog/scaling-render-power-with-flamenco-orchestra/) Note: needs verification — the blog does not name a specific open-movie production as the motivating case; treat "an open movie at Blender Studio" as the only framing given.
 
@@ -1238,7 +1297,7 @@ cat /var/log/cloud-init-gpu.log
 
 **Status.** Flamenco Orchestra is a real, currently maintained, community-open project rather than a one-off internal script or a polished general product — Blender Studio's own framing is "this configuration works for our needs," and the README explicitly invites outside contributions (documentation, additional cloud providers, cost/performance optimization, security hardening). [Source](https://studio.blender.org/blog/scaling-render-power-with-flamenco-orchestra/) External contribution is already happening: a third party ported the GCP module to Azure and reported success with CPU workers on Blender Studio's forum. Note: needs verification — that Azure port had not landed in the repository's `main` branch (only `do/`, `gcp/`, and `hz/` directories were present) at time of writing, so Azure should be described as proposed/in-review, not shipped. [Source](https://devtalk.blender.org/t/added-azure-support-to-flamenco-orchestra-via-pr/45053)
 
-### 9.5 OpenCue
+### 9.6 OpenCue
 
 Where Flamenco is Blender's own lightweight answer to render-farm management, OpenCue is the render manager used by large VFX/animation studios, and understanding it clarifies exactly what Flamenco deliberately leaves out.
 
@@ -1308,6 +1367,85 @@ graph TD
 CueGUI's host/frame monitoring surfaces matching live GPU accounting per host — `reserved_gpus`, `num_gpus`, `max_gpu_memory`, `used_gpu_memory`, `reserved_gpu_memory` — alongside the equivalent CPU-core and RAM stats it has always tracked. [Source](https://docs.opencue.io/docs/reference/cuecommander-technical-reference/) This is a materially more granular model than Flamenco's worker tags (§9.2): Flamenco can only route a job to *a* worker carrying the right tag, with no quantitative accounting of how much GPU memory that worker has free; OpenCue can express "this layer needs at least one GPU with at least this much memory" as a first-class scheduling constraint, alongside CPU/RAM, and Cuebot tracks per-host reservation state for it. Note: needs verification — the exact dispatcher-level algorithm for how Cuebot packs or oversubscribes concurrent frames against `minGpuMemory` was not confirmed from primary documentation; treat the claim as "the resource fields and per-host accounting exist and are exposed," not as a verified description of the scheduler's internal bin-packing logic.
 
 **Blender integration is native-but-thin, not DIY-only.** CueSubmit's standalone GUI ships a dedicated Blender job type — its source builds the render invocation directly (`blender -b -noaudio <file> ...` with output path/format fields from the submission form), so submitting an existing `.blend` file from outside Blender requires no custom code. [Source](https://github.com/AcademySoftwareFoundation/OpenCue/blob/master/cuesubmit/cuesubmit/Submission.py) What OpenCue does *not* ship is an in-Blender addon: CueSubmit's PySide2 plug-in mode is documented only for Maya and Nuke, with no Blender entry, [Source](https://github.com/AcademySoftwareFoundation/opencue.io/blob/master/content/docs/Getting%20started/installing-cuesubmit.md) and OpenCue's own DCC-integration tutorial's Blender example is a custom operator/panel that an artist writes themselves, calling into PyOutline's `outline.cuerun.launch()` to build and submit the job from inside Blender's UI. [Source](https://docs.opencue.io/docs/tutorials/dcc-integration/) In practice: submitting a finished file needs no coding via CueSubmit; a "Render → Submit to OpenCue" button *inside* Blender is something a studio's pipeline team builds itself, the same way most in-house Maya/Nuke-adjacent submission buttons are pipeline-specific rather than shipped by OpenCue.
+
+**The REST Gateway: HTTP/JSON access to the gRPC API.** PyCue and PyOutline talk gRPC directly, but everything else that isn't Python — CueWeb, custom dashboards, CI pipelines, curl — goes through the REST Gateway, a Go service built on `grpc-gateway` that auto-generates one REST endpoint per gRPC method from OpenCue's own `.proto` definitions. [Source](https://github.com/AcademySoftwareFoundation/OpenCue/blob/master/rest_gateway/README.md) Every interface Cuebot exposes over gRPC — Show, Job, Frame, Layer, Group, Host, Owner, Proc, Deed, Allocation, Facility, Filter, Subscription, Limit, Service, and more — gets a matching REST interface, following one routing pattern:
+
+```
+POST /{interface}.{Interface}Interface/{Method}
+```
+
+All requests require a JWT bearer token (HMAC SHA256), which the gateway operator mints locally — there is no login endpoint, just a shared `JWT_SECRET`:
+
+```python
+# Minting a token the gateway will accept (HS256, matches JWT_SECRET)
+import base64, hmac, hashlib, json, time
+
+def create_jwt_token(secret, user_id, expiry_hours=1):
+    header = {"alg": "HS256", "typ": "JWT"}
+    payload = {"sub": user_id, "exp": int(time.time()) + expiry_hours * 3600}
+    h = base64.urlsafe_b64encode(json.dumps(header).encode()).decode().rstrip("=")
+    p = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    sig = base64.urlsafe_b64encode(
+        hmac.new(secret.encode(), f"{h}.{p}".encode(), hashlib.sha256).digest()
+    ).decode().rstrip("=")
+    return f"{h}.{p}.{sig}"
+
+token = create_jwt_token("your-secret-key", "user123")
+```
+[Source](https://github.com/AcademySoftwareFoundation/OpenCue/blob/master/rest_gateway/README.md)
+
+```bash
+curl -X POST http://localhost:8448/show.ShowInterface/FindShow \
+  -H "Authorization: Bearer $JWT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "testing"}'
+
+curl -X POST http://localhost:8448/job.JobInterface/GetJobs \
+  -H "Authorization: Bearer $JWT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"r": {"show": {"name": "testing"}}}'
+```
+[Source](https://github.com/AcademySoftwareFoundation/OpenCue/blob/master/rest_gateway/README.md)
+
+Kill/Pause/Resume/Retry/Kill-frame/Lock-host and the multi-tenant Allocation/Subscription/Limit management from §9.6's job-model diagram are all reachable the same way — the gateway is a full mirror of the gRPC surface, not a read-only subset. Deploying it is a separate container from Cuebot and RQD; the project's own README ships a raw Kubernetes `Deployment`/`Service` manifest rather than a Helm chart:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opencue-rest-gateway
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: opencue-rest-gateway }
+  template:
+    metadata:
+      labels: { app: opencue-rest-gateway }
+    spec:
+      containers:
+      - name: gateway
+        image: opencue-rest-gateway:latest
+        ports: [{ containerPort: 8448 }]
+        env:
+        - { name: CUEBOT_ENDPOINT, value: "opencue-cuebot:8443" }
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef: { name: opencue-secrets, key: jwt-secret }
+        livenessProbe:
+          tcpSocket: { port: 8448 }   # all HTTP endpoints require auth, so a plain HTTP probe can't be used
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opencue-rest-gateway
+spec:
+  selector: { app: opencue-rest-gateway }
+  ports: [{ port: 8448, targetPort: 8448 }]
+  type: ClusterIP
+```
+[Source](https://github.com/AcademySoftwareFoundation/OpenCue/blob/master/rest_gateway/README.md)
+
+This manifest only covers the REST Gateway container itself; it assumes an already-reachable `opencue-cuebot:8443`, which is the piece with no official chart (see the note at the end of the production-deployment steps below) — treat this YAML as a real, sourced example for one component of the stack, not evidence of a turnkey full-stack Kubernetes deployment.
 
 **Installing on Linux: the sandbox.** For local development and testing, the OpenCue repository ships a Docker Compose sandbox that runs PostgreSQL, Cuebot, and RQD each in their own container. [Source](https://github.com/AcademySoftwareFoundation/OpenCue/blob/master/docker-compose.yml) The documented bring-up, reproduced verbatim, requires Python 3.7+, pip, Docker, and Docker Compose v2+ already installed:
 
@@ -1380,9 +1518,9 @@ rqd
 ```
 [Source](https://docs.opencue.io/docs/getting-started/deploying-rqd/) Note: needs verification — no official ASWF-maintained Helm chart for a Kubernetes production deployment could be confirmed; treat Kubernetes/container-orchestrated Cuebot deployment as something a studio assembles itself from these Docker images rather than an out-of-the-box artifact.
 
-### 9.6 Landscape Beyond Flamenco
+### 9.7 Landscape Beyond Flamenco
 
-Flamenco is Blender's dominant *official* render-farm story, but it is not the only tool in use. Larger VFX pipelines that already run OpenCue (§9.5) or commercial farm managers (e.g., Thinkbox Deadline) integrate Cycles/EEVEE renders as just another job type in those existing systems rather than adopting Flamenco. At the smaller end, hobbyist and small-studio setups frequently build custom SSH- or script-based dispatch across a handful of machines instead of running a full Manager/Worker deployment. Note: needs verification — this characterization of the smaller-scale landscape is based on community discussion rather than a primary architecture document, and should not be read as a comprehensive survey of every tool in use.
+Flamenco is Blender's dominant *official* render-farm story, but it is not the only tool in use. Larger VFX pipelines that already run OpenCue (§9.6) or commercial farm managers (e.g., Thinkbox Deadline) integrate Cycles/EEVEE renders as just another job type in those existing systems rather than adopting Flamenco. At the smaller end, hobbyist and small-studio setups frequently build custom SSH- or script-based dispatch across a handful of machines instead of running a full Manager/Worker deployment. Note: needs verification — this characterization of the smaller-scale landscape is based on community discussion rather than a primary architecture document, and should not be read as a comprehensive survey of every tool in use.
 
 ---
 
@@ -1582,6 +1720,12 @@ Because Lab projects have no committed timeline, treat both as directional signa
 68. [OpenCue — Deploying Cuebot](https://docs.opencue.io/docs/getting-started/deploying-cuebot/) — Production Cuebot install options (pre-built Docker image, self-built image, bare JRE + JAR) with verbatim `docker run` invocation
 
 69. [OpenCue — Deploying RQD](https://docs.opencue.io/docs/getting-started/deploying-rqd/) — Confirms Python RQD is deprecated in favor of Rust RQD; verbatim `docker build`/`docker run`/`pip install opencue-rqd` install paths
+
+70. [Flamenco — Flamenco API](https://flamenco.blender.org/development/flamenco-api/) — OpenAPI 3 specification at `pkg/api/flamenco-openapi.yaml`; generated Go/Python/JavaScript clients used by the Worker, Blender add-on, and web frontend respectively
+
+71. [Flamenco — flamenco-openapi.yaml (raw source)](https://projects.blender.org/studio/flamenco/raw/branch/main/pkg/api/flamenco-openapi.yaml) — `POST /api/v3/jobs` (`submitJob`) request/response schema; `SubmittedJob` fields including `worker_tag`
+
+72. [OpenCue — REST Gateway README](https://github.com/AcademySoftwareFoundation/OpenCue/blob/master/rest_gateway/README.md) — grpc-gateway architecture, JWT token minting, full interface-to-endpoint mapping, and example Kubernetes `Deployment`/`Service` manifest (no Helm chart)
 
 ---
 
