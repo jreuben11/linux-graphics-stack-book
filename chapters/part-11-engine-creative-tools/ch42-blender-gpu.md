@@ -886,29 +886,302 @@ Flamenco follows a Manager/Worker model exposed over an OpenAPI-described HTTP i
 
 ### 9.2 Configuration and Usage on Linux
 
-Flamenco ships as a standalone Go binary archive rather than a distro package: each release download (e.g. `flamenco-3.9.3-linux-amd64.tar.gz`) contains **two separate executables**, `flamenco-manager` and `flamenco-worker`, plus the Manager's embedded web UI and a Blender add-on ZIP baked into the Manager binary at build time. [Source](https://flamenco.blender.org/download/) [Source](https://flamenco.blender.org/development/building/)
+Flamenco ships as a standalone Go binary archive rather than a distro package: each release download (e.g. `flamenco-3.9.3-linux-amd64.tar.gz`) contains **two separate executables**, `flamenco-manager` and `flamenco-worker`, plus the Manager's embedded web UI and a Blender add-on ZIP baked into the Manager binary at build time. [Source](https://flamenco.blender.org/download/) [Source](https://flamenco.blender.org/development/building/) The quickstart's entire manager-side bring-up is a single command with no flags — `flamenco-manager` — which opens a browser-based "Flamenco Setup Assistant" the first time it finds no config file next to it. [Source](https://flamenco.blender.org/usage/quickstart/)
 
-**Manager setup.** The Manager reads `flamenco-manager.yaml` from the directory next to its executable. If that file doesn't exist yet, launching `flamenco-manager` for the first time opens a browser-based "Flamenco Setup Assistant" to create one interactively rather than requiring hand-written YAML up front. [Source](https://flamenco.blender.org/usage/manager-configuration/) Key settings in that file include `listen` (the single `host:port` the Manager binds — this one port serves the web UI, the REST API, and file submission via Flamenco's Shaman file-transfer system), `shared_storage_path` (the render-output and `.blend`-file directory shared with Workers), `local_manager_storage_path` (Manager-only logs and preview renders, never needed by Workers), and `database` (an embedded SQLite file). [Source](https://flamenco.blender.org/usage/manager-configuration/) Flamenco explicitly requires this shared storage to be a real, synchronously-consistent shared filesystem (e.g. NFS) reachable at the same path by the Manager and every Worker — cloud sync tools such as Syncthing or Dropbox are explicitly called out as unsupported, since Flamenco assumes a written file is immediately visible to every other machine. [Source](https://flamenco.blender.org/usage/shared-storage/)
+**Manager configuration file.** Once generated (by the Setup Assistant, or by hand), `flamenco-manager.yaml` looks like this — the documented example, reproduced verbatim (the docs note it is illustrative, not an exhaustive field reference: `database_check_period` and `mqtt.client.clientID` are documented separately but not shown here):
 
-**Worker setup.** Workers are configured via `flamenco-worker.yaml` — a file that can be shared verbatim across every Worker machine — specifying `manager_url` and a `task_types` list (e.g. `blender`, `ffmpeg`, `file-management`, `misc`) declaring which kinds of task that Worker will accept. Per-Worker identity and credentials live separately in an auto-generated `flamenco-worker-credentials.yaml` and local SQLite database (under `$HOME/.local/share/flamenco` on Linux) that admins aren't meant to hand-edit. [Source](https://flamenco.blender.org/usage/worker-configuration/) If `manager_url` is left blank, a Worker auto-discovers its Manager on the local network; otherwise the Manager address can be set explicitly in the YAML or passed on the command line (`flamenco-worker -manager http://192.168.0.1:8080/`). [Source](https://flamenco.blender.org/usage/worker-configuration/) [Source](https://flamenco.blender.org/faq/)
+```yaml
+# flamenco-manager.yaml
 
-**Routing jobs to specific machines: tags, not automatic GPU detection.** Flamenco's actual mechanism for steering work toward particular hardware is manually-assigned **worker tags**, configured per-Worker from the Manager's web interface: a job carries at most one tag (or none), and a tagged job is only offered to Workers carrying that same tag, while an untagged job goes to any Worker. [Source](https://flamenco.blender.org/usage/worker-configuration/tags/) Tags are free-form admin-chosen strings — Blender Studio's own documentation examples use names like `EEVEE`, `Cycles`, and `Cycles GPU` — and Flamenco has no built-in awareness of what a tag is "for"; the docs are explicit that "Flamenco doesn't know what you want to use the tags for." [Source](https://flamenco.blender.org/usage/worker-configuration/tags/) This confirms the point in §9.1 concretely: tags are a coarse, manually-maintained pool-routing mechanism, not automatic GPU-capability detection — actual device selection still happens inside each machine's own Blender configuration.
+_meta:
+  version: 3
+
+# Core settings
+manager_name: Flamenco Manager
+database: flamenco-manager.sqlite
+listen: :8080
+autodiscoverable: true
+
+# Storage
+local_manager_storage_path: ./flamenco-manager-storage
+shared_storage_path: /path/to/storage
+shaman:
+  enabled: true
+  garbageCollect:
+    period: 24h
+    maxAge: 744h
+
+# Timeout & Failures
+task_timeout: 10m
+worker_timeout: 1m
+blocklist_threshold: 3
+task_fail_after_softfail_count: 3
+
+# Variables
+variables:
+  blender:
+    values:
+      - platform: linux
+        value: blender
+      - platform: windows
+        value: blender
+      - platform: darwin
+        value: blender
+  blenderArgs:
+    values:
+      - platform: all
+        value: -b -y
+
+# MQTT Configuration
+mqtt:
+  client:
+    broker: 'tcp://mqttserver.local:1883'
+    username: 'username'
+    password: 'your-password-here'
+    topic_prefix: flamenco
+```
+[Source](https://flamenco.blender.org/usage/manager-configuration/)
+
+`listen` is the single `host:port` the Manager binds — it serves the web UI, the REST API, and file submission via Flamenco's Shaman file-transfer system, all on one port. `shared_storage_path` is the render-output and `.blend`-file directory shared with every Worker; `local_manager_storage_path` holds Manager-only logs and preview renders that Workers never need. Flamenco explicitly requires `shared_storage_path` to be a real, synchronously-consistent shared filesystem (e.g. NFS) reachable at the same path by the Manager and every Worker — cloud sync tools such as Syncthing or Dropbox are explicitly called out as unsupported, since Flamenco assumes a written file is immediately visible to every other machine. [Source](https://flamenco.blender.org/usage/shared-storage/)
+
+**Worker configuration file.** `flamenco-worker.yaml` can be copied verbatim across every Worker machine:
+
+```yaml
+manager_url: http://flamenco.local:8080/
+task_types: [blender, ffmpeg, file-management, misc]
+restart_exit_code: 47
+
+# Optional advanced option, available on Linux only:
+oom_score_adjust: 500
+```
+[Source](https://flamenco.blender.org/usage/worker-configuration/)
+
+`task_types` declares which kinds of task that Worker will accept. Per-Worker identity and credentials live separately, in an auto-generated `flamenco-worker-credentials.yaml` and a local SQLite database (under `$HOME/.local/share/flamenco` on Linux) that admins aren't meant to hand-edit. [Source](https://flamenco.blender.org/usage/worker-configuration/) If `manager_url` is left blank, a Worker auto-discovers its Manager on the local network (server-side, this requires `autodiscoverable: true` in the Manager's YAML above); otherwise the URL is set explicitly, either in this file or on the command line.
+
+**Running the Worker as a systemd service.** Flamenco's own documentation gives a verbatim systemd unit for keeping a Worker alive and letting it restart itself in place (e.g. after a self-update):
+
+```ini
+[Unit]
+Description=Flamenco Worker connecting to Manager on localhost
+Documentation=https://localhost:8080/
+After=network.target
+
+[Service]
+Type=simple
+CPUSchedulingPolicy=idle
+Nice=19
+
+WorkingDirectory=/home/flamenco
+# Tell the Worker that it should exit with status code 47 in order to restart.
+ExecStart=/home/flamenco/flamenco-worker -manager http://localhost:8080/ -restart-exit-code 47
+
+User=flamenco
+Group=flamenco
+
+# Make systemd restart the service on exit code 47, as well as
+# 'failure' codes (such as hard crashes).
+RestartForceExitStatus=47
+Restart=on-failure
+
+EnvironmentFile=-/etc/default/locale
+
+[Install]
+WantedBy=multi-user.target
+```
+[Source](https://flamenco.blender.org/usage/worker-actions/)
+
+`CPUSchedulingPolicy=idle` and `Nice=19` are worth flagging for a render-node deployment specifically: they tell the Linux scheduler to only run the Worker process itself when nothing else needs the CPU, so it doesn't compete with the headless Blender render process it launches as a child. Note: needs verification — the upstream docs are internally inconsistent about this flag's exact name: the systemd unit above spells it `-restart-exit-code`, while a nearby paragraph on the same page spells it `-restart-exit-status`, and the YAML key is `restart_exit_code`; the Flamenco Go source itself was not reachable to resolve which spelling the binary actually accepts, so treat this as an upstream documentation inconsistency rather than a resolved fact, and verify against `flamenco-worker -help` output before scripting around it.
+
+**Routing jobs to specific machines: tags, not automatic GPU detection.** Flamenco's actual mechanism for steering work toward particular hardware is manually-assigned **worker tags**, assigned per-Worker entirely through the Manager's web interface rather than a config file or CLI command: a job carries at most one tag (or none), and a tagged job is only offered to Workers carrying that same tag, while an untagged job goes to any Worker. [Source](https://flamenco.blender.org/usage/worker-configuration/tags/) Tags are free-form admin-chosen strings — Blender Studio's own documentation examples use names like `EEVEE`, `Cycles`, and `Cycles GPU` — and Flamenco has no built-in awareness of what a tag is "for"; the docs are explicit that "Flamenco doesn't know what you want to use the tags for." [Source](https://flamenco.blender.org/usage/worker-configuration/tags/) This confirms the point in §9.1 concretely: tags are a coarse, manually-maintained pool-routing mechanism, not automatic GPU-capability detection — actual device selection still happens inside each machine's own Blender configuration, and (contrast with §9.5) there is no quantitative resource field like OpenCue's `minGpuMemory` to express "route this to a worker with at least N GB of VRAM free."
 
 **Multi-GPU nodes, more precisely.** Blender's device-ordering across multiple identical GPUs is not guaranteed stable enough to pin reliably from Blender's own render preferences alone, so Flamenco's FAQ recommends a more involved workaround than a single shared Blender install: run **one separate Blender installation per GPU**, each pinned to its specific card using the GPU vendor's own selection tooling (rather than relying solely on Blender's preferences panel), and start one Flamenco Worker per Blender install, with each Worker's `$PATH` pointing at its own dedicated Blender binary. [Source](https://flamenco.blender.org/faq/) A single-GPU-per-machine node is simpler — there, plain Blender render preferences are sufficient, and one Worker per machine is all that's needed.
 
-**Submitting and monitoring jobs.** Artists submit renders from inside Blender itself via the bundled add-on, downloaded from a link in the Manager's own web UI and configured with the Manager's URL; once installed, it adds a Flamenco panel to Blender's Output Properties tab. [Source](https://flamenco.blender.org/usage/quickstart/) Flamenco's built-in "Simple Blender Render" job type exposes Frames (e.g. `1-30`, `3, 5-10, 47-327`, or the scene's own range), Chunk Size (frames per task, default 1), and a Render Output Root plus path-component options for the final output path. [Source](https://flamenco.blender.org/usage/job-types/builtin/) Job and task progress, logs, and Worker administration (tags, sleep schedules) are all handled through the Manager's own embedded web interface on the configured `listen` port — Flamenco does not require a separate monitoring tool. [Source](https://flamenco.blender.org/usage/manager-configuration/) [Source](https://flamenco.blender.org/usage/jobs-tasks-commands/)
+**Submitting and monitoring jobs.** Artists submit renders from inside Blender itself via the bundled add-on, downloaded from a link in the Manager's own web UI and configured with the Manager's URL; once installed, it adds a Flamenco panel to Blender's Output Properties tab. [Source](https://flamenco.blender.org/usage/quickstart/) Flamenco's built-in "Simple Blender Render" job type exposes:
+
+- `Frames` (string, required) — e.g. `'47'`, `'1-30'`, `'3, 5-10, 47-327'`, or the scene's own range
+- `Chunk Size` (integer, default `1`) — frames rendered per Worker task
+- `Render Output Root` (string, required) — base output directory
+- `Add Path Components` (integer, default `0`) — path segments from the `.blend` file's own location appended to the output root
+- `Render Output Path` — computed, non-editable, derived from the two settings above
+
+[Source](https://flamenco.blender.org/usage/job-types/builtin/) A separate built-in "Single Image Render" job type tiles a single frame across Workers instead of chunking by frame, adding `Tile Size X`/`Tile Size Y` (pixels, default `64` each) and a single `Frame` field in place of the frame-range string. Job and task progress, logs, and Worker administration (tags, sleep schedules) are all handled through the Manager's own embedded web interface on the configured `listen` port — Flamenco does not require a separate monitoring tool. [Source](https://flamenco.blender.org/usage/manager-configuration/) [Source](https://flamenco.blender.org/usage/jobs-tasks-commands/)
 
 ### 9.3 GPU-Aware Dispatch on Linux
 
 A detail worth flagging for anyone deploying Flamenco on Linux GPU hardware, distinct from the tag-based routing above: **Flamenco itself has no concept of automatic per-worker GPU device detection or selection**. Which Cycles device (CPU, HIP, CUDA, OptiX, oneAPI) a Worker renders with is determined entirely by that machine's own Blender configuration, set up before the Worker process starts — Flamenco does not expose a job-level "use this GPU" parameter, only the coarse worker-tag mechanism described in §9.2. [Source](https://flamenco.blender.org/faq/) Note: needs verification — community-maintained third-party job types reportedly exist to make OptiX/Cycles device selection more explicit at the job level, but a specific, currently maintained project could not be confirmed at time of writing.
 
-### 9.4 Cloud Deployment
+### 9.4 Cloud Deployment: Flamenco Orchestra
 
-A documented cloud deployment pattern — referred to by the Blender Studio team as "Flamenco Orchestra" — uses Python tooling with OpenTofu (the open-source Terraform fork) to provision Manager and Worker instances on commodity cloud providers (Hetzner, DigitalOcean, GCP were named). GPU-backed droplets/instances are provisioned specifically for OptiX-accelerated Cycles rendering, while CPU spot instances handle the CPU rendering path for cost efficiency. [Source](https://studio.blender.org/blog/scaling-render-power-with-flamenco-orchestra/)
+**Motivation.** Blender Studio's own blog explains the problem Flamenco Orchestra solves in concrete production terms: "the final weeks of production are always intense. Shots are locked, lighting is finalized, and suddenly we need to render thousands of frames at full quality. Our in-house render farm handles daily work well, but during these crunch periods, we often need to scale up quickly." Rather than provision permanent hardware that sits idle most of the year, the studio turns to cloud compute for these bursts. [Source](https://studio.blender.org/blog/scaling-render-power-with-flamenco-orchestra/) Note: needs verification — the blog does not name a specific open-movie production as the motivating case; treat "an open movie at Blender Studio" as the only framing given.
 
-### 9.5 Landscape Beyond Flamenco
+**Repository layout.** Flamenco Orchestra (`projects.blender.org/studio/flamenco-orchestra`, GPLv3) is not one deployment but three independent OpenTofu (the open-source Terraform fork) configurations, one per cloud provider, each with its own subdirectory, `README.md`, `variables.tf`, `terraform.tfvars.example`, and `manage.py`: [Source](https://projects.blender.org/studio/flamenco-orchestra)
 
-Flamenco is Blender's dominant *official* render-farm story, but it is not the only tool in use. Larger VFX pipelines that already run OpenCue or commercial farm managers (e.g., Thinkbox Deadline) integrate Cycles/EEVEE renders as just another job type in those existing systems rather than adopting Flamenco. At the smaller end, hobbyist and small-studio setups frequently build custom SSH- or script-based dispatch across a handful of machines instead of running a full Manager/Worker deployment. Note: needs verification — this characterization of the smaller-scale landscape is based on community discussion rather than a primary architecture document, and should not be read as a comprehensive survey of every tool in use.
+| Directory | Provider | Worker type | Rendering |
+|---|---|---|---|
+| `do/` | DigitalOcean | GPU (L40S / RTX 6000) | OptiX / CUDA |
+| `gcp/` | Google Cloud | CPU (Spot VMs) | Cycles CPU |
+| `hz/` | Hetzner Cloud | CPU (ARM64 / x86) | Cycles CPU |
+
+All three deploy the same logical topology inside a provider VPC: a Manager droplet/instance exporting NFS-backed shared storage at `/mnt/nfs-share`, and N Worker nodes mounting that same path — satisfying Flamenco's shared-storage requirement (§9.2) entirely within the cloud farm. [Source](https://projects.blender.org/studio/flamenco-orchestra)
+
+**Configuring a deployment: `terraform.tfvars`.** Each provider directory ships a `terraform.tfvars.example` to copy and edit. The DigitalOcean example, reproduced verbatim:
+
+```hcl
+# Region where resources will be created
+# Available regions: nyc1, nyc3, sfo3, sgp1, lon1, fra1, tor1, blr1, etc.
+region = "nyc3"
+
+# Project name (used for resource naming)
+project_name = "flamenco-orchestra"
+
+# SSH key configuration
+ssh_key_name        = "flamenco-key"
+ssh_public_key_path = "~/.ssh/id_rsa.pub"
+
+# NFS server configuration
+nfs_server_size = "s-2vcpu-4gb"  # 2 vCPUs, 4GB RAM
+nfs_volume_size = 2048            # 2TB in GB
+
+# GPU workers configuration
+gpu_worker_count = 5
+gpu_worker_size  = "gd-gpu-l40s-1"  # NVIDIA L40S
+
+# Security: Restrict SSH access to your IP address
+# Replace 0.0.0.0/0 with your IP for better security (e.g., "1.2.3.4/32")
+allowed_ssh_sources = ["0.0.0.0/0"]
+
+# Security: Restrict http access to some IP addresses
+allowed_web_sources = ["0.0.0.0/0"]
+```
+[Source](https://projects.blender.org/studio/flamenco-orchestra/raw/branch/main/do/terraform.tfvars.example)
+
+`do_token` (the DigitalOcean API token) is deliberately commented out of the example file — it is meant to be supplied via the `DIGITALOCEAN_TOKEN` environment variable rather than committed to `terraform.tfvars`. State storage credentials for DigitalOcean Spaces (the S3-compatible backend `tofu init` uses to store `.tfstate` remotely) are loaded from a separate, gitignored `.env.local`:
+
+```bash
+cat > .env.local << 'EOF'
+export AWS_ACCESS_KEY_ID="your-spaces-access-key"
+export AWS_SECRET_ACCESS_KEY="your-spaces-secret-key"
+EOF
+source .env.local
+```
+[Source](https://projects.blender.org/studio/flamenco-orchestra/raw/branch/main/do/README.md)
+
+**Deploying and tearing down: raw OpenTofu.** Bring-up and teardown go through `tofu` directly, not a wrapper script:
+
+```bash
+source .env.local        # Spaces credentials for the state backend
+tofu init                # download providers, configure remote state
+tofu plan                # preview what will be created
+tofu apply                # provision Manager + NFS volume + GPU workers
+
+tofu output               # list connection info (IPs, URLs)
+$(tofu output -raw ssh_connection_flamenco_manager)   # SSH into the Manager
+open $(tofu output -raw flamenco_manager_url)         # open the web UI
+
+tofu destroy               # tear everything down (irreversible — backs up render output first)
+```
+[Source](https://projects.blender.org/studio/flamenco-orchestra/raw/branch/main/do/README.md)
+
+Exposing the Manager's port 8080 and SSH's port 22 directly to `0.0.0.0/0` (the tfvars example default) is explicitly flagged in the docs as unsafe for anything beyond a quick test; the recommended production alternative is an SSH tunnel rather than opening the web UI publicly:
+
+```bash
+ssh -L 8080:localhost:8080 root@<manager-ip>
+# then open http://localhost:8080 locally
+```
+[Source](https://projects.blender.org/studio/flamenco-orchestra/raw/branch/main/README.md)
+
+**Day-to-day operations: `manage.py`.** Once `tofu apply` has provisioned infrastructure, `manage.py` is a thin `argparse` CLI (confirmed by reading `do/manage.py` directly) that wraps `tofu` and `rsync`/`ssh` calls with Flamenco-specific defaults, rather than being a Flamenco API client itself:
+
+```
+./manage.py [-y|--yes] <command> [args]
+
+  status                          tofu output (IPs, URLs)
+  list                            list all droplets and their IPs
+  ssh <manager|N>                 ssh root@<ip> for the Manager or worker N
+  apply {firewall,all}            tofu apply -target=... (or full apply)
+  destroy {workers,manager,all}   tofu destroy -target=... (or full destroy)
+  recreate {workers,manager,all}  destroy then apply for that resource
+  sync-cache <path> [-n] [--ip]   rsync local dir -> manager:/mnt/nfs-share/caches/shots/
+  sync-renders <path> [-n] [--ip] rsync manager:/mnt/nfs-share/render/ -> local dir
+  update-blender <url> [--ip]     ssh in, wget + untar a new Blender build over NFS
+```
+[Source](https://projects.blender.org/studio/flamenco-orchestra/raw/branch/main/do/manage.py)
+
+For example, pulling finished frames down and pushing a new shot's assets up:
+
+```bash
+./manage.py sync-renders ~/renders --dry-run   # preview, no changes made
+./manage.py sync-renders ~/renders             # rsync -avz --ignore-existing from NFS
+./manage.py sync-cache ~/projects/shot_010     # rsync -avz up to the shared cache
+./manage.py update-blender https://download.blender.org/release/Blender5.0/blender-5.0.0-linux-x64.tar.xz
+```
+[Source](https://projects.blender.org/studio/flamenco-orchestra/raw/branch/main/do/manage.py)
+
+Note: needs verification — the DigitalOcean `README.md`'s own usage examples call these as standalone scripts, `./sync-renders.sh ~/renders` and `./update-blender.sh <url>`, which do not match the actual `manage.py` subcommand names read directly from source (`sync-renders`/`update-blender` as arguments to one script, not separate `.sh` files); this looks like stale documentation in the upstream repo rather than a second, undocumented set of scripts, but no `.sh` files of those names were found alongside `manage.py`. Treat the `./manage.py <subcommand>` form shown above, taken from the argparse source itself, as authoritative.
+
+**Scaling is manual, not autoscaled.** There is no queue-depth or idle-timeout logic anywhere in `manage.py` or the `.tf` files: growing or shrinking the farm means editing `gpu_worker_count` (or the equivalent CPU-worker variable in `gcp/`/`hz/`) in `terraform.tfvars` and re-running `tofu apply`, which lets OpenTofu diff the desired count against what's deployed and add or remove droplets accordingly. `./manage.py recreate workers -y` is the scripted shortcut for "destroy all workers, then reapply" when a clean rebuild is wanted instead of an incremental resize. A third-party contributor porting this tooling to Azure explicitly raised automated worker autoscaling as a *missing, requested* feature on Blender Studio's own devtalk forum — confirming it is not something Orchestra already does. [Source](https://devtalk.blender.org/t/added-azure-support-to-flamenco-orchestra-via-pr/45053)
+
+**Storage stays inside the cloud farm.** Rather than solving live shared storage between on-prem and cloud machines, Orchestra sidesteps the problem: each deployment is "a standalone Flamenco instance in the cloud (complete with its own Manager and Workers)... The cloud-based farm operates independently, so there's no complex integration with our local infrastructure. When rendering is done, it can be dismantled." [Source](https://studio.blender.org/blog/scaling-render-power-with-flamenco-orchestra/) The `sync-cache`/`sync-renders` `manage.py` subcommands above are the only bridge in or out.
+
+**Troubleshooting on the deployed nodes.** Because Workers are ordinary systemd-managed Linux VMs under a `flamenco-worker.service` unit (§9.2's systemd example is exactly what the cloud-init scripts install), the DigitalOcean README's troubleshooting steps are the same `systemctl`/`journalctl` commands used for any on-prem Worker, plus cloud-init and NFS-specific checks:
+
+```bash
+# Cloud-init progress after first boot
+cloud-init status --wait
+tail -f /var/log/cloud-init-output.log
+
+# Worker not connecting to the Manager
+systemctl status flamenco-worker
+journalctl -u flamenco-worker -f
+systemctl restart flamenco-worker
+
+# NFS mount problems
+showmount -e localhost                          # on the Manager
+nc -zv <manager-private-ip> 2049                 # on a Worker
+
+# GPU not detected (DigitalOcean GPU droplets)
+nvidia-smi
+cat /var/log/cloud-init-gpu.log
+```
+[Source](https://projects.blender.org/studio/flamenco-orchestra/raw/branch/main/do/README.md)
+
+**Instance types and cost.** The per-provider READMEs document concrete instance choices and self-reported cost estimates (explicitly dated, not guaranteed current): DigitalOcean's GPU path uses `gd-gpu-l40s-1` (NVIDIA L40S, ~$2.23/hr, ~$1,600/mo) or `gd-gpu-rtx6000-1` (NVIDIA RTX 6000, ~$1.34/hr, ~$960/mo) droplets for OptiX-accelerated Cycles rendering, alongside a small always-on `s-4vcpu-8gb` Manager droplet (~$0.06/hr, ~$48/mo) and per-GB NFS volume storage (~$0.10/GB/mo); GCP's CPU path defaults to `e2-standard-8` Spot/preemptible VMs (60–90% savings over on-demand, with the caveat that GCP can preempt a Spot VM with 30 seconds' notice), recommending `n2-highcpu-16` or `c3-highcpu-22` for production use; Hetzner Cloud's CPU path spans `cpx21` through `cpx51` (x86) and `cax21`/`cax41` (ARM64) shapes, priced from roughly €0.007/hr up to €0.039/hr. [Source](https://projects.blender.org/studio/flamenco-orchestra/raw/branch/main/do/README.md) All three provider configs pin a specific Blender release at cloud-init time, updated later via `manage.py update-blender <url>` without rebuilding the VM.
+
+**Status.** Flamenco Orchestra is a real, currently maintained, community-open project rather than a one-off internal script or a polished general product — Blender Studio's own framing is "this configuration works for our needs," and the README explicitly invites outside contributions (documentation, additional cloud providers, cost/performance optimization, security hardening). [Source](https://studio.blender.org/blog/scaling-render-power-with-flamenco-orchestra/) External contribution is already happening: a third party ported the GCP module to Azure and reported success with CPU workers on Blender Studio's forum. Note: needs verification — that Azure port had not landed in the repository's `main` branch (only `do/`, `gcp/`, and `hz/` directories were present) at time of writing, so Azure should be described as proposed/in-review, not shipped. [Source](https://devtalk.blender.org/t/added-azure-support-to-flamenco-orchestra-via-pr/45053)
+
+### 9.5 OpenCue
+
+Where Flamenco is Blender's own lightweight answer to render-farm management, OpenCue is the render manager used by large VFX/animation studios, and understanding it clarifies exactly what Flamenco deliberately leaves out.
+
+**Origin and governance.** OpenCue originated at Sony Pictures Imageworks as an evolution of Sony's internal queuing system, "Cue 3," used in production "over the past 15 years to schedule and manage tens of thousands of shots over hundreds of projects (over 150,000 simultaneous cores run so far)" before Sony and Google Cloud open-sourced it. [Source](https://www.aswf.io/news/openexr-and-opencue-join-aswf/) It is now hosted by the Academy Software Foundation (ASWF) alongside OpenEXR; newly accepted ASWF projects start in incubation and later graduate to full adoption. [Source](https://www.aswf.io/news/openexr-and-opencue-join-aswf/) Note: needs verification — OpenCue's current exact ASWF maturity stage (incubation vs. graduated) could not be confirmed directly at time of writing.
+
+**Architecture.** OpenCue's components are more numerous and more separated than Flamenco's two-binary model: **Cuebot** is the central Java scheduler/dispatch server (a typical deployment runs a single shared Cuebot instance, clusterable for scale), backed by **PostgreSQL** for all job/host/state data. [Source](https://docs.opencue.io/docs/concepts/opencue-overview/) **RQD** (Render Queue Daemon) is the per-render-host agent — the canonical implementation is Python (`pip install opencue-rqd`), communicating with Cuebot over gRPC; a newer Rust reimplementation ("openrqd") is documented as protocol-compatible and production-ready for most cases, with container/sandboxing features still experimental. [Source](https://docs.opencue.io/docs/getting-started/deploying-rqd/) [Source](https://docs.opencue.io/docs/reference/rust-rqd/) Around this core sit several separate client tools: **CueGUI** (job monitoring/admin, including a "CueCommander" host-management view), **CueSubmit** (a Qt/PySide2 job-submission app, standalone or embedded as a plug-in inside Maya/Nuke), **CueAdmin** and **Cueman** (admin CLIs), **PyCue** (the Python gRPC client API), **PyOutline** (a Python library for programmatically building job specifications), and an optional REST Gateway that translates HTTP calls to gRPC for non-Python clients. [Source](https://docs.opencue.io/docs/concepts/opencue-overview/)
+
+**Job model and multi-tenant scheduling.** OpenCue's job hierarchy is **Show → Job → Layer → Frame**: a Show groups all work for a production; a Job is a collection of Layers submitted as one script; a Layer holds a frame range and the command to run; a Frame is one concrete command invocation. [Source](https://www.opencue.io/docs/concepts/glossary/) Farm-sharing across productions is handled by **Allocations** (groups of render hosts tied to a facility and a tag), **Subscriptions** (which associate a Show with one or more Allocations, effectively granting that show a quota/slice of shared farm capacity), and **Tags** (assigned to both hosts and layers — a layer's frames only dispatch to a host sharing that tag). [Source](https://www.opencue.io/docs/concepts/glossary/) This Show/Subscription/Allocation layer is the piece Flamenco has no equivalent of at all — Flamenco assumes one farm serving one pool of work, not a shared facility partitioned by quota across simultaneous productions.
+
+**GPU-aware scheduling — the key contrast with Flamenco's tags.** Resource requirements (cores, memory, and GPU) are declared per Layer via a **Service** object, and OpenCue's Service model exposes genuinely quantitative GPU fields, not just a routing tag:
+
+```json
+"minGpus": 0,
+"maxGpus": 0,
+"minGpuMemory": 0,
+"minCores": 1,
+"maxCores": 8,
+"minMemory": 4294967296,
+"tags": ["nuke", "comp"],
+"threadable": true
+```
+[Source](https://docs.opencue.io/docs/reference/rest-api-reference/)
+
+CueGUI's host/frame monitoring surfaces matching live GPU accounting per host — `reserved_gpus`, `num_gpus`, `max_gpu_memory`, `used_gpu_memory`, `reserved_gpu_memory` — alongside the equivalent CPU-core and RAM stats it has always tracked. [Source](https://docs.opencue.io/docs/reference/cuecommander-technical-reference/) This is a materially more granular model than Flamenco's worker tags (§9.2): Flamenco can only route a job to *a* worker carrying the right tag, with no quantitative accounting of how much GPU memory that worker has free; OpenCue can express "this layer needs at least one GPU with at least this much memory" as a first-class scheduling constraint, alongside CPU/RAM, and Cuebot tracks per-host reservation state for it. Note: needs verification — the exact dispatcher-level algorithm for how Cuebot packs or oversubscribes concurrent frames against `minGpuMemory` was not confirmed from primary documentation; treat the claim as "the resource fields and per-host accounting exist and are exposed," not as a verified description of the scheduler's internal bin-packing logic.
+
+**Blender integration is native-but-thin, not DIY-only.** CueSubmit's standalone GUI ships a dedicated Blender job type — its source builds the render invocation directly (`blender -b -noaudio <file> ...` with output path/format fields from the submission form), so submitting an existing `.blend` file from outside Blender requires no custom code. [Source](https://github.com/AcademySoftwareFoundation/OpenCue/blob/master/cuesubmit/cuesubmit/Submission.py) What OpenCue does *not* ship is an in-Blender addon: CueSubmit's PySide2 plug-in mode is documented only for Maya and Nuke, with no Blender entry, [Source](https://github.com/AcademySoftwareFoundation/opencue.io/blob/master/content/docs/Getting%20started/installing-cuesubmit.md) and OpenCue's own DCC-integration tutorial's Blender example is a custom operator/panel that an artist writes themselves, calling into PyOutline's `outline.cuerun.launch()` to build and submit the job from inside Blender's UI. [Source](https://docs.opencue.io/docs/tutorials/dcc-integration/) In practice: submitting a finished file needs no coding via CueSubmit; a "Render → Submit to OpenCue" button *inside* Blender is something a studio's pipeline team builds itself, the same way most in-house Maya/Nuke-adjacent submission buttons are pipeline-specific rather than shipped by OpenCue.
+
+**Linux deployment.** For local development and testing, the OpenCue repository ships a `docker-compose.yml` that runs PostgreSQL, Cuebot, and RQD each in their own container ("the sandbox environment"). [Source](https://github.com/AcademySoftwareFoundation/OpenCue/blob/master/docker-compose.yml) For real render nodes, RQD is installed natively — via the `opencue-rqd` PyPI package or built from source into a Python virtualenv (the deployment guide's example targets Ubuntu 22.04). [Source](https://docs.opencue.io/docs/getting-started/deploying-rqd/) Note: needs verification — no official ASWF-maintained Helm chart for a Kubernetes production deployment could be confirmed; treat Kubernetes/container-orchestrated Cuebot deployment as something a studio assembles itself from the Docker images rather than an out-of-the-box artifact.
+
+### 9.6 Landscape Beyond Flamenco
+
+Flamenco is Blender's dominant *official* render-farm story, but it is not the only tool in use. Larger VFX pipelines that already run OpenCue (§9.5) or commercial farm managers (e.g., Thinkbox Deadline) integrate Cycles/EEVEE renders as just another job type in those existing systems rather than adopting Flamenco. At the smaller end, hobbyist and small-studio setups frequently build custom SSH- or script-based dispatch across a handful of machines instead of running a full Manager/Worker deployment. Note: needs verification — this characterization of the smaller-scale landscape is based on community discussion rather than a primary architecture document, and should not be read as a comprehensive survey of every tool in use.
 
 ---
 
@@ -1066,6 +1339,40 @@ Because Lab projects have no committed timeline, treat both as directional signa
 47. [Flamenco Shared Storage](https://flamenco.blender.org/usage/shared-storage/) — Requirement for a synchronously consistent shared filesystem between Manager and Workers; cloud-sync tools explicitly unsupported
 
 48. [Flamenco Built-in Job Types](https://flamenco.blender.org/usage/job-types/builtin/) — "Simple Blender Render" job settings: Frames, Chunk Size, Render Output Root
+
+49. [ASWF — OpenEXR and OpenCue join ASWF](https://www.aswf.io/news/openexr-and-opencue-join-aswf/) — OpenCue's origin at Sony Pictures Imageworks/Google Cloud and ASWF governance
+
+50. [OpenCue Overview — docs.opencue.io](https://docs.opencue.io/docs/concepts/opencue-overview/) — Cuebot/RQD/PostgreSQL architecture; CueGUI, CueSubmit, CueAdmin, PyCue, PyOutline, REST Gateway
+
+51. [OpenCue Glossary](https://www.opencue.io/docs/concepts/glossary/) — Show/Job/Layer/Frame job model; Allocation/Subscription/Facility/Tag/Service definitions
+
+52. [OpenCue REST API Reference](https://docs.opencue.io/docs/reference/rest-api-reference/) — Service object's minGpus/maxGpus/minGpuMemory resource fields
+
+53. [OpenCue CueCommander Technical Reference](https://docs.opencue.io/docs/reference/cuecommander-technical-reference/) — Per-host GPU reservation/usage stats surfaced in CueGUI
+
+54. [OpenCue — Deploying RQD](https://docs.opencue.io/docs/getting-started/deploying-rqd/) — Native pip/virtualenv RQD installation on render hosts
+
+55. [OpenCue — Rust RQD Reference](https://docs.opencue.io/docs/reference/rust-rqd/) — "openrqd" Rust reimplementation, protocol-compatible with Cuebot
+
+56. [OpenCue — DCC Integration Tutorial](https://docs.opencue.io/docs/tutorials/dcc-integration/) — Custom Blender operator pattern using PyOutline's `outline.cuerun.launch()`
+
+57. [OpenCue — Installing CueSubmit](https://github.com/AcademySoftwareFoundation/opencue.io/blob/master/content/docs/Getting%20started/installing-cuesubmit.md) — CueSubmit's PySide2 plug-in mode documented for Maya/Nuke only
+
+58. [OpenCue — cuesubmit/Submission.py](https://github.com/AcademySoftwareFoundation/OpenCue/blob/master/cuesubmit/cuesubmit/Submission.py) — Built-in Blender job-type command construction in CueSubmit's standalone GUI
+
+59. [OpenCue — docker-compose.yml](https://github.com/AcademySoftwareFoundation/OpenCue/blob/master/docker-compose.yml) — Local sandbox deployment: PostgreSQL, Cuebot, RQD containers
+
+60. [Flamenco Orchestra repository](https://projects.blender.org/studio/flamenco-orchestra) — GPLv3 OpenTofu/Python tooling; per-provider manage.py subcommands, sync-cache/sync-renders storage model, instance-type and cost tables
+
+61. [devtalk.blender.org — Added Azure support to Flamenco Orchestra via PR](https://devtalk.blender.org/t/added-azure-support-to-flamenco-orchestra-via-pr/45053) — Confirms no built-in autoscaling in Orchestra; unmerged third-party Azure port
+
+62. [Flamenco — Worker Actions](https://flamenco.blender.org/usage/worker-actions/) — Verbatim systemd unit for running `flamenco-worker` as a service; documents (and inconsistently spells) the `-restart-exit-code`/`-restart-exit-status` restart mechanism
+
+63. [Flamenco Orchestra — DigitalOcean README](https://projects.blender.org/studio/flamenco-orchestra/raw/branch/main/do/README.md) — Verbatim quickstart, `tofu`/SSH-tunnel/troubleshooting commands, and dated cost table for the DigitalOcean GPU module
+
+64. [Flamenco Orchestra — DigitalOcean terraform.tfvars.example](https://projects.blender.org/studio/flamenco-orchestra/raw/branch/main/do/terraform.tfvars.example) — Verbatim example Terraform/OpenTofu variables file for the DigitalOcean GPU worker module
+
+65. [Flamenco Orchestra — DigitalOcean manage.py](https://projects.blender.org/studio/flamenco-orchestra/raw/branch/main/do/manage.py) — Source of the actual `argparse` CLI (`status`/`list`/`ssh`/`apply`/`destroy`/`recreate`/`sync-cache`/`sync-renders`/`update-blender`); confirms no autoscaling logic and a README/script-name discrepancy
 
 ---
 
