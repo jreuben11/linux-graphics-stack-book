@@ -1546,6 +1546,24 @@ The practical read for a Linux-based Blender pipeline: Flamenco and OpenCue rema
 
 **What is not documented.** No named, direct integration exists between Flamenco, OpenCue, or Deadline and any specific world-model product (Genie, Cosmos, Marble, or otherwise) — the render-farm ecosystem and NVIDIA's Physical-AI/OSMO ecosystem currently run on separate orchestration stacks. Neither Flamenco's nor OpenCue's documentation mentions ML training or world-model workloads as a job type. Note: needs verification — no production case study could be found of a generative world model being used to preview a shot before committing it to path-traced rendering on a farm; the closest artifact is *PrevizWhiz*, a CHI 2026 academic paper combining rough 3D scenes with 2D generative image/video models for stylized previews, which is a research prototype rather than a documented studio workflow and has no described connection to render-farm dispatch. [Source](https://arxiv.org/abs/2602.03838) Treat "world models replacing or gating path-traced previz" as a forward-looking, unconfirmed idea rather than current practice.
 
+### 9.9 OpenEXR: The Render-Output Interchange Format
+
+Every render-farm system described in this section (§9.1-§9.7) exists to dispatch frames across machines and collect the results back onto shared storage — but it says nothing about what format those frames arrive in. In practice, that format is almost always **OpenEXR** (`.exr`). OpenEXR originated at Industrial Light & Magic as ILM's professional VFX image format and is now governed, like OpenCue (§9.6), by the **Academy Software Foundation**, under a BSD-3-Clause license. [Source](https://github.com/AcademySoftwareFoundation/openexr) It stores high-dynamic-range, scene-linear pixel data — typically as 16-bit float ("half") per channel, though 32-bit float is supported — with **arbitrary channel sets** rather than a fixed RGBA layout, and offers several lossless and visually-lossless compression schemes tuned for float data: PIZ, ZIP, PXR24, DWAA, DWAB, and B44. [Source](https://github.com/AcademySoftwareFoundation/openexr) It additionally supports deep compositing data and multi-part/multi-layer images, which is the specific capability that connects it to Blender's render-pass output.
+
+**Why render passes need OpenEXR specifically.** EEVEE Next's render-pass structure (§2.2) and Cycles' AOV (arbitrary output variable) system can output far more than a beauty (combined RGBA) image per frame — normals, cryptomatte object/material/asset mattes, denoising data, depth, and per-lightgroup passes are all separate channels of the same frame. Blender's Output Properties expose two distinct EXR file-format choices: plain **OpenEXR**, which writes only the Combined channel, and **OpenEXR MultiLayer**, which is required to write render passes and Cryptomatte as additional channels within a single file rather than as separate images. [Source](https://projects.blender.org/blender/blender/issues/88049) Bit depth is independently configurable as Half (16-bit) or Full (32-bit) float, but this choice is not uniform across all passes: Cryptomatte data must be stored losslessly at 32-bit to remain usable for downstream matte extraction, and Blender forces full-float precision for Cryptomatte and Z-depth passes regardless of the file-wide Half/Full setting, mirroring the same reasoning that keeps motion-vector and position passes at full float rather than half. [Source](https://projects.blender.org/blender/blender/issues/88049)
+
+```python
+# Configuring multilayer EXR output for a render-pass-heavy Cycles/EEVEE farm job
+# (bpy.types.RenderSettings / bpy.types.ImageFormatSettings)
+scene = bpy.context.scene
+scene.render.image_settings.file_format = 'OPEN_EXR_MULTILAYER'  # required for AOVs/Cryptomatte
+scene.render.image_settings.color_depth = '16'                   # Half float for beauty/lighting passes
+scene.render.image_settings.exr_codec = 'ZIP'                    # lossless; DWAA for smaller lossy output
+```
+*Source: [Blender Python API — `bpy.types.ImageFormatSettings`](https://docs.blender.org/api/current/bpy.types.ImageFormatSettings.html); property values confirmed against community EXR configuration examples.* [Source](https://artisticrender.com/how-and-why-to-use-exr-in-blender/)
+
+**Where this fits the farm pipeline.** A Flamenco or OpenCue job (§9.1-§9.6) that renders a shot writes one multilayer EXR per frame to the shared storage path each system requires (§9.5's `sync-renders` step is one concrete example of moving these files off a cloud worker); a compositor — Blender's own node-based compositor, or an external tool such as Nuke — then reads the AOVs back out of that same file for grading, cryptomatte-driven isolation, and denoising, without the farm orchestrator itself needing any awareness of the image format it is shuttling around. OpenEXR is therefore the interchange format that sits underneath, and is orthogonal to, every render-farm and color-management topic in this section and in §5.
+
 ---
 
 ## Roadmap
@@ -1738,6 +1756,12 @@ Because Lab projects have no committed timeline, treat both as directional signa
 65. [Flamenco Orchestra — DigitalOcean manage.py](https://projects.blender.org/studio/flamenco-orchestra/raw/branch/main/do/manage.py) — Source of the actual `argparse` CLI (`status`/`list`/`ssh`/`apply`/`destroy`/`recreate`/`sync-cache`/`sync-renders`/`update-blender`); confirms no autoscaling logic and a README/script-name discrepancy
 
 66. [Flamenco — Quickstart](https://flamenco.blender.org/usage/quickstart/) — Full end-to-end bring-up sequence: shared storage, per-machine Blender install, Setup Assistant, add-on installation, submission
+
+67. [OpenEXR repository — Academy Software Foundation](https://github.com/AcademySoftwareFoundation/openexr) — ILM origin, ASWF governance, BSD-3-Clause license, half-float/arbitrary channels, PIZ/ZIP/PXR24/DWAA/DWAB/B44 compression, deep and multi-part/multi-layer data
+
+68. [Blender Issue #88049 — Cryptomatte EXR Output Bit Depth](https://projects.blender.org/blender/blender/issues/88049) — OpenEXR MultiLayer requirement for render passes/Cryptomatte; forced 32-bit precision for Cryptomatte and Z-depth regardless of file-wide Half/Full setting
+
+69. [Blender Python API — `bpy.types.ImageFormatSettings`](https://docs.blender.org/api/current/bpy.types.ImageFormatSettings.html) — `file_format`, `color_depth`, `exr_codec` properties for EXR output configuration
 
 67. [OpenCue — Quick start for Linux](https://docs.opencue.io/docs/quick-starts/quick-start-linux/) — Verbatim Docker Compose sandbox bring-up; client-tool virtualenv install via `sandbox/install-client-sources.sh`; `cueadmin`/`cuesubmit`/`cuegui` verification steps
 
