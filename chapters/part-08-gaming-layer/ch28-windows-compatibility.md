@@ -18,10 +18,12 @@
 4. [VKD3D-Proton: D3D12 to Vulkan Translation](#4-vkd3d-proton-d3d12-to-vulkan-translation)
 5. [The Synchronisation Story: esync, fsync, and ntsync](#5-the-synchronisation-story-esync-fsync-and-ntsync)
 6. [Proton: The Distribution Framework](#6-proton-the-distribution-framework)
-7. [DirectStorage on Linux: Current State and Workarounds](#7-directstorage-on-linux-current-state-and-workarounds)
-8. [Performance Characteristics and Remaining Gaps](#8-performance-characteristics-and-remaining-gaps)
-9. [Integrations](#9-integrations)
-10. [References](#10-references)
+7. [Bottles: Sandboxed, Per-Application Wine Prefix Management](#7-bottles-sandboxed-per-application-wine-prefix-management)
+8. [DirectStorage on Linux: Current State and Workarounds](#8-directstorage-on-linux-current-state-and-workarounds)
+9. [Performance Characteristics and Remaining Gaps](#9-performance-characteristics-and-remaining-gaps)
+10. [RTX Remix: Open-Source Neural Rendering Remastering](#10-rtx-remix-open-source-neural-rendering-remastering)
+11. [Integrations](#11-integrations)
+12. [References](#12-references)
 
 ---
 
@@ -650,7 +652,47 @@ GloriousEggroll's community fork (Proton-GE, [`github.com/GloriousEggroll/proton
 
 ---
 
-## 7. DirectStorage on Linux: Current State and Workarounds
+## 7. Bottles: Sandboxed, Per-Application Wine Prefix Management
+
+Proton (§6) solves distribution for one specific case: a game launched through Steam, tuned by a centralised compatibility database, and run inside a Valve-curated container. **Bottles** ([`github.com/bottlesdevs/Bottles`](https://github.com/bottlesdevs/Bottles)) addresses a different, complementary problem — running arbitrary Windows software (games acquired outside Steam, creative and productivity applications, legacy utilities) each in its own isolated Wine prefix, managed through a general-purpose desktop GUI rather than a game launcher's compatibility layer. Where Proton is a single opinionated Wine build wrapped around one game process at a time, Bottles is a prefix manager: it creates, configures, and isolates any number of independent `WINEPREFIX` directories ("bottles"), each with its own runner version, DLL overrides, and installed dependencies, and exposes that configuration through a GTK4 interface rather than environment variables and launch options.
+
+Bottles is written in **Python** with a **GTK4**/**libadwaita** front end, built with **Meson**, and licensed under **GPL-3.0**. [Source: Bottles repository](https://github.com/bottlesdevs/Bottles) Its primary distribution channel is **Flatpak** via Flathub, under the application ID `com.usebottles.bottles`. [Source: Bottles repository](https://github.com/bottlesdevs/Bottles) This is an architectural fork from Proton's approach to isolation: Proton's pressure-vessel (§6) is a bespoke bubblewrap-based container built around a Valve-curated Steam Runtime rootfs, invoked per-game at launch time by Steam. Bottles instead runs as an ordinary Flatpak application, confined by the standard Flatpak sandbox — bubblewrap plus the `xdg-desktop-portal` broker APIs (Chapter 23, Chapter 111, Chapter 207) — and each bottle it creates is a Wine prefix living inside that sandbox's writable data directory, not a separate container per prefix.
+
+### Environments and Bottles: The Configuration Model
+
+Bottles distinguishes two concepts that are easy to conflate. A **Bottle** is an isolated Wine prefix — the actual `WINEPREFIX` directory tree, registry, and installed Windows-side dependencies for one piece of software. An **Environment** is a preconfigured template applied when a bottle is created, bundling a runner choice, DLL overrides, and dependency set suited to a class of software. [Source: Bottles docs — Environments](https://docs.usebottles.com/getting-started/environments) Three environments ship by default:
+
+- **Gaming** — DXVK enabled, VKD3D disabled, Esync active, discrete-GPU support, PulseAudio latency reduced to 60ms, a curated set of DirectX DLL overrides (`d3dx9`, versioned `d3dcompiler`), Microsoft Line Services, and the Arial/Times/Courier font set.
+- **Application** — both DXVK **and** VKD3D enabled, the same font set, and Wine Mono installed in place of the native .NET Framework — tuned for creative and productivity software rather than games specifically.
+- **Custom** — no preset components at all; the user selects a runner and builds up the configuration manually.
+
+[Source: Bottles docs — Environments](https://docs.usebottles.com/getting-started/environments)
+
+Environments are starting points, not locks: any bottle's runner, DLL overrides, and installed components can be changed after creation through the same preferences panel, regardless of which environment it was created from. [Source: Bottles docs — Environments](https://docs.usebottles.com/getting-started/environments)
+
+### Runners: Wine Forks and Proton as Interchangeable Backends
+
+Each bottle runs against a **runner** — a specific Wine or Proton build selected independently of the environment preset. Bottles ships two Wine-based runners of its own: **Vaniglia**, a near-vanilla build carrying only `wine-staging` patches, and **Caffe**, Bottles' own more heavily patched runner carrying additional gaming- and software-compatibility fixes; Caffe is the default across all environments. [Source: Bottles docs — Runners](https://docs.usebottles.com/components/runners) Two Proton-based runners are also available: the community **Proton-GE** fork (GloriousEggroll) and Valve's own **Proton**. The documentation frames Proton-class runners as appropriate "only in special cases where there is a patch for a specific video game," recommending the Wine-based runners for general use; switching to a Proton-based runner requires creating a bottle under the Custom environment (or changing an existing bottle's runner in its preferences afterward). [Source: Bottles docs — Runners](https://docs.usebottles.com/components/runners) All runners are fetched on demand from a community-maintained GitHub repository through the Preferences panel's download UI, not bundled into the Flatpak.
+
+### Components: A Decoupled Release Cycle for DXVK, VKD3D, NVAPI, and LatencyFleX
+
+DXVK, VKD3D, NVAPI (via `dxvk-nvapi`, §6), and **LatencyFleX** are tracked as separately versioned "components," each selectable per-bottle independently of the runner. Their manifests and checksums live in a dedicated repository, [`github.com/bottlesdevs/components`](https://github.com/bottlesdevs/components), deliberately decoupled from the main application's own release cadence so that a new DXVK point release can reach users without waiting for a Bottles application update. [Source: Bottles components repository](https://github.com/bottlesdevs/components) Two environment variables support development against this repository: `LOCAL_COMPONENTS=/path/to/components flatpak run com.usebottles.bottles` points the app at a local component checkout for testing unpublished manifests, and `TESTING_REPOS=1` enables an in-progress `testing.yml` index for validating new component versions before they are promoted to the production index. [Source: Bottles components repository](https://github.com/bottlesdevs/components)
+
+### Sandbox Filesystem Access
+
+Running as a Flatpak confines Bottles' default filesystem visibility to its own data directory, `~/.var/app/com.usebottles.bottles/data`, plus whatever paths the user opens through portal file-choosers. [Source: Bottles docs — Expose directories](https://docs.usebottles.com/flatpak/expose-directories) This matters in two recurring situations: Bottles' own prefix-importer needs to see Wine prefixes created by other tools (e.g., Lutris) to offer migration, and a runner's native file-open dialog may need to browse a location outside the sandbox default. Bottles exposes a dedicated "Expose directories" preference for this, and the same effect can be reached directly:
+
+```bash
+# Grant Bottles read/write access to an external directory, e.g. to let
+# its prefix importer discover Lutris-managed Wine prefixes under ~/Games
+flatpak override --user --filesystem="$HOME/Games" com.usebottles.bottles
+```
+
+The documentation's stated best practice is to expose individual directories one at a time through this mechanism (or the equivalent **Flatseal** GUI) rather than granting broad filesystem access, preserving the sandbox's containment for prefixes and components that do not need it. [Source: Bottles docs — Expose directories](https://docs.usebottles.com/flatpak/expose-directories)
+
+---
+
+## 8. DirectStorage on Linux: Current State and Workarounds
 
 ### What DirectStorage Does
 
@@ -732,7 +774,7 @@ As of 2025, VKD3D-Proton's issue tracker contains open items for native io_uring
 
 ---
 
-## 8. Performance Characteristics and Remaining Gaps
+## 9. Performance Characteristics and Remaining Gaps
 
 ### Where the Overhead Lives
 
@@ -763,14 +805,14 @@ A common empirical observation in the Linux gaming community is that well-optimi
 ### Known Gaps as of 2025
 
 - **D3D12 Mesh Shaders**: partially supported in VKD3D-Proton; RADV mesh shader support landed in Mesa 23.x; some complex mesh shader workloads are not yet fully emulated.
-- **DirectStorage**: staging fallback only, as described in Section 7; GPU GDeflate decompression and NVMe bypass not implemented.
+- **DirectStorage**: staging fallback only, as described in Section 8; GPU GDeflate decompression and NVMe bypass not implemented.
 - **DirectML**: no Vulkan equivalent exists for DirectML's machine-learning inference API; DirectML-dependent features (DLSS 3.5 Frame Generation, neural texture decompression) are unavailable through VKD3D-Proton.
 - **D3D12 Work Graphs**: an experimental D3D12 feature for GPU-driven workload dispatch; VKD3D-Proton support is partial as of 2025, tracking driver availability of `VK_EXT_device_generated_commands`.
 - **Kernel-level anti-cheat**: architectural barrier, not a compatibility gap with a near-term solution.
 
 ---
 
-## 9. RTX Remix: Open-Source Neural Rendering Remastering
+## 10. RTX Remix: Open-Source Neural Rendering Remastering
 
 RTX Remix 1.0 (released March 2025, MIT license) is a game remastering toolkit that replaces the legacy D3D8/D3D9 rendering in classic titles with full path tracing, DLSS 4, and Neural Radiance Cache, using open asset replacement via USD. [Source: RTX Remix GitHub, github.com/NVIDIAGameWorks/rtx-remix](https://github.com/NVIDIAGameWorks/rtx-remix)
 
@@ -843,13 +885,13 @@ The Steam Deck's commercial success between 2022 and 2025 settled the central vi
 
 **Permanent infrastructure.** DXVK and VKD3D-Proton are not transitional compatibility shims waiting to be retired when native ports arrive or when Windows gaming shrinks. They are the Linux gaming stack for Windows titles, maintained by Valve under full-time engineering contracts, with active contributions from the broader open-source community. The trajectory is not toward obsolescence but toward completeness — closing the remaining gaps in D3D12 Mesh Shader coverage, Work Graphs, DirectStorage GPU decompression, and DXR feature parity. The operative question for the next five years is not "when will we no longer need translation layers?" but "how close to 100% compatibility with the Windows catalogue can the DXVK and VKD3D-Proton pipelines reach, and which blocked titles will cross the compatibility threshold as each release lands?"
 
-## 10. Integrations
+## 11. Integrations
 
 **Chapter 1 (DRM Architecture and Render Nodes).** Wine, DXVK, and VKD3D-Proton processes open `/dev/dri/renderDN` render nodes directly for GPU access. The unprivileged render node model is essential: it allows the Wine process running inside a pressure-vessel bubblewrap container — which may not have root — to access the GPU without privilege escalation. The render node permission model is detailed in Chapter 1.
 
 **Chapter 3 (Explicit Synchronisation).** ntsync's kernel design — moving sync-object semantics into the kernel as first-class objects managed by the scheduler — parallels the explicit sync work for Wayland (`wp_linux_drm_syncobj`) covered in Chapter 3. Both represent the pattern of promoting synchronisation semantics from user-space hacks into kernel infrastructure. DXVK's and VKD3D-Proton's timeline semaphore usage connects to the explicit sync path in Mesa covered in Chapters 3 and 18.
 
-**Chapter 4 (DMA-BUF and GEM).** DXVK and VKD3D-Proton allocate Vulkan device memory that ultimately comes from GEM objects in `amdgpu` or `i915`. The memory type selection (device-local BAR vs. host-visible) described in Chapter 4 determines which `VkMemoryType` DXVK picks for staging buffers vs. render-target allocations. The DirectStorage staging fallback (Section 7) uses host-visible GEM-backed memory for the CPU-written staging buffer.
+**Chapter 4 (DMA-BUF and GEM).** DXVK and VKD3D-Proton allocate Vulkan device memory that ultimately comes from GEM objects in `amdgpu` or `i915`. The memory type selection (device-local BAR vs. host-visible) described in Chapter 4 determines which `VkMemoryType` DXVK picks for staging buffers vs. render-target allocations. The DirectStorage staging fallback (Section 8) uses host-visible GEM-backed memory for the CPU-written staging buffer.
 
 **Chapter 14 (NIR).** DXVK converts DXBC to SPIR-V and hands it to Mesa's SPIR-V→NIR front end; VKD3D-Proton converts DXIL to SPIR-V via `dxil-spirv` and takes the same NIR path. The async compilation jobs in DXVK are essentially parallel NIR compilation threads exercising Mesa's concurrent compiler infrastructure.
 
@@ -863,13 +905,15 @@ The Steam Deck's commercial success between 2022 and 2025 settled the central vi
 
 **Chapter 22 (gamescope).** Proton games on the Steam Deck run nested inside gamescope. The interaction between DXVK's swapchain, Proton's pressure-vessel environment, `winewayland.drv`, and gamescope's nested Wayland compositor constitutes the complete end-to-end graphics path for Steam Deck gaming, covered in Chapter 22.
 
-**Chapter 25 (GPU Compute and io_uring).** The io_uring async IO substrate discussed in Section 7 as the Linux-native DirectStorage equivalent is the same kernel interface covered in Chapter 25 for GPU compute workloads. The `O_DIRECT` + `io_uring_prep_read` into GPU-mapped buffers pattern connects asset streaming and compute chapters.
+**Chapter 25 (GPU Compute and io_uring).** The io_uring async IO substrate discussed in Section 8 as the Linux-native DirectStorage equivalent is the same kernel interface covered in Chapter 25 for GPU compute workloads. The `O_DIRECT` + `io_uring_prep_read` into GPU-mapped buffers pattern connects asset streaming and compute chapters.
+
+**Chapter 23 (Legacy and Sandboxed App Support), Chapter 111 (Flatpak Graphics), and Chapter 207 (XDG Desktop Portal).** Bottles (§7) is an ordinary Flatpak application, not a bespoke container like Proton's pressure-vessel: it inherits the standard bubblewrap sandbox and `xdg-desktop-portal` broker model covered in these three chapters, including the file-chooser portal that mediates access to Wine prefixes outside its default data directory. The `flatpak override --filesystem=` mechanism used to broaden Bottles' sandbox visibility is the same permission model these chapters describe for GPU device access and portal-mediated file/screen sharing generally.
 
 **Chapter 27 (VR/AR with OpenXR).** OpenXR runtimes like Monado and the SteamVR Linux runtime must interoperate with DXVK and VKD3D-Proton for VR-enabled games running through Proton. Swapchain image sharing between the D3D translation layer and the OpenXR compositor uses Vulkan external memory and external semaphore extensions.
 
 **Chapter 29 (Upscaling and Overlays).** gamescope's FSR operates on top of the Proton layer, post-processing the final composited frame after the game's swapchain presents. MangoHud is enabled via a Vulkan layer that intercepts DXVK's and VKD3D-Proton's `vkQueuePresentKHR` calls.
 
-**Chapter 30 (Debugging and Profiling).** RenderDoc can capture DXVK frames at the Vulkan API boundary; the DXVK HUD (`DXVK_HUD=full`) exposes internal DXVK metrics including pipeline compilation counts and frame times. `VK_LAYER_KHRONOS_validation` intercepts DXVK's Vulkan calls for correctness debugging. `radeontop` and `intel_gpu_top`, introduced in Section 7 for DirectStorage diagnosis, are the primary GPU-utilisation tools in Chapter 30's profiling workflow.
+**Chapter 30 (Debugging and Profiling).** RenderDoc can capture DXVK frames at the Vulkan API boundary; the DXVK HUD (`DXVK_HUD=full`) exposes internal DXVK metrics including pipeline compilation counts and frame times. `VK_LAYER_KHRONOS_validation` intercepts DXVK's Vulkan calls for correctness debugging. `radeontop` and `intel_gpu_top`, introduced in Section 8 for DirectStorage diagnosis, are the primary GPU-utilisation tools in Chapter 30's profiling workflow.
 
 ---
 
@@ -900,7 +944,7 @@ The Steam Deck's commercial success between 2022 and 2025 settled the central vi
 
 ---
 
-## 10. References
+## 12. References
 
 1. Wine source tree: [`https://gitlab.winehq.org/wine/wine`](https://gitlab.winehq.org/wine/wine) — `dlls/ntdll/loader.c`, `server/request.h`, `dlls/ntdll/unix/sync.c`
 
@@ -951,6 +995,16 @@ The Steam Deck's commercial success between 2022 and 2025 settled the central vi
 24. Notes on Wine architecture and process startup (ArcaneNibble): [`https://arcanenibble.github.io/notes-on-wine-architecture-and-process-startup.html`](https://arcanenibble.github.io/notes-on-wine-architecture-and-process-startup.html)
 
 25. Wine 11.0 NTSYNC and WoW64 coverage: [`https://windowsforum.com/threads/wine-11-0-ntsync-wow64-overhaul-and-wayland-updates-for-better-linux-gaming.406839/`](https://windowsforum.com/threads/wine-11-0-ntsync-wow64-overhaul-and-wayland-updates-for-better-linux-gaming.406839/)
+
+26. Bottles repository: [`https://github.com/bottlesdevs/Bottles`](https://github.com/bottlesdevs/Bottles) — Python/GTK4/libadwaita source, Flatpak manifests, `meson.build`
+
+27. Bottles documentation — Environments: [`https://docs.usebottles.com/getting-started/environments`](https://docs.usebottles.com/getting-started/environments)
+
+28. Bottles documentation — Runners: [`https://docs.usebottles.com/components/runners`](https://docs.usebottles.com/components/runners)
+
+29. Bottles components repository: [`https://github.com/bottlesdevs/components`](https://github.com/bottlesdevs/components) — DXVK/VKD3D/NVAPI/LatencyFleX manifests, `LOCAL_COMPONENTS`/`TESTING_REPOS` overrides
+
+30. Bottles documentation — Expose directories: [`https://docs.usebottles.com/flatpak/expose-directories`](https://docs.usebottles.com/flatpak/expose-directories)
 
 ---
 
