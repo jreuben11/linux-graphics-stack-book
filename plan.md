@@ -185,6 +185,7 @@ Chapters signal which perspective is emphasised where they diverge.
 - **Part XXII — Additional Chapters**
   - [Chapter 116: RISC-V GPU Drivers](#chapter-116-risc-v-gpu-drivers) *(Part II)*
   - [Chapter 117: Slang — Differentiable and Modular Shading Language](#chapter-117-slang--differentiable-and-modular-shading-language) *(Part XV)*
+  - [Chapter 240: NVIDIA Cosmos, OSMO, and Omniverse Farm — Orchestrating Physical AI at Scale](#chapter-240-nvidia-cosmos-osmo-and-omniverse-farm--orchestrating-physical-ai-at-scale) *(Part XV)*
   - [Chapter 118: NAK — The Nouveau/NVK Rust Shader Compiler](#chapter-118-nak--the-nouveaunk-rust-shader-compiler) *(Part III)*
   - [Chapter 119: Zink — OpenGL on Vulkan](#chapter-119-zink--opengl-on-vulkan) *(Part IV)*
   - [Chapter 120: GPU Memory Management Internals — TTM, GEM, and BAR](#chapter-120-gpu-memory-management-internals--ttm-gem-and-bar) *(Part I)*
@@ -2379,6 +2380,17 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 - Compilation targets: SPIR-V (Vulkan), DXIL (D3D12), CUDA PTX, CPU fallback; `slangc` compiler; C API via `SlangCompileRequest`
 - Integration: Falcor renderer; Vulkan SPIR-V output to RADV/ANV/NVK; PySlang Python bindings; ROCm/HIP via SPIR-V
 - **Integrations**: Ch14 (NIR — Slang SPIR-V → spirv_to_nir), Ch24 (Vulkan), Ch66 (CUDA PTX target), Ch110 (SPIR-V toolchain), Ch115 (NeRFStudio neural rendering workloads)
+
+### Chapter 240: NVIDIA Cosmos, OSMO, and Omniverse Farm — Orchestrating Physical AI at Scale *(Part XV)*
+
+- Overview: the "Three Computer Problem" (training clusters, simulation, edge devices) that generic render/job farms don't solve
+- NVIDIA Cosmos: world foundation model family (Predict, Transfer, Reason, Cosmos 3/Cosmos3-Generator); NIM microservice deployment via Triton/NGC; NVIDIA Open Model License and OpenMDW-1.1 licensing; Cosmos-Curate GPU-accelerated curation on Ray/Cosmos-Xenna
+- OSMO: Kubernetes-native, Apache 2.0 workflow orchestrator (github.com/NVIDIA/OSMO); YAML task-graph workflows; multi-cluster federation and smart scheduling across RTX Pro/GB200/Jetson AGX Thor platforms; plug-and-play backend registration via outbound-connecting operator agents; agentic-orchestrator design (agent context file for Claude Code/Codex/Cursor)
+- Omniverse Farm: Farm Queue/Farm Agent microservice architecture for Kit-application job dispatch (headless rendering, Replicator synthetic data, USD Composer batch jobs); standalone/VM/Kubernetes/cloud deployment topologies
+- OSMO vs. Omniverse Farm comparison table: general Physical AI orchestration vs. Kit-application-scoped job dispatch
+- Physical AI Data Factory Blueprint (GTC 2026): Curate (Cosmos-Curate) → Augment (Cosmos Transfer) → Evaluate (Cosmos Evaluator/Cosmos Reason) pipeline orchestrated by OSMO; GR00T-Mimic/GR00T-Dreams case study (780,000 synthetic trajectories in 11 hours, 40% performance improvement); partner ecosystem (Azure, Nebius, FieldAI, Skild AI, Uber, and others)
+- Linux deployment specifics: NVIDIA device plugin, GPU Operator, GPU Feature Discovery node labeling for Kubernetes GPU scheduling; NCCL multi-node training backends; Farm Agent as a systemd service vs. Kubernetes-managed pod
+- **Integrations**: Ch25 (GPU compute fundamentals), Ch42 (Blender render farms — superseded §9.8 overview), Ch59 (DeepStream Cosmos Reason 2 integration), Ch66 (CUDA MPS/MIG, NCCL collectives), Ch69 (Omniverse headless Kit rendering, NGC container deployment), Ch117 (Cosmos model architecture on the Slang stack), Ch211 (ROS 2 sensor pipelines as Curate-stage data source), Ch232 (Cosmos Transfer structured-signal conditioning)
 
 ### Chapter 118: NAK — The Nouveau/NVK Rust Shader Compiler *(Part III)*
 
