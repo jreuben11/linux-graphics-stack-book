@@ -52,22 +52,35 @@ A note on source access: the UE5 source tree is available to registered GitHub u
 
 Epic Games has maintained Linux as a first-class target platform since UE4, and UE5 continues that commitment. The Linux support in UE5 spans both the Unreal Editor itself (for development workflows) and shipping game builds. As of UE5.8, the latest stable release at the time of writing (released June 17, 2026), Linux targets Vulkan as its primary graphics API; OpenGL support has been deprecated and is no longer a supported path for UE5 rendering. [Source](https://www.unrealengine.com/news/state-of-unreal-2026-top-news-from-the-show)
 
-Official hardware and software requirements are documented at [Linux Development Requirements for Unreal Engine](https://dev.epicgames.com/documentation/en-us/unreal-engine/linux-development-requirements-for-unreal-engine). **Note: the body content of the requirements page was not retrievable during research; the following reflects known UE5 Linux prerequisites — verify against current Epic documentation before shipping.** The primary supported distributions are Ubuntu 22.04 LTS and Ubuntu 24.04 LTS; other distributions are supported in a "best-effort" capacity. The minimum GPU tier for basic Vulkan rendering is any GPU supporting Vulkan 1.1; hardware ray tracing and hardware Lumen require NVIDIA RTX 2000-series or higher, or AMD RX 6000-series (RDNA2) or higher. [Source](https://dev.epicgames.com/documentation/en-us/unreal-engine/hardware-and-software-specifications-for-unreal-engine)
+Official hardware and software requirements are documented at [Linux Development Requirements for Unreal Engine](https://dev.epicgames.com/documentation/en-us/unreal-engine/linux-development-requirements-for-unreal-engine). **Note: the body content of the requirements page was not retrievable during research; the following reflects known UE5 Linux prerequisites — verify against current Epic documentation before shipping.** Known prerequisites include: [Source](https://dev.epicgames.com/documentation/en-us/unreal-engine/hardware-and-software-specifications-for-unreal-engine)
+
+- **Supported distributions** — Ubuntu 22.04 LTS and Ubuntu 24.04 LTS are primary targets; other distributions are supported in a "best-effort" capacity
+- **Minimum GPU tier** — any GPU supporting Vulkan 1.1 is required for basic Vulkan rendering
+- **Ray tracing tier** — hardware ray tracing and hardware Lumen require NVIDIA RTX 2000-series or higher, or AMD RX 6000-series (RDNA2) or higher
 
 ### Steam Deck as the Key Linux Platform
 
-The Steam Deck, Valve's handheld gaming PC, has become the most important Linux deployment target for UE5 games. The Steam Deck uses an AMD Van Gogh APU with an RDNA2 GPU, running SteamOS 3 (based on Arch Linux with a Steam Runtime container). Its fixed display is 1280×800 at 800p, with a 60 Hz refresh rate ceiling (extendable to 90 Hz on Steam Deck OLED). [Source](https://www.steamdeckhq.com/news/unreal-engine-5-can-run-on-the-steam-deck/)
+The Steam Deck, Valve's handheld gaming PC, has become the most important Linux deployment target for UE5 games. [Source](https://www.steamdeckhq.com/news/unreal-engine-5-can-run-on-the-steam-deck/) Its hardware and software profile:
+
+- **APU/GPU** — an AMD Van Gogh APU with an RDNA2 GPU
+- **OS** — SteamOS 3, based on Arch Linux with a Steam Runtime container
+- **Display** — a fixed 1280×800 panel at 800p, with a 60 Hz refresh rate ceiling (extendable to 90 Hz on Steam Deck OLED)
 
 UE5 games reach the Steam Deck through two paths:
 
-1. **Native Linux builds**: The game is compiled for Linux (x86_64), packaged as a Linux Steam depot, and runs directly on SteamOS 3. This is the recommended path for games with active Linux support.
-2. **Proton (Windows builds via compatibility layer)**: The Windows build runs under Proton, Valve's Wine+DXVK/VKD3D-Proton translation layer. UE5 games using DirectX 12 go through VKD3D-Proton to reach Vulkan; games using DirectX 11 go through DXVK. The Steam Overlay injection works in both cases via Proton's Vulkan layer mechanism.
+- **Native Linux builds** — the game is compiled for Linux (x86_64), packaged as a Linux Steam depot, and runs directly on SteamOS 3; this is the recommended path for games with active Linux support
+- **Proton (Windows builds via compatibility layer)** — the Windows build runs under Proton, Valve's Wine+DXVK/VKD3D-Proton translation layer; UE5 games using DirectX 12 go through VKD3D-Proton to reach Vulkan, while games using DirectX 11 go through DXVK; the Steam Overlay injection works in both cases via Proton's Vulkan layer mechanism
 
 The ProtonDB community database ([protondb.com](https://www.protondb.com)) tracks per-title compatibility, and a majority of UE5 titles reach "Gold" or "Platinum" status under Proton even without native builds. However, for titles that target the Steam Deck as a primary platform, native Linux builds are preferable: they eliminate the Proton translation overhead, allow direct use of the Steam Deck's hardware audio stack, and give developers direct access to SteamOS-specific features via the Steamworks SDK.
 
 ### Wayland Status and Window Management
 
-As of UE5.7–5.8, UE5 on Linux uses SDL for window management. UE5.7 migrated from SDL2 to SDL3 (build 3.2.10). [Source](https://dev.epicgames.com/documentation/unreal-engine/updating-unreal-engine-on-linux-to-sdl3) Pure Wayland mode in SDL3 is **not yet functional** for the Unreal Editor: mouse click events are not correctly received when `SDL_VIDEODRIVER=wayland` is set, though touch events work. Epic's official position is that Wayland is not supported, and the recommended mode is XWayland (the X11 compatibility layer over Wayland), which runs normally. Game builds in fullscreen mode on SteamOS 3 run under Gamescope (Chapter 78), which handles the Wayland compositor layer transparently.
+As of UE5.7–5.8, UE5 on Linux uses SDL for window management:
+
+- **SDL migration** — UE5.7 migrated from SDL2 to SDL3 (build 3.2.10) [Source](https://dev.epicgames.com/documentation/unreal-engine/updating-unreal-engine-on-linux-to-sdl3)
+- **Wayland mode** — pure Wayland mode in SDL3 is **not yet functional** for the Unreal Editor: mouse click events are not correctly received when `SDL_VIDEODRIVER=wayland` is set, though touch events work
+- **Recommended mode** — Epic's official position is that Wayland is not supported; the recommended mode is XWayland (the X11 compatibility layer over Wayland), which runs normally
+- **Fullscreen game builds** — on SteamOS 3 run under Gamescope (Chapter 78), which handles the Wayland compositor layer transparently
 
 ### SteamOS 3 and the Steam Runtime
 
@@ -77,19 +90,36 @@ SteamOS 3 uses the Arch Linux package ecosystem for its read-only base layer, co
 
 The Rendering Hardware Interface (RHI) is UE5's cross-platform graphics API abstraction layer. The problem it solves is fundamental to a large engine: systems like Nanite, Lumen, and Niagara record GPU work using a single set of C++ types and command semantics — `FRHICommandList`, `FRHIBuffer`, `FRHITexture` — without any knowledge of whether the underlying API is Vulkan, D3D12, or Metal. Backend implementations translate those abstract commands into API-specific calls at submission time. On Linux, the Vulkan RHI backend is the only supported path; OpenGL support was deprecated in UE5.
 
-The RHI operates across three cooperating threads: the game thread drives scene updates, the render thread records commands into `FRHICommandList` objects one frame ahead, and a dedicated RHI thread consumes those lists and issues actual Vulkan calls (`vkCmdDraw`, `vkCmdDispatch`, `vkQueueSubmit`). This three-stage pipeline decouples the cost of Vulkan submission from the render thread's frame budget and is the reason UE5 can sustain high throughput even when PSO compilation occurs in the background. Section 2 covers the RHI architecture in detail, and Section 3 covers the Vulkan backend that implements it on Linux.
+The RHI operates across three cooperating threads:
+
+- **Game thread** — drives scene updates
+- **Render thread** — records commands into `FRHICommandList` objects one frame ahead
+- **RHI thread** — consumes those lists and issues actual Vulkan calls (`vkCmdDraw`, `vkCmdDispatch`, `vkQueueSubmit`)
+
+This three-stage pipeline decouples the cost of Vulkan submission from the render thread's frame budget and is the reason UE5 can sustain high throughput even when PSO compilation occurs in the background. Section 2 covers the RHI architecture in detail, and Section 3 covers the Vulkan backend that implements it on Linux.
 
 ### 1.2 What is Nanite?
 
-Nanite is UE5's virtualized geometry system. Traditional real-time rendering requires artists to author multiple level-of-detail (LOD) meshes for each asset and embed hand-tuned distance thresholds; the process is expensive, error-prone, and imposes hard polygon budgets on scene complexity. Nanite removes this constraint entirely. Geometry is stored in a compressed hierarchical cluster tree inside `.uasset` files, where each cluster contains approximately 128 triangles and parent nodes represent progressively coarser approximations of the same surface.
+Nanite is UE5's virtualized geometry system. Traditional real-time rendering requires artists to author multiple level-of-detail (LOD) meshes for each asset and embed hand-tuned distance thresholds; the process is expensive, error-prone, and imposes hard polygon budgets on scene complexity. Nanite removes this constraint entirely: geometry is stored in a compressed hierarchical cluster tree inside `.uasset` files, where each cluster contains approximately 128 triangles and parent nodes represent progressively coarser approximations of the same surface.
 
-At runtime, a GPU-driven culling pass selects the finest cluster level whose screen-space projected error falls below a configurable pixel threshold, computing this decision per-cluster across the entire visible scene in a single compute dispatch. Nanite also streams clusters from disk on demand through `FNaniteStreamingManager`, so assets containing hundreds of millions of source triangles load only the detail currently visible. On Linux, the entire Nanite pipeline runs as compute and rasterization shaders on the Vulkan backend; hardware ray tracing is not required. Section 4 covers Nanite's cluster hierarchy, culling passes, and software rasterizer in depth.
+At runtime:
+
+- **GPU-driven culling** — a compute pass selects the finest cluster level whose screen-space projected error falls below a configurable pixel threshold, computing this decision per-cluster across the entire visible scene in a single compute dispatch
+- **Streaming** — clusters stream from disk on demand through `FNaniteStreamingManager`, so assets containing hundreds of millions of source triangles load only the detail currently visible
+- **Linux backend** — the entire Nanite pipeline runs as compute and rasterization shaders on the Vulkan backend; hardware ray tracing is not required
+
+Section 4 covers Nanite's cluster hierarchy, culling passes, and software rasterizer in depth.
 
 ### 1.3 What is Lumen?
 
 Lumen is UE5's dynamic global illumination and reflection system. Global illumination — computing how light bounces between surfaces to produce indirect lighting, color bleeding, and environmental reflections — has historically required either offline pre-computation via lightmaps or costly real-time approximations with limited dynamic range. Lumen provides fully dynamic global illumination that responds to moving emissive meshes, changing sky light, and arbitrary geometry modifications without any pre-baking step.
 
-Lumen uses a hybrid tracing approach built on two complementary representations. The default path traces rays against Mesh Distance Fields (MDFs), signed-distance-field volumes derived from each static mesh, and consults a Screen Space Radiance Cache for nearby surface detail. This software ray tracing path runs on any Vulkan 1.1-capable GPU, including the Steam Deck's RDNA2 APU. On hardware that exposes `VK_KHR_ray_tracing_pipeline` — NVIDIA RTX 2000-series and AMD RDNA2 discrete GPUs — Lumen can optionally trace rays against the hardware BVH for higher-quality reflections and indirect shadows. Section 5 covers Lumen's distance field construction, radiance caching, and integration with the Vulkan RHI.
+Lumen uses a hybrid tracing approach built on two complementary representations:
+
+- **Software ray tracing (default)** — traces rays against Mesh Distance Fields (MDFs), signed-distance-field volumes derived from each static mesh, and consults a Screen Space Radiance Cache for nearby surface detail; runs on any Vulkan 1.1-capable GPU, including the Steam Deck's RDNA2 APU
+- **Hardware ray tracing (optional)** — on hardware that exposes `VK_KHR_ray_tracing_pipeline` (NVIDIA RTX 2000-series and AMD RDNA2 discrete GPUs), Lumen can trace rays against the hardware BVH for higher-quality reflections and indirect shadows
+
+Section 5 covers Lumen's distance field construction, radiance caching, and integration with the Vulkan RHI.
 
 ---
 

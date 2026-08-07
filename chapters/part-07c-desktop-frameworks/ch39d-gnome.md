@@ -60,7 +60,33 @@
 
 **GNOME** is not a single program but a layered platform. At the bottom sits **Mutter** (`libmutter`), a Wayland compositor and X11 window manager that owns the display, drives **KMS** page-flips, and runs the GPU scene graph. On top of Mutter runs **GNOME Shell**, the desktop UI — panel, overview, workspaces, system menus — written almost entirely in **JavaScript** and executed by **GJS**, a SpiderMonkey-based runtime, *inside the compositor's own process*. Applications are built with **GTK4** and **libadwaita** and talk to Mutter as ordinary Wayland clients while integrating with the session over **D-Bus** and **xdg-desktop-portal**.
 
-This chapter targets two readers. For **GNOME application developers**, it covers the platform APIs that shape an app's structure — `GAction`/`GMenu`, `GSettings`, GtkBuilder templates and Blueprint, `GFile`, `GNotification`, and D-Bus — and the language bindings (GJS, PyGObject, gtk-rs) that expose them. For **systems developers**, it opens up Mutter's native backend (the `MetaKms*` KMS abstraction, Cogl, and the Clutter scene graph), the Wayland server embedded in the compositor, the colour-management and HDR pipelines, and the ScreenCast/RemoteDesktop D-Bus surfaces that route screen contents through PipeWire.
+This chapter targets two readers.
+
+For **systems developers**, Section 2 opens up Mutter's native backend:
+
+- **Native backend** — the `MetaKms*` KMS abstraction, Cogl, and the Clutter scene graph
+- **Embedded Wayland server** — the Wayland server embedded in the compositor
+- **Colour management and HDR** — the colour-management and HDR pipelines
+
+Section 3 covers the D-Bus surfaces GNOME Shell exposes:
+
+- **Screen sharing** — the ScreenCast/RemoteDesktop D-Bus surfaces that route screen contents through PipeWire
+
+For **GNOME application developers**, Section 4 covers the platform APIs that shape an app's structure:
+
+- **Actions and menus** — `GAction`/`GMenu`
+- **Settings** — `GSettings`
+- **UI description** — GtkBuilder templates and Blueprint
+- **Files** — `GFile`
+- **Notifications** — `GNotification`
+
+Section 5 covers the language bindings that expose those APIs:
+
+- **Language bindings** — GJS, PyGObject, and gtk-rs
+
+Section 6 covers D-Bus integration:
+
+- **D-Bus** — one of the platform APIs that shape an app's structure, covered here as the app-facing session-integration surface
 
 GTK4's GPU renderer internals — `GskRenderer`, `GskVulkanRenderer`, the `GskRenderNode` tree, and libadwaita's adaptive widgets — are covered in depth in **Chapter 39 (Qt and GTK GPU Rendering)**. This chapter treats GTK as the toolkit an app *author* uses and Mutter as the compositor that *consumes* the resulting Wayland surfaces, and cross-links to Chapter 39 wherever the rendering pipeline is the subject.
 

@@ -35,19 +35,21 @@ The Linux camera subsystem has historically been one of the most fragmented area
 
 ### 1.1 The Pre-libcamera Landscape
 
-Before libcamera, camera support on Linux fragmented across three incompatible strategies. **USB webcams** used the UVC class driver (`uvcvideo`) and spoke simple V4L2 video node ioctls: one `open("/dev/video0")`, `VIDIOC_S_FMT`, `VIDIOC_REQBUFS`, `VIDIOC_STREAMON`, done. The ISP was inside the camera's firmware and Linux saw only processed YUYV or MJPEG output. **Android-derived SoC cameras** relied on proprietary camera HALs — closed-source shared libraries compiled against Android's camera HAL3 interface, running GPU blobs and firmware co-processors in ways utterly opaque to the host kernel. Porting these to desktop Linux required bridging the Android HAL to a V4L2 device node, which most vendors never attempted. **Embedded Linux BSPs** exposed raw sensor data via V4L2 but required a sequence of `media-ctl` topology manipulation and `v4l2-ctl` subdevice format settings that varied per SoC and were almost always scripted by hand. Any application wanting to drive the ISP (auto-exposure, white balance, lens shading correction) had to integrate the vendor's proprietary tuning library.
+Before libcamera, camera support on Linux fragmented across three incompatible strategies:
+
+- **USB webcams** — used the UVC class driver (`uvcvideo`) and spoke simple V4L2 video node ioctls: one `open("/dev/video0")`, `VIDIOC_S_FMT`, `VIDIOC_REQBUFS`, `VIDIOC_STREAMON`, done. The ISP was inside the camera's firmware, and Linux saw only processed YUYV or MJPEG output.
+- **Android-derived SoC cameras** — relied on proprietary camera HALs, closed-source shared libraries compiled against Android's camera HAL3 interface, running GPU blobs and firmware co-processors in ways utterly opaque to the host kernel. Porting these to desktop Linux required bridging the Android HAL to a V4L2 device node, which most vendors never attempted.
+- **Embedded Linux BSPs** — exposed raw sensor data via V4L2 but required a sequence of `media-ctl` topology manipulation and `v4l2-ctl` subdevice format settings that varied per SoC and were almost always scripted by hand. Any application wanting to drive the ISP (auto-exposure, white balance, lens shading correction) had to integrate the vendor's proprietary tuning library.
 
 V4L2 alone was structurally insufficient for this problem. V4L2 video nodes model a simple capture device: set format, allocate buffers, stream. But modern SoC camera pipelines are *graphs* — a sensor subdevice feeds a CSI-2 DPHY block, which feeds a receiver (MIPI CSI-2 receiver, CIO2, Unicam), which feeds an ISP with multiple input and output pads, which outputs to memory. Configuring every edge in that graph, negotiating pixel formats and crop rectangles at every pad, and translating ISP statistics into exposure and gain adjustments requires the Media Controller API and a software ISP control layer that V4L2 video nodes never provided.
 
 ### 1.2 libcamera as the Unified Solution
 
-libcamera addresses the fragmentation at three levels. [Source](https://libcamera.org/faq.html)
+libcamera addresses the fragmentation at three levels: [Source](https://libcamera.org/faq.html)
 
-**Kernel level** — the existing V4L2 and Media Controller APIs are used unchanged. No new kernel ABIs are required. libcamera consumes `MEDIA_IOC_ENUM_ENTITIES`, `MEDIA_IOC_SETUP_LINK`, `VIDIOC_SUBDEV_S_FMT`, `VIDIOC_SUBDEV_S_SELECTION`, and the V4L2 buffer streaming ioctls directly.
-
-**Userspace PipelineHandler layer** — each SoC platform has a `PipelineHandler` subclass that knows how to discover the media graph, configure all subdevices in the right order, and translate a libcamera `CameraConfiguration` into the correct V4L2 calls. PipelineHandlers ship in the libcamera tree and are maintained upstream.
-
-**IPA (Image Processing Algorithm) sandbox** — 3A algorithms (AEC/AGC, AWB, LSC, CCM, gamma) run in a sandboxed subprocess or shared library that receives ISP statistics from the pipeline handler and returns control parameters. IPA modules may be open-source (loaded in-process) or proprietary (forcibly isolated in a separate process via Unix socket IPC). [Source](https://libcamera.org/api-html/classlibcamera_1_1IPAManager.html)
+- **Kernel level** — the existing V4L2 and Media Controller APIs are used unchanged. No new kernel ABIs are required. libcamera consumes `MEDIA_IOC_ENUM_ENTITIES`, `MEDIA_IOC_SETUP_LINK`, `VIDIOC_SUBDEV_S_FMT`, `VIDIOC_SUBDEV_S_SELECTION`, and the V4L2 buffer streaming ioctls directly.
+- **Userspace PipelineHandler layer** — each SoC platform has a `PipelineHandler` subclass that knows how to discover the media graph, configure all subdevices in the right order, and translate a libcamera `CameraConfiguration` into the correct V4L2 calls. PipelineHandlers ship in the libcamera tree and are maintained upstream.
+- **IPA (Image Processing Algorithm) sandbox** — 3A algorithms (AEC/AGC, AWB, LSC, CCM, gamma) run in a sandboxed subprocess or shared library that receives ISP statistics from the pipeline handler and returns control parameters. IPA modules may be open-source (loaded in-process) or proprietary (forcibly isolated in a separate process via Unix socket IPC). [Source](https://libcamera.org/api-html/classlibcamera_1_1IPAManager.html)
 
 The full architecture stack looks like this:
 
@@ -72,15 +74,42 @@ libcamera C++ API (CameraManager, Camera, Request)
 
 ### 1.3 What is libcamera?
 
-libcamera is an open-source userspace camera stack for Linux that provides a single, stable C++ API above a heterogeneous collection of kernel drivers. Prior to libcamera, each camera pipeline on embedded Linux required platform-specific configuration sequences and vendor-supplied ISP tuning libraries; libcamera encapsulates that per-platform knowledge in a `PipelineHandler` subclass while exposing a common `CameraManager`/`Camera`/`Request` model to all callers. The library communicates with the kernel exclusively through standard V4L2 and Media Controller ioctls — no new kernel ABIs were introduced — which means it runs on kernels already shipping in production. IPA modules execute inside libcamera's sandboxed subprocess or in-process depending on their trust level, allowing proprietary ISP tuning code to be isolated without burdening applications with that complexity. The public API surface is declared in `include/libcamera/` and is versioned to provide ABI stability; Python bindings exist in the `src/py/` subtree. libcamera is the camera backend for PipeWire's camera portal, the Raspberry Pi `rpicam-apps` suite, and GStreamer's `libcamerasrc` element. [Source](https://libcamera.org/)
+libcamera is an open-source userspace camera stack for Linux that provides a single, stable C++ API above a heterogeneous collection of kernel drivers. Prior to libcamera, each camera pipeline on embedded Linux required platform-specific configuration sequences and vendor-supplied ISP tuning libraries; libcamera encapsulates that per-platform knowledge in a `PipelineHandler` subclass while exposing a common `CameraManager`/`Camera`/`Request` model to all callers.
+
+- **No new kernel ABIs** — the library communicates with the kernel exclusively through standard V4L2 and Media Controller ioctls, so it runs on kernels already shipping in production.
+- **Sandboxed IPA execution** — IPA modules execute inside libcamera's sandboxed subprocess or in-process depending on their trust level, allowing proprietary ISP tuning code to be isolated without burdening applications with that complexity.
+- **Stable, versioned API** — the public API surface is declared in `include/libcamera/` and is versioned to provide ABI stability; Python bindings exist in the `src/py/` subtree.
+- **Downstream consumers** — libcamera is the camera backend for PipeWire's camera portal, the Raspberry Pi `rpicam-apps` suite, and GStreamer's `libcamerasrc` element. [Source](https://libcamera.org/)
 
 ### 1.4 What is V4L2 (Video4Linux2)?
 
-V4L2, defined in `include/uapi/linux/videodev2.h`, is the Linux kernel's primary API for video capture, output, and processing hardware. An application opens a character device at `/dev/video*`, calls `VIDIOC_QUERYCAP` to discover capabilities, negotiates pixel format and frame dimensions with `VIDIOC_S_FMT`, allocates kernel-managed buffers with `VIDIOC_REQBUFS`, and streams frames by cycling buffers through `VIDIOC_QBUF`/`VIDIOC_DQBUF` with `VIDIOC_STREAMON` active. This model works well for self-contained capture devices — USB webcams, frame grabbers — where the entire pipeline fits inside device firmware. For SoC cameras, V4L2 is extended by the Media Controller API, which exposes the individual hardware blocks — sensors, CSI-2 receivers, ISPs — as separately configurable entities connected by directed links. Each entity is accessible at a `/dev/v4l-subdev*` node using the V4L2 subdevice ioctls (`VIDIOC_SUBDEV_S_FMT`, `VIDIOC_SUBDEV_S_SELECTION`). libcamera drives both layers: it uses the Media Controller API to discover and configure the pipeline graph, then uses standard V4L2 streaming ioctls on the output video node to acquire frames into DMA-BUF-backed memory. [Source](https://docs.kernel.org/userspace-api/media/v4l/v4l2.html)
+V4L2, defined in `include/uapi/linux/videodev2.h`, is the Linux kernel's primary API for video capture, output, and processing hardware. An application opens a character device at `/dev/video*` and drives it through four steps:
+
+- **`VIDIOC_QUERYCAP`** — discover device capabilities
+- **`VIDIOC_S_FMT`** — negotiate pixel format and frame dimensions
+- **`VIDIOC_REQBUFS`** — allocate kernel-managed buffers
+- **`VIDIOC_STREAMON`** with **`VIDIOC_QBUF`**/**`VIDIOC_DQBUF`** — stream frames by cycling buffers through the driver
+
+This model works well for self-contained capture devices — USB webcams, frame grabbers — where the entire pipeline fits inside device firmware. For SoC cameras, V4L2 is extended by the Media Controller API, which exposes the individual hardware blocks — sensors, CSI-2 receivers, ISPs — as separately configurable entities connected by directed links, each accessible at a `/dev/v4l-subdev*` node using the V4L2 subdevice ioctls (`VIDIOC_SUBDEV_S_FMT`, `VIDIOC_SUBDEV_S_SELECTION`). libcamera drives both layers: it uses the Media Controller API to discover and configure the pipeline graph, then uses standard V4L2 streaming ioctls on the output video node to acquire frames into DMA-BUF-backed memory. [Source](https://docs.kernel.org/userspace-api/media/v4l/v4l2.html)
 
 ### 1.5 What is an ISP (Image Signal Processor)?
 
-An ISP is a hardware block, present in virtually every smartphone SoC and many embedded Linux platforms, that transforms raw Bayer-pattern pixel data from a CMOS image sensor into a usable image. Raw sensor output is a mosaiced grid of red, green, and blue photosites that requires a pipeline of operations before it resembles a photograph: black-level subtraction, lens shading correction (LSC) to compensate for optical vignetting, demosaicing (Bayer-to-RGB interpolation), auto-white balance (AWB) to remove color casts, auto-exposure and auto-gain control (AEC/AGC) to maintain correct exposure, noise reduction, and color correction matrix (CCM) application. On the Linux stack these operations are performed either by dedicated ISP hardware — Rockchip RkISP1, Intel IPU3/IPU6, Raspberry Pi PiSP — or by libcamera's software ISP path when no hardware ISP is available. The ISP feeds statistics (histograms, grid-based luminance and color measurements, focus metrics) to an IPA module, which in turn returns control parameters (analogue gain, exposure time, CCM coefficients) that are applied back to the hardware. This closed-loop runs at every frame and is what transforms a raw sensor into a stable, color-accurate video stream. libcamera's PipelineHandler layer mediates both directions of this feedback path. [Source](https://libcamera.org/camera-sensor-model.html)
+An ISP is a hardware block, present in virtually every smartphone SoC and many embedded Linux platforms, that transforms raw Bayer-pattern pixel data from a CMOS image sensor into a usable image. Raw sensor output is a mosaiced grid of red, green, and blue photosites that requires a pipeline of operations before it resembles a photograph:
+
+- **Black-level subtraction**
+- **Lens shading correction (LSC)** — compensates for optical vignetting
+- **Demosaicing** — Bayer-to-RGB interpolation
+- **Auto-white balance (AWB)** — removes color casts
+- **Auto-exposure and auto-gain control (AEC/AGC)** — maintains correct exposure
+- **Noise reduction**
+- **Color correction matrix (CCM) application**
+
+On the Linux stack these operations are performed either by dedicated ISP hardware — Rockchip RkISP1, Intel IPU3/IPU6, Raspberry Pi PiSP — or by libcamera's software ISP path when no hardware ISP is available. This runs as a closed feedback loop at every frame:
+
+- **ISP → IPA** — the ISP feeds statistics (histograms, grid-based luminance and color measurements, focus metrics) to an IPA module
+- **IPA → ISP** — the IPA module returns control parameters (analogue gain, exposure time, CCM coefficients) that are applied back to the hardware
+
+This closed loop is what transforms a raw sensor into a stable, color-accurate video stream; libcamera's PipelineHandler layer mediates both directions of the feedback path. [Source](https://libcamera.org/camera-sensor-model.html)
 
 ---
 

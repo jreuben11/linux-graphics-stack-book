@@ -92,11 +92,25 @@
 
 ## Overview
 
-**GTK4** is the fourth major version of GTK, a C-language widget toolkit developed under the GNOME Project and used by GNOME Shell applications, the GIMP, Inkscape, and a large fraction of the Linux desktop. Its 2020 release replaced GTK3's Cairo-based immediate-mode drawing model with a retained-mode, GPU-first architecture built around three libraries — **GDK** (windowing and input), **GSK** (the GTK Scene Kit render pipeline), and **GTK** (widgets). This chapter traces a GTK4 frame from a widget's `snapshot()` method, through the `GskRenderNode` tree, into the `GskVulkanRenderer` or `GskNglRenderer`, and out through the GDK Wayland backend to the compositor. [Source](https://docs.gtk.org/gtk4/)
+**GTK4** is the fourth major version of GTK, a C-language widget toolkit developed under the GNOME Project and used by GNOME Shell applications, the GIMP, Inkscape, and a large fraction of the Linux desktop. This chapter traces a GTK4 frame from a widget's `snapshot()` method, through the `GskRenderNode` tree, into the `GskVulkanRenderer` or `GskNglRenderer`, and out through the GDK Wayland backend to the compositor. [Source](https://docs.gtk.org/gtk4/)
 
-For **application developers** the practical consequence is that GPU acceleration is now automatic: there is no OpenGL boilerplate in ordinary widget code, and CSS visual effects (blur, shadow, rounded clipping, gradients) map onto GPU shader passes. For **systems developers** tracing a frame, the path from application to KMS page-flip is longer and more structured than in the GTK3 era — a snapshot pass builds an immutable node tree, a renderer translates it to Vulkan or OpenGL commands, and the GDK Wayland backend attaches the resulting buffer to a `wl_surface` with explicit GPU synchronisation via `wp_linux_drm_syncobj_v1`.
+Sections 1–5 trace a GTK4 frame end to end:
 
-This chapter also covers the surrounding stack that a real GTK4 application depends on: **libadwaita** (the GNOME Human Interface Guidelines widget library and colour-scheme system), the **GObject** type system that underlies every GTK class and its language bindings (Python, JavaScript, Rust), **WebKitGTK** for embedded web content, and the **Pango**-based text pipeline. It closes with the debugging tooling — the GTK Inspector, `GSK_DEBUG`, and `gtk4-rendernode-tool` — that makes the render pipeline observable.
+- **Three-layer model** (Section 1) — GTK4's 2020 release replaced GTK3's Cairo-based immediate-mode drawing model with a retained-mode, GPU-first architecture built around three libraries: **GDK** (windowing and input), **GSK** (the GTK Scene Kit render pipeline), and **GTK** (widgets)
+- **Snapshot pass** (Section 2) — a widget's `snapshot()` method builds an immutable `GskRenderNode` tree
+- **`GskRenderer` implementations** (Section 3) — `GskVulkanRenderer` and `GskNglRenderer` translate the node tree into Vulkan or OpenGL commands
+- **GDK Wayland backend** (Section 4) — attaches the resulting buffer to a `wl_surface`, using explicit GPU synchronisation via `wp_linux_drm_syncobj_v1`
+- **CSS pipeline** (Section 5) — ordinary widget code needs no OpenGL boilerplate; CSS visual effects such as blur, shadow, rounded clipping, and gradients map onto GPU shader passes automatically
+
+Later sections cover the surrounding stack a real GTK4 application depends on:
+
+- **libadwaita** (Section 8) — the GNOME Human Interface Guidelines widget library and colour-scheme system
+- **GObject** (Section 9) — the type system that underlies every GTK class and its language bindings (Python, JavaScript, Rust)
+- **WebKitGTK** (Section 14) — for embedding web content
+- **Pango** (Section 15) — the text-rendering pipeline GTK4 builds on
+- **Debugging tooling** (Section 16) — the GTK Inspector, `GSK_DEBUG`, and `gtk4-rendernode-tool` make the render pipeline observable
+
+For **application developers** the practical consequence is that GPU acceleration is now automatic. For **systems developers** tracing a frame, the path from application to KMS page-flip is longer and more structured than in the GTK3 era.
 
 ---
 

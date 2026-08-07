@@ -35,9 +35,14 @@ between kernel object management and userspace toolkit patterns.
 ## Overview
 
 This chapter collects cross-framework comparisons that would fragment any single-toolkit chapter.
-Section 1 examines the three C/C++ object systems that appear throughout the Linux graphics stack —
-GObject (GTK), QObject (Qt), and `struct kobject` (kernel) — analysing where they agree and where
-they diverge. Section 2 compares the four major Linux desktop environments as integrated stacks,
+Section 1 examines the three C/C++ object systems that appear throughout the Linux graphics stack,
+analysing where they agree and where they diverge:
+
+- **GObject** (GTK)
+- **QObject** (Qt)
+- `struct kobject` (kernel)
+
+Section 2 compares the four major Linux desktop environments as integrated stacks,
 covering display pipelines, accessibility, portals, theming, and the application development model.
 
 ---

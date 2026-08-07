@@ -34,7 +34,39 @@
 
 This chapter targets iced **0.14.0**, released 2025-12-07, which is the current stable release and the first to consolidate the *functional* application API introduced in 0.13 (September 2024).[^releases][^cratesio] Because iced's API has moved quickly on the road to 1.0, the chapter is explicit about version boundaries: the pre-0.13 `Application`/`Sandbox` traits, the 0.13 `Task`/functional-API rewrite, and the 0.14 shader-pipeline and subscription (`sipper`) refinements.
 
-Section 1 covers the Elm model: the `update`/`view`/`subscription` triad, the functional `iced::application()` and `iced::run()` entry points, `Task` and `Subscription`, and the crate split (`iced` facade over `iced_core`, `iced_runtime`, `iced_renderer`, `iced_wgpu`, `iced_tiny_skia`, `iced_winit`). Section 2 dissects the `Widget` trait — `size`/`layout`/`draw`/`update` — the layout solver, and how to author a custom widget and a `Canvas` program. Section 3 opens the `iced_wgpu` backend: the shared `Engine`, the quad/text/image/mesh pipelines, the **cosmic-text**/**guillotiere** glyph atlas, and the `iced_tiny_skia` CPU fallback. Section 4 corrects a common misconception: upstream iced's Wayland support is the **winit** backend (winit 0.30), while **layer-shell** panels come from the third-party **iced_layershell** crate and from the **pop-os** fork's `iced_sctk`.[^winit-deps][^layershell] Section 5 walks the custom-shader widget (`shader::Program`, `shader::Primitive`, `shader::Pipeline`) with a Mandelbrot example. Sections 6–9 cover theming, the async runtime, the (still-experimental) accessibility story, and profiling.
+Section 1 covers the Elm model:
+
+- **`update`/`view`/`subscription` triad** — the core functions and values that structure an iced application
+- **Functional entry points** — `iced::application()` and `iced::run()`
+- **`Task` and `Subscription`** — iced's effect-handling types
+- **Crate split** — the `iced` facade over `iced_core`, `iced_runtime`, `iced_renderer`, `iced_wgpu`, `iced_tiny_skia`, and `iced_winit`
+
+Section 2 dissects the widget system:
+
+- **`Widget` trait and layout solver** — the `size`/`layout`/`draw`/`update` methods
+- **Custom widget and `Canvas` program authoring** — how to write both
+
+Section 3 opens the `iced_wgpu` backend:
+
+- **Shared `Engine` and rendering pipelines** — the quad/text/image/mesh pipelines
+- **Glyph atlas** — built on **cosmic-text** and **guillotiere**
+- **`iced_tiny_skia`** — the CPU fallback backend
+
+Section 4 corrects a common misconception about Wayland integration:
+
+- **Upstream Wayland support** — the **winit** backend (winit 0.30)
+- **Layer-shell panels** — come from the third-party **iced_layershell** crate and from the **pop-os** fork's `iced_sctk`[^winit-deps][^layershell]
+
+Section 5 walks the custom-shader widget:
+
+- **`shader::Program`, `shader::Primitive`, `shader::Pipeline`** — demonstrated with a Mandelbrot example
+
+Sections 6–9 cover theming, the async runtime, accessibility, and profiling:
+
+- **Theming and styling**
+- **Async runtime**
+- **Accessibility** — still experimental
+- **Performance and debugging** — profiling
 
 ```mermaid
 flowchart TD

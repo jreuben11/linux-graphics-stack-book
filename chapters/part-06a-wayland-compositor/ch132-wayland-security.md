@@ -34,9 +34,22 @@ The chapter assumes familiarity with core Wayland concepts (surfaces, seats, the
 
 ## 1. Introduction: The Security Contract Shift
 
-The Linux graphics stack's security story changed fundamentally when compositors migrated from X11 to Wayland. This is not a minor protocol update — it is a restructuring of trust boundaries. Under X11, every client that can connect to the display server is implicitly trusted with extraordinary capabilities: reading any other window's pixels, injecting synthetic keyboard and mouse events into any focused window, intercepting global keyboard state, and capturing the entire screen without any permission check. Any malicious or compromised application on an X11 session can trivially become a keylogger, a clipboard thief, or a screen recorder with no special privileges beyond a connection to the display socket.
+The Linux graphics stack's security story changed fundamentally when compositors migrated from X11 to Wayland. This is not a minor protocol update — it is a restructuring of trust boundaries. Under X11, every client that can connect to the display server is implicitly trusted with extraordinary capabilities:
 
-Wayland's design principle is the opposite: clients receive only what they need. The compositor is the sole arbiter of what a client may see and do. A client receives `wl_keyboard` events only for surfaces it owns. It cannot issue requests that observe another client's pixels. It cannot grab the keyboard globally. This isolation is not implemented as a policy add-on or a kernel access-control mechanism — it is structural: the Wayland protocol simply does not contain the requests that would be needed to perform those cross-client operations.
+- **Reading any other window's pixels**
+- **Injecting synthetic keyboard and mouse events** into any focused window
+- **Intercepting global keyboard state**
+- **Capturing the entire screen** without any permission check
+
+Any malicious or compromised application on an X11 session can trivially become a keylogger, a clipboard thief, or a screen recorder with no special privileges beyond a connection to the display socket.
+
+Wayland's design principle is the opposite: clients receive only what they need, and the compositor is the sole arbiter of what a client may see and do:
+
+- **Keyboard events** — a client receives `wl_keyboard` events only for surfaces it owns
+- **Pixel observation** — a client cannot issue requests that observe another client's pixels
+- **Keyboard grabbing** — a client cannot grab the keyboard globally
+
+This isolation is not implemented as a policy add-on or a kernel access-control mechanism — it is structural: the Wayland protocol simply does not contain the requests that would be needed to perform those cross-client operations.
 
 This chapter provides a rigorous analysis of:
 
@@ -50,15 +63,41 @@ This chapter provides a rigorous analysis of:
 
 ### 1.1 What is Wayland's Security Model?
 
-Wayland is a display protocol designed around structural isolation rather than policy enforcement. Where X11 implements a shared display server with a flat window namespace visible to all clients, Wayland moves the security boundary into the protocol itself: the wire format simply does not contain requests that would enable cross-client observation. A Wayland client receives a Unix domain socket connection to the compositor and can only operate on Wayland objects it has created within its own connection context. There is no global window namespace, no pixel capture API in the core protocol, and no global keyboard grab mechanism. The compositor — a user-space process combining what X11 split between the display server and window manager — enforces all routing: keyboard events reach only the focused client's surfaces, pointer events only the client under the cursor, and no protocol mechanism exists for one client to read another client's buffer contents. This structural design means isolation is not a feature that can be misconfigured away; it is the baseline behavior for any conformant Wayland compositor. This chapter analyzes what that guarantee actually covers, what lies outside it, and how extension protocols and Linux kernel mechanisms interact with it.
+Wayland is a display protocol designed around structural isolation rather than policy enforcement. Where X11 implements a shared display server with a flat window namespace visible to all clients, Wayland moves the security boundary into the protocol itself: the wire format simply does not contain requests that would enable cross-client observation. A Wayland client receives a Unix domain socket connection to the compositor and can only operate on Wayland objects it has created within its own connection context. This produces several structural guarantees:
+
+- **No global window namespace** — clients cannot enumerate or address other clients' windows
+- **No pixel capture API in the core protocol** — no request lets a client read another client's buffer contents
+- **No global keyboard grab mechanism** — a client cannot intercept keyboard input outside its own focused surfaces
+- **Compositor-enforced routing** — the compositor, a user-space process combining what X11 split between the display server and window manager, delivers keyboard events only to the focused client's surfaces and pointer events only to the client under the cursor
+
+This structural design means isolation is not a feature that can be misconfigured away; it is the baseline behavior for any conformant Wayland compositor. This chapter analyzes what that guarantee actually covers, what lies outside it, and how extension protocols and Linux kernel mechanisms interact with it.
 
 ### 1.2 What is xdg-desktop-portal?
 
-The `xdg-desktop-portal` is a D-Bus service that acts as a permission broker between sandboxed applications and privileged compositor functionality. When an application running in a Flatpak or Snap sandbox needs to capture the screen, access the clipboard from the background, or inject input events, it cannot reach those capabilities directly through the Wayland socket at the same trust level as an unsandboxed process. Instead it sends a D-Bus method call to the portal, which can present a user-visible permission prompt and then perform the operation on the application's behalf — using a backend process that holds the necessary Wayland protocol bindings. Backend implementations are desktop-environment specific: `xdg-desktop-portal-gnome` uses GNOME's screencasting infrastructure, `xdg-desktop-portal-wlr` uses `zwlr_screencopy_manager_v1` for wlroots-based compositors, and `xdg-desktop-portal-kde` targets KWin. The portal's D-Bus interfaces are standardized across desktop environments and documented at `https://flatpak.github.io/xdg-desktop-portal/`. For Wayland security purposes, the portal is the approved channel through which sandboxed applications obtain capabilities that the Wayland protocol does not grant arbitrarily — it is the point where explicit user consent can be inserted before operations that would otherwise be unmediated.
+The `xdg-desktop-portal` is a D-Bus service that acts as a permission broker between sandboxed applications and privileged compositor functionality. An application running in a Flatpak or Snap sandbox cannot reach certain capabilities directly through the Wayland socket at the same trust level as an unsandboxed process — among them:
+
+- **Capturing the screen**
+- **Accessing the clipboard from the background**
+- **Injecting input events**
+
+For these, the application instead sends a D-Bus method call to the portal, which can present a user-visible permission prompt and then perform the operation on the application's behalf — using a backend process that holds the necessary Wayland protocol bindings. Backend implementations are desktop-environment specific:
+
+- **`xdg-desktop-portal-gnome`** — uses GNOME's screencasting infrastructure
+- **`xdg-desktop-portal-wlr`** — uses `zwlr_screencopy_manager_v1` for wlroots-based compositors
+- **`xdg-desktop-portal-kde`** — targets KWin
+
+The portal's D-Bus interfaces are standardized across desktop environments and documented at `https://flatpak.github.io/xdg-desktop-portal/`. For Wayland security purposes, the portal is the approved channel through which sandboxed applications obtain capabilities that the Wayland protocol does not grant arbitrarily — it is the point where explicit user consent can be inserted before operations that would otherwise be unmediated.
 
 ### 1.3 What is wp_security_context_v1?
 
-`wp_security_context_v1` is a Wayland extension protocol, part of the wayland-protocols repository, that allows a compositor to assign a verified sandbox identity to a client connection at socket handoff time. The mechanism replaces the main Wayland socket for sandboxed processes: a trusted launcher (such as a portal backend or container runtime) calls `wp_security_context_manager_v1_create_listener` to create a dedicated listener file descriptor. Before passing that file descriptor into the sandbox, the launcher attaches metadata to it — an `app_id` string identifying the sandboxed application, and a `sandbox_engine` string identifying the isolation mechanism (e.g., `flatpak`). When the sandboxed process connects through that descriptor, the compositor reads the metadata alongside the socket's `SO_PEERCRED` credentials before any Wayland messages are exchanged. Armed with this verified identity, the compositor can make per-client decisions about which extension protocols to advertise in the `wl_registry`: a sandboxed client might receive a restricted protocol set that omits `zwlr_screencopy_manager_v1` entirely, while a trusted portal backend connecting through the main socket sees the full set. The protocol shipped in wayland-protocols 1.48 in April 2026 and is the primary mechanism for compositor-enforced sandbox isolation at the Wayland protocol level.
+`wp_security_context_v1` is a Wayland extension protocol, part of the wayland-protocols repository, that allows a compositor to assign a verified sandbox identity to a client connection at socket handoff time. It replaces the main Wayland socket for sandboxed processes, through a sequence of steps:
+
+- **Listener creation** — a trusted launcher (such as a portal backend or container runtime) calls `wp_security_context_manager_v1_create_listener` to create a dedicated listener file descriptor
+- **Metadata attachment** — before passing that file descriptor into the sandbox, the launcher attaches an `app_id` string identifying the sandboxed application and a `sandbox_engine` string identifying the isolation mechanism (e.g., `flatpak`)
+- **Credential verification** — when the sandboxed process connects through that descriptor, the compositor reads the metadata alongside the socket's `SO_PEERCRED` credentials before any Wayland messages are exchanged
+- **Per-client protocol filtering** — armed with this verified identity, the compositor decides which extension protocols to advertise in the `wl_registry`; a sandboxed client might receive a restricted protocol set that omits `zwlr_screencopy_manager_v1` entirely, while a trusted portal backend connecting through the main socket sees the full set
+
+The protocol shipped in wayland-protocols 1.48 in April 2026 and is the primary mechanism for compositor-enforced sandbox isolation at the Wayland protocol level.
 
 ---
 

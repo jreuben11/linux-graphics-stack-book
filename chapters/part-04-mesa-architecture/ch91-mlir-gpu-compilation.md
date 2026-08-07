@@ -64,23 +64,75 @@ Vendor compiler (ptxas / LLVM AMDGPU / Mesa spirv_to_nir)
 GPU ISA (PTX → SASS / AMDGCN / Intel EU ISA)
 ```
 
-**Why MLIR matters here.** Before **MLIR**, each ML framework carried its own bespoke intermediate representation. **TensorFlow** had its graph IR, **PyTorch** had **TorchScript**, **TVM** had **Relay**. Each required its own lowering path to **LLVM** and its own GPU back-end. **MLIR**, released by Google in 2020 and hosted under the **LLVM** project, introduced a common infrastructure of *dialects* — extensible sets of operations, types, and attributes with well-defined legality rules and rewrite patterns. A single piece of **MLIR** infrastructure (a lowering pass, an optimisation pass) can then be shared across multiple frameworks that target the same source dialect. Section 2 covers **MLIR**'s architecture in depth, including its core abstractions (**Operations**, **Values**, **Regions**, **Blocks**), the full dialect table (`**linalg**`, `**vector**`, `**arith**`, `**memref**`, `**scf**`, `**affine**`, `**gpu**`, `**nvgpu**`, `**rocdl**`, `**spirv**`, `**llvm**`), progressive lowering philosophy, and the **mlir-opt** and **mlir-translate** command-line tools.
+**Why MLIR matters here.** Before **MLIR**, each ML framework carried its own bespoke intermediate representation — **TensorFlow** had its graph IR, **PyTorch** had **TorchScript**, **TVM** had **Relay** — and each required its own lowering path to **LLVM** and its own GPU back-end. **MLIR**, released by Google in 2020 and hosted under the **LLVM** project, introduced a common infrastructure of *dialects* — extensible sets of operations, types, and attributes with well-defined legality rules and rewrite patterns — so that a single piece of **MLIR** infrastructure (a lowering pass, an optimisation pass) can be shared across multiple frameworks that target the same source dialect.
 
-**The gpu dialect.** Section 3 examines the `**gpu**` dialect, which provides a hardware-neutral abstraction layer above vendor-specific dialects. It defines `**gpu.module**`, `**gpu.func**`, `**gpu.launch**`, and `**gpu.launch_func**` operations, GPU intrinsics such as `**gpu.thread_id**`, `**gpu.block_id**`, and `**gpu.barrier**`, and memory operations including `**gpu.alloc**` and `**gpu.memcpy**`. The `**-convert-gpu-to-spirv**` pass (also called `**GpuToSpirvPass**`) lowers `**gpu**` dialect to the `**spirv**` dialect for **Vulkan** compute targets; the newer `**-gpu-module-to-binary**` pass invokes registered serialisers directly. Section 3 also covers how **IREE** uses the `**gpu**` dialect as its primary GPU representation.
+Section 2 covers **MLIR**'s architecture in depth:
 
-**OpenAI Triton.** Section 4 covers **Triton**, the Python-to-GPU compiler developed by OpenAI. Programmers write kernels as Python functions decorated with `**@triton.jit**`; the **Triton** compiler lowers them through a progressive **MLIR** pipeline: first to the `**tt**` dialect (tile-level operations such as `**tl.load**`, `**tl.store**`, `**tl.dot**`), then to the `**ttgpu**` (**TritonGPU**) dialect which adds hardware layout annotations (`**#blocked**`, `**#shared**`, `**#nvidia_mma**`, `**#amd_mfma**`, `**#amd_wmma**`), and finally to **NVVM** or **ROCDL** intrinsics before **LLVM** emits **PTX** or **AMDGCN** assembly. The 2025 `**Gluon**` dialect extends **Triton** with lower-level architectural features including warp specialisation and **Hopper** **TMA** descriptors. `**@triton.autotune**` drives search over compile-time tile size configurations. Section 4 also covers the **Triton-ROCm** (**AMD**) backend targeting **MFMA** on **CDNA** and **WMMA** on **RDNA3**, and the experimental **Triton** **Vulkan**/**SPIR-V** backend.
+- **Core abstractions** — **Operations**, **Values**, **Regions**, and **Blocks**
+- **The full dialect table** — `**linalg**`, `**vector**`, `**arith**`, `**memref**`, `**scf**`, `**affine**`, `**gpu**`, `**nvgpu**`, `**rocdl**`, `**spirv**`, and `**llvm**`
+- **Progressive lowering philosophy**
+- **Command-line tools** — **mlir-opt** and **mlir-translate**
 
-**FlashAttention and Triton kernel performance.** Section 5 presents **FlashAttention-2** as the canonical high-performance **Triton** kernel, demonstrating how the tiling abstraction avoids materialising the N×N attention score matrix in **HBM** by streaming **K** and **V** tiles through shared memory and maintaining an online softmax with running maximum and sum accumulators. The section analyses block size tuning (`**BLOCK_M**`, `**BLOCK_N**`, `**BLOCK_DMODEL**`) on **A100** and **MI300X** hardware, adoption in **vLLM**, **llama.cpp**, and the **transformers** library, and current gaps in the **Vulkan** **SPIR-V** path — missing asynchronous copy instructions (**PTX** `**cp.async**`), warp shuffle, and **Hopper** **TMA** descriptors.
+**The gpu dialect.** Section 3 examines the `**gpu**` dialect, which provides a hardware-neutral abstraction layer above vendor-specific dialects:
 
-**IREE.** Section 6 covers **IREE** (Intermediate Representation Execution Environment), **Google**'s production **MLIR** compiler and runtime for neural network inference. Its compilation pipeline lowers framework models (**PyTorch**, **TFLite**, **ONNX**) through **StableHLO** → **IREE Flow** dialect → **IREE Stream** dialect → **IREE HAL** dialect → **SPIR-V** (or **PTX** / **LLVM CPU**), embedding the results in a **`.vmfb`** (**VM FlatBuffer**) binary. The `**iree-compile**` command-line tool drives this pipeline with flags such as `**--iree-hal-target-device=vulkan**` and `**--iree-vulkan-target=rdna3**`. At runtime, **IREE**'s **HAL** C API (`**iree_hal_driver_registry_try_create**`, `**iree_runtime_session_create_with_device**`) wraps `**vkCreateComputePipeline**` and `**vkCmdDispatch**`. Section 6 also covers **IREE**'s **Android** deployment path via `**libvulkan.so**`.
+- **Core operations** — `**gpu.module**`, `**gpu.func**`, `**gpu.launch**`, and `**gpu.launch_func**`
+- **GPU intrinsics** — `**gpu.thread_id**`, `**gpu.block_id**`, and `**gpu.barrier**`
+- **Memory operations** — `**gpu.alloc**` and `**gpu.memcpy**`
+- **Lowering passes** — `**-convert-gpu-to-spirv**` (also called `**GpuToSpirvPass**`) lowers the `**gpu**` dialect to the `**spirv**` dialect for **Vulkan** compute targets; the newer `**-gpu-module-to-binary**` pass invokes registered serialisers directly
+- **IREE usage** — Section 3 also covers how **IREE** uses the `**gpu**` dialect as its primary GPU representation
 
-**XLA.** Section 7 covers **XLA** (Accelerated Linear Algebra), the deep learning compiler backend for **JAX** (`**jax.jit**`), **TensorFlow** (`**tf.function**`), and **PyTorch XLA**. Its primary representation is **StableHLO**. The **XLA** GPU backend pipeline lowers **StableHLO** through **HLO** graph optimisation passes — **SPMD** partitioner, layout assignment, fusion — to code generation via library calls (**cuBLAS**, **cuDNN**, **rocBLAS**, **MIOpen**), direct **LLVM** IR emission, or **Triton** emission for matmul-heavy fusions. **JAX** entry points (`**jax.jit**`, `**jax.ShapeDtypeStruct**`, `**lowered.compile()**`) are illustrated. The section covers **XLA** on **AMD** via `**jax[rocm]**` and **AMDGPU**, and the experimental **XLA** **Vulkan** backend via **IREE** integration.
+**OpenAI Triton.** Section 4 covers **Triton**, the Python-to-GPU compiler developed by OpenAI. Programmers write kernels as Python functions decorated with `**@triton.jit**`; the **Triton** compiler lowers them through a progressive **MLIR** pipeline: first to the `**tt**` dialect (tile-level operations such as `**tl.load**`, `**tl.store**`, `**tl.dot**`), then to the `**ttgpu**` (**TritonGPU**) dialect which adds hardware layout annotations (`**#blocked**`, `**#shared**`, `**#nvidia_mma**`, `**#amd_mfma**`, `**#amd_wmma**`), and finally to **NVVM** or **ROCDL** intrinsics before **LLVM** emits **PTX** or **AMDGCN** assembly. Section 4 also covers:
 
-**SPIR-V as cross-compiler target.** Section 8 examines **SPIR-V** as the interchange format between the high-level GPU compiler world and the driver world. It covers the **SPIR-V** binary format (32-bit word encoding, five-word header with magic `0x07230203`), the strict ordering of module-level instructions (`**OpCapability**`, `**OpExtension**`, `**OpMemoryModel**`, `**OpEntryPoint**`, `**OpExecutionMode**`), the **SPIRV-Tools** suite (`**spirv-val**`, `**spirv-opt**`, `**spirv-dis**`, `**spirv-as**`), and `**spirv-cross**` for reverse translation to **GLSL**, **HLSL**, or **MSL** (used by **Proton**, **DXVK**, and **MoltenVK**). The section concludes with the complete **MLIR** → `**mlir-translate --serialize-spirv**` → `**vkCreateShaderModule**` → `**spirv_to_nir()**` → **NIR** → **ACO** / **LLVM** → GPU ISA path.
+- **The `**Gluon**` dialect** (2025) — extends **Triton** with lower-level architectural features including warp specialisation and **Hopper** **TMA** descriptors
+- **`**@triton.autotune**`** — drives search over compile-time tile size configurations
+- **Triton-ROCm** (**AMD**) backend — targets **MFMA** on **CDNA** and **WMMA** on **RDNA3**
+- **Experimental Vulkan/SPIR-V backend**
 
-**Cooperative matrix and Tensor Core access.** Section 9 covers the hardware matrix-multiply units — **Tensor Cores** on **NVIDIA**, **WMMA** on **RDNA3**, **MFMA** on **CDNA**, and **XMX** (**Xe Matrix Extensions**) on **Intel** — and their exposure through `**VK_KHR_cooperative_matrix**` and `**SPV_KHR_cooperative_matrix**`. It covers the **Vulkan** query API (`**vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR**`), the **SPIR-V** instructions `**OpTypeCooperativeMatrixKHR**` and `**OpCooperativeMatrixMulAddKHR**`, **RADV**'s mapping to **RDNA3** **WMMA** via **NIR** (`**nir_intrinsic_cooperative_matrix_mul_add**`) and **ACO**, **ANV**'s mapping to **DPAS** (Dot Product Accumulate Systolic) on **Gfx12.5+** / **DG2** (**Alchemist**) and **Xe2+**, **Triton**'s `**tl.dot**` lowering via `**#nvidia_mma**` and `**#amd_wmma**` layouts, and cooperative matrix use in **FlashAttention** attention computation.
+**FlashAttention and Triton kernel performance.** Section 5 presents **FlashAttention-2** as the canonical high-performance **Triton** kernel, demonstrating how the tiling abstraction avoids materialising the N×N attention score matrix in **HBM** by streaming **K** and **V** tiles through shared memory and maintaining an online softmax with running maximum and sum accumulators. The section analyses:
 
-**The Mesa connection.** **SPIR-V** is the lingua franca between the higher-level GPU compiler world and **Mesa**'s driver layer. When **IREE**, **Triton** (via its **Vulkan** backend), or any other **MLIR**-based system targets **Vulkan**, it serialises **MLIR**'s **SPIR-V** dialect to a binary **SPIR-V** module and hands it to `**vkCreateShaderModule**`. **Mesa**'s **SPIR-V** reader (`**src/compiler/spirv/spirv_to_nir.c**`) then translates this binary into **NIR** (Chapter 14), where **Mesa**'s own optimisation and lowering passes take over. Section 10 traces the full path including the `**spirv_to_nir_options**` struct for configuring **ML**-specific capabilities (`**cooperative_matrix**`, `**float16**`, `**int8**`), debugging environment variables (`**RADV_DEBUG**`, `**MESA_SPIRV_DUMP_PATH**`), and the precise sequence of calls by which an **IREE** workload reaches **RADV** or **ANV** and is ultimately dispatched via `**vkCmdDispatch**`. This chapter explains the upstream compilers; Chapters 14 and 15 explain what happens once the **SPIR-V** arrives.
+- **Block size tuning** — `**BLOCK_M**`, `**BLOCK_N**`, `**BLOCK_DMODEL**` on **A100** and **MI300X** hardware
+- **Adoption** — in **vLLM**, **llama.cpp**, and the **transformers** library
+- **Current gaps in the Vulkan SPIR-V path** — missing asynchronous copy instructions (**PTX** `**cp.async**`), warp shuffle, and **Hopper** **TMA** descriptors
+
+**IREE.** Section 6 covers **IREE** (Intermediate Representation Execution Environment), **Google**'s production **MLIR** compiler and runtime for neural network inference:
+
+- **Compilation pipeline** — lowers framework models (**PyTorch**, **TFLite**, **ONNX**) through **StableHLO** → **IREE Flow** dialect → **IREE Stream** dialect → **IREE HAL** dialect → **SPIR-V** (or **PTX** / **LLVM CPU**), embedding the results in a **`.vmfb`** (**VM FlatBuffer**) binary
+- **`**iree-compile**`** — the command-line tool driving this pipeline, with flags such as `**--iree-hal-target-device=vulkan**` and `**--iree-vulkan-target=rdna3**`
+- **Runtime HAL C API** — (`**iree_hal_driver_registry_try_create**`, `**iree_runtime_session_create_with_device**`) wraps `**vkCreateComputePipeline**` and `**vkCmdDispatch**`
+- **Android deployment** — Section 6 also covers **IREE**'s **Android** deployment path via `**libvulkan.so**`
+
+**XLA.** Section 7 covers **XLA** (Accelerated Linear Algebra), the deep learning compiler backend for **JAX** (`**jax.jit**`), **TensorFlow** (`**tf.function**`), and **PyTorch XLA**, whose primary representation is **StableHLO**:
+
+- **GPU backend pipeline** — lowers **StableHLO** through **HLO** graph optimisation passes (**SPMD** partitioner, layout assignment, fusion) to code generation via library calls (**cuBLAS**, **cuDNN**, **rocBLAS**, **MIOpen**), direct **LLVM** IR emission, or **Triton** emission for matmul-heavy fusions
+- **JAX entry points** — `**jax.jit**`, `**jax.ShapeDtypeStruct**`, and `**lowered.compile()**`
+- **AMD support** — via `**jax[rocm]**` and **AMDGPU**
+- **Experimental Vulkan backend** — via **IREE** integration
+
+**SPIR-V as cross-compiler target.** Section 8 examines **SPIR-V** as the interchange format between the high-level GPU compiler world and the driver world:
+
+- **Binary format** — 32-bit word encoding, five-word header with magic `0x07230203`
+- **Module-level instruction ordering** — `**OpCapability**`, `**OpExtension**`, `**OpMemoryModel**`, `**OpEntryPoint**`, `**OpExecutionMode**`
+- **SPIRV-Tools suite** — `**spirv-val**`, `**spirv-opt**`, `**spirv-dis**`, `**spirv-as**`
+- **`**spirv-cross**`** — reverse translation to **GLSL**, **HLSL**, or **MSL** (used by **Proton**, **DXVK**, and **MoltenVK**)
+- **The complete path** — **MLIR** → `**mlir-translate --serialize-spirv**` → `**vkCreateShaderModule**` → `**spirv_to_nir()**` → **NIR** → **ACO** / **LLVM** → GPU ISA
+
+**Cooperative matrix and Tensor Core access.** Section 9 covers the hardware matrix-multiply units and their exposure through `**VK_KHR_cooperative_matrix**` and `**SPV_KHR_cooperative_matrix**`:
+
+- **Hardware units** — **Tensor Cores** on **NVIDIA**, **WMMA** on **RDNA3**, **MFMA** on **CDNA**, and **XMX** (**Xe Matrix Extensions**) on **Intel**
+- **Vulkan query API** — `**vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR**`
+- **SPIR-V instructions** — `**OpTypeCooperativeMatrixKHR**` and `**OpCooperativeMatrixMulAddKHR**`
+- **RADV** — maps to **RDNA3** **WMMA** via **NIR** (`**nir_intrinsic_cooperative_matrix_mul_add**`) and **ACO**
+- **ANV** — maps to **DPAS** (Dot Product Accumulate Systolic) on **Gfx12.5+** / **DG2** (**Alchemist**) and **Xe2+**
+- **Triton** — lowers `**tl.dot**` via `**#nvidia_mma**` and `**#amd_wmma**` layouts
+- **FlashAttention** — uses cooperative matrix in its attention computation
+
+**The Mesa connection.** **SPIR-V** is the lingua franca between the higher-level GPU compiler world and **Mesa**'s driver layer. When **IREE**, **Triton** (via its **Vulkan** backend), or any other **MLIR**-based system targets **Vulkan**, it serialises **MLIR**'s **SPIR-V** dialect to a binary **SPIR-V** module and hands it to `**vkCreateShaderModule**`. **Mesa**'s **SPIR-V** reader (`**src/compiler/spirv/spirv_to_nir.c**`) then translates this binary into **NIR** (Chapter 14), where **Mesa**'s own optimisation and lowering passes take over. Section 10 traces the full path, including:
+
+- **The `**spirv_to_nir_options**` struct** — for configuring **ML**-specific capabilities (`**cooperative_matrix**`, `**float16**`, `**int8**`)
+- **Debugging environment variables** — `**RADV_DEBUG**` and `**MESA_SPIRV_DUMP_PATH**`
+- **The precise call sequence** — by which an **IREE** workload reaches **RADV** or **ANV** and is ultimately dispatched via `**vkCmdDispatch**`
+
+This chapter explains the upstream compilers; Chapters 14 and 15 explain what happens once the **SPIR-V** arrives.
 
 ### 1.1 What is MLIR?
 

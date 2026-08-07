@@ -48,31 +48,82 @@
 
 ## 1. Introduction: Why WebNN Exists
 
-The browser already has two avenues for GPU computation: **WebGL**, which exposes a fragment-shader execution model well-suited to matrix multiplications through texture sampling tricks, and **WebGPU**, which provides explicit compute shaders that can implement any parallelisable algorithm. Developers running neural-network inference in the browser have used both. A flourishing ecosystem of JavaScript ML frameworks — **TensorFlow.js**, **ONNX Runtime Web**, **Transformers.js** — compiles model graphs to WebGL fragment shaders or WebGPU WGSL kernels. The results are impressive, but the approach carries a deep structural cost: every such framework must ship its own compute-shader library, its own quantisation kernels, its own operator implementations, and its own shape-inference logic. For a typical quantised transformer model the total download including the WASM runtime plus the model weights sits at 50–200 MB, and the first-inference latency while the browser JIT-compiles hundreds of WGSL kernels often exceeds one second.
+The browser already has two avenues for GPU computation: **WebGL**, which exposes a fragment-shader execution model well-suited to matrix multiplications through texture sampling tricks, and **WebGPU**, which provides explicit compute shaders that can implement any parallelisable algorithm. Developers running neural-network inference in the browser have used both. A flourishing ecosystem of JavaScript ML frameworks — **TensorFlow.js**, **ONNX Runtime Web**, **Transformers.js** — compiles model graphs to WebGL fragment shaders or WebGPU WGSL kernels. The results are impressive, but the approach carries a deep structural cost: every such framework must ship its own:
 
-There is a deeper problem. WebGPU compute shaders are, by design, portable — they know nothing about the underlying hardware beyond the abstract wgpu memory and execution model. But modern systems have hardware that goes further than GPUs: Intel Core Ultra processors have a built-in NPU (the Intel AI Boost), Qualcomm Snapdragon X laptops include the Hexagon Tensor Processor, and Apple Silicon M-series SoCs include the Apple Neural Engine. These devices are invisible to WebGPU compute shaders. Reaching them requires a different abstraction: one that expresses computation at the graph level (operators and tensors rather than WGSL kernels) and allows the browser to choose, at runtime, whether a conv2d + relu + maxpool chain executes on the NPU with on-device fusion, or falls back to a WGSL compute dispatch, or runs through a CPU SIMD library.
+- **Compute-shader library**
+- **Quantisation kernels**
+- **Operator implementations**
+- **Shape-inference logic**
 
-**WebNN** (Web Neural Network API) was designed to fill exactly this gap. Rather than exposing a shader execution model, it exposes a **computational graph** model: the developer describes operations (matrix multiplication, 2D convolution, softmax, layer normalisation) at a logical level, and the browser translates that graph to whatever native ML runtime the platform supports — DirectML on Windows, Core ML on macOS and iOS, NNAPI on Android, TensorFlow Lite with XNNPACK on Linux and cross-platform fallback paths, and eventually hardware NPU stacks as they mature.
+For a typical quantised transformer model the total download including the WASM runtime plus the model weights sits at 50–200 MB, and the first-inference latency while the browser JIT-compiles hundreds of WGSL kernels often exceeds one second.
+
+There is a deeper problem. WebGPU compute shaders are, by design, portable — they know nothing about the underlying hardware beyond the abstract wgpu memory and execution model. But modern systems have hardware that goes further than GPUs:
+
+- **Intel Core Ultra** processors have a built-in NPU — the **Intel AI Boost**
+- **Qualcomm Snapdragon X** laptops include the **Hexagon Tensor Processor**
+- **Apple Silicon M-series** SoCs include the **Apple Neural Engine**
+
+These devices are invisible to WebGPU compute shaders. Reaching them requires a different abstraction: one that expresses computation at the graph level (operators and tensors rather than WGSL kernels) and allows the browser to choose, at runtime, whether a conv2d + relu + maxpool chain executes on the NPU with on-device fusion, falls back to a WGSL compute dispatch, or runs through a CPU SIMD library.
+
+**WebNN** (Web Neural Network API) was designed to fill exactly this gap. Rather than exposing a shader execution model, it exposes a **computational graph** model: the developer describes operations (matrix multiplication, 2D convolution, softmax, layer normalisation) at a logical level, and the browser translates that graph to whatever native ML runtime the platform supports:
+
+- **Windows** — **DirectML**
+- **macOS and iOS** — **Core ML**
+- **Android** — **NNAPI**
+- **Linux** — **TensorFlow Lite** with **XNNPACK**, plus cross-platform fallback paths
+- Eventually, hardware **NPU** stacks as they mature
 
 ### Historical Context
 
-The W3C Machine Learning Working Group (MLWG) was chartered in April 2021 ([charter](https://www.w3.org/2021/04/web-machine-learning-charter.html)) specifically to develop WebNN as a first-class web standard, separate from the earlier Web Machine Learning Community Group. The first Working Draft appeared in late 2021. The spec reached **Candidate Recommendation Snapshot** status on 11 April 2024 and was further updated to a **Candidate Recommendation Draft** (CRD) on 22 January 2026 incorporating over 100 significant changes — including a third wave of operators targeting transformer architectures, the `MLTensor` buffer-sharing API, and a redesigned device-selection mechanism. The most recent published version as of this writing is dated 21 May 2026 ([W3C TR](https://www.w3.org/TR/webnn/)). The editor's draft lives at `https://webmachinelearning.github.io/webnn/`. Once two independent implementations pass the W3C Web Platform Test suite for WebNN, the specification can advance to full Recommendation.
+The W3C Machine Learning Working Group (MLWG) was chartered in April 2021 ([charter](https://www.w3.org/2021/04/web-machine-learning-charter.html)) specifically to develop WebNN as a first-class web standard, separate from the earlier Web Machine Learning Community Group. The specification's timeline since then:
 
-Chromium's implementation is the most complete to date. It is a collaborative effort from engineers at Google, Intel, and Microsoft. Chromium has supported WebNN behind a flag since approximately Chrome 112 and entered an **origin trial** in Chrome 146. As of mid-2026 WebNN has not yet reached the Chrome stable channel without a flag; developers who want to ship against it today must either use the origin trial token or instruct users to enable `#web-machine-learning-neural-network` in `chrome://flags`.
+- **Late 2021** — the first Working Draft appeared
+- **11 April 2024** — the spec reached **Candidate Recommendation Snapshot** status
+- **22 January 2026** — updated to a **Candidate Recommendation Draft** (CRD) incorporating over 100 significant changes, including a third wave of operators targeting transformer architectures, the `MLTensor` buffer-sharing API, and a redesigned device-selection mechanism
+- **21 May 2026** — most recent published version as of this writing ([W3C TR](https://www.w3.org/TR/webnn/)); the editor's draft lives at `https://webmachinelearning.github.io/webnn/`
+
+Once two independent implementations pass the W3C Web Platform Test suite for WebNN, the specification can advance to full Recommendation.
+
+Chromium's implementation is the most complete to date:
+
+- A collaborative effort from engineers at **Google**, **Intel**, and **Microsoft**
+- Supported behind a flag since approximately **Chrome 112**
+- Entered an **origin trial** in **Chrome 146**
+- As of mid-2026, WebNN has not yet reached the Chrome stable channel without a flag; developers who want to ship against it today must either use the origin trial token or instruct users to enable `#web-machine-learning-neural-network` in `chrome://flags`
 
 WebNN is designed as a low-level building block, not a user-facing framework. It sits beneath TensorFlow.js, ONNX Runtime Web, and similar libraries as an execution provider, in the same way that WebGL or WebGPU sits beneath Three.js.
 
 ### 1.1 What is WebNN?
 
-WebNN (Web Neural Network API) is a W3C standard that exposes a declarative computational-graph interface for on-device machine-learning inference inside a web browser. Rather than providing shader-level execution primitives like WebGPU or WebGL, WebNN operates at the logical ML-operator level: the developer specifies a graph of tensor operations (convolution, matrix multiplication, activation functions, normalisation) and the browser translates that graph to the most appropriate native inference runtime available on the platform. On Windows the browser typically delegates to DirectML, on macOS and iOS to Core ML, on Android to NNAPI, and on Linux to TensorFlow Lite with XNNPACK as the primary accelerated CPU path. This design means that a single WebNN graph description runs portably across hardware configurations while still benefiting from platform-specific acceleration, including purpose-built silicon such as NPUs. The specification is published at `https://www.w3.org/TR/webnn/` and reached Candidate Recommendation Snapshot status in April 2024 before progressing to a Candidate Recommendation Draft in January 2026. Chromium's implementation, spanning the `services/webnn/` directory tree, is the most complete currently available and has been accessible via origin trial since Chrome 146. WebNN is intended as a low-level execution layer that sits beneath JavaScript ML frameworks such as TensorFlow.js and ONNX Runtime Web, in the same role that WebGPU or WebGL plays for graphics frameworks.
+WebNN (Web Neural Network API) is a W3C standard that exposes a declarative computational-graph interface for on-device machine-learning inference inside a web browser. Rather than providing shader-level execution primitives like WebGPU or WebGL, WebNN operates at the logical ML-operator level: the developer specifies a graph of tensor operations (convolution, matrix multiplication, activation functions, normalisation) and the browser translates that graph to the most appropriate native inference runtime available on the platform:
+
+- **Windows** — the browser typically delegates to **DirectML**
+- **macOS and iOS** — delegates to **Core ML**
+- **Android** — delegates to **NNAPI**
+- **Linux** — delegates to **TensorFlow Lite** with **XNNPACK** as the primary accelerated CPU path
+
+This design means that a single WebNN graph description runs portably across hardware configurations while still benefiting from platform-specific acceleration, including purpose-built silicon such as NPUs. The specification is published at `https://www.w3.org/TR/webnn/` and reached Candidate Recommendation Snapshot status in April 2024 before progressing to a Candidate Recommendation Draft in January 2026. Chromium's implementation, spanning the `services/webnn/` directory tree, is the most complete currently available and has been accessible via origin trial since Chrome 146. WebNN is intended as a low-level execution layer that sits beneath JavaScript ML frameworks such as TensorFlow.js and ONNX Runtime Web, in the same role that WebGPU or WebGL plays for graphics frameworks.
 
 ### 1.2 What is a Computational Graph?
 
-A computational graph is a directed acyclic graph (DAG) in which each node represents a mathematical operation on tensors and each directed edge carries the tensor value flowing from one operation's output to another's input. This representation is the foundation of modern ML frameworks: PyTorch and TensorFlow both construct computational graphs internally before compiling them to device-specific execution plans. WebNN adopts the same abstraction at the browser API boundary through the `MLGraphBuilder` interface, where each method call (for example, `matmul`, `conv2d`, or `relu`) creates a graph node and returns an `MLOperand` representing that node's output tensor. The graph is not executed immediately; it is compiled asynchronously by `builder.build()` into an immutable `MLGraph` object. Compilation is the stage at which the browser examines the full graph topology, performs shape inference, applies operator fusion where the native backend supports it — for instance, fusing a conv2d followed by bias-add followed by relu into a single native kernel — and generates the calls to the underlying runtime. Once compiled, the `MLGraph` is reused across every inference call, amortising compilation cost over many invocations. This compile-once-dispatch-many pattern is a deliberate departure from the immediate-execution model of WebGL, and it is what allows the browser's backend to schedule and fuse operations the same way a native ML compiler would when targeting GPU, NPU, or CPU SIMD hardware.
+A computational graph is a directed acyclic graph (DAG) in which each node represents a mathematical operation on tensors and each directed edge carries the tensor value flowing from one operation's output to another's input. This representation is the foundation of modern ML frameworks: PyTorch and TensorFlow both construct computational graphs internally before compiling them to device-specific execution plans. WebNN adopts the same abstraction at the browser API boundary through the `MLGraphBuilder` interface, where each method call (for example, `matmul`, `conv2d`, or `relu`) creates a graph node and returns an `MLOperand` representing that node's output tensor. The graph is not executed immediately; it is compiled asynchronously by `builder.build()` into an immutable `MLGraph` object. Compilation is the stage at which the browser:
+
+- Examines the full graph topology
+- Performs shape inference
+- Applies operator fusion where the native backend supports it — for instance, fusing a conv2d followed by bias-add followed by relu into a single native kernel
+- Generates the calls to the underlying runtime
+
+Once compiled, the `MLGraph` is reused across every inference call, amortising compilation cost over many invocations. This compile-once-dispatch-many pattern is a deliberate departure from the immediate-execution model of WebGL, and it is what allows the browser's backend to schedule and fuse operations the same way a native ML compiler would when targeting GPU, NPU, or CPU SIMD hardware.
 
 ### 1.3 What is an NPU?
 
-A Neural Processing Unit (NPU) is a hardware accelerator designed specifically for the tensor arithmetic that dominates neural-network inference: large matrix multiplications, two-dimensional convolutions, quantised dot products, and element-wise activation functions. Unlike a GPU, which is a general-purpose parallel processor that happens to perform these operations efficiently, an NPU is a fixed-function or semi-programmable dataflow engine with on-chip weight buffers and tightly coupled memory that maximises throughput per milliwatt for a well-defined set of operator patterns. Modern SoCs integrate NPUs directly: Intel Core Ultra processors include the Intel AI Boost (also known as the Intel NPU), Qualcomm Snapdragon X laptops include the Hexagon Tensor Processor, and Apple Silicon M-series chips include the Apple Neural Engine. On Linux, these accelerators are currently exposed through platform-specific kernel or user-space interfaces rather than through a unified DRM subsystem; as of mid-2026 there is no generic Linux NPU driver framework analogous to DRM that WebNN can target through a single code path. Chromium's WebNN implementation on Linux therefore uses CPU-side accelerated paths (TFLite with XNNPACK) as its primary backend, while GPU inference runs through WebGPU shader dispatch. The implications of this situation for the Linux graphics stack, and the emerging kernel-side NPU driver work that may change it, are covered in Section 6.
+A Neural Processing Unit (NPU) is a hardware accelerator designed specifically for the tensor arithmetic that dominates neural-network inference: large matrix multiplications, two-dimensional convolutions, quantised dot products, and element-wise activation functions. Unlike a GPU, which is a general-purpose parallel processor that happens to perform these operations efficiently, an NPU is a fixed-function or semi-programmable dataflow engine with on-chip weight buffers and tightly coupled memory that maximises throughput per milliwatt for a well-defined set of operator patterns. Modern SoCs integrate NPUs directly:
+
+- **Intel Core Ultra** processors include the **Intel AI Boost** (also known as the Intel NPU)
+- **Qualcomm Snapdragon X** laptops include the **Hexagon Tensor Processor**
+- **Apple Silicon M-series** chips include the **Apple Neural Engine**
+
+On Linux, these accelerators are currently exposed through platform-specific kernel or user-space interfaces rather than through a unified DRM subsystem; as of mid-2026 there is no generic Linux NPU driver framework analogous to DRM that WebNN can target through a single code path. Chromium's WebNN implementation on Linux therefore uses CPU-side accelerated paths (TFLite with XNNPACK) as its primary backend, while GPU inference runs through WebGPU shader dispatch. The implications of this situation for the Linux graphics stack, and the emerging kernel-side NPU driver work that may change it, are covered in Section 6.
 
 ---
 

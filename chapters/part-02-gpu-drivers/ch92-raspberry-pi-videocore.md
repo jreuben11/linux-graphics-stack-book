@@ -48,35 +48,82 @@ Raspberry Pi boards span nearly fifteen years of **Broadcom** SoC evolution, and
 | Pi 4, CM4 | BCM2711 | VideoCore VI / V3D 4.2 | V3D 4.2 |
 | Pi 5, CM5 | BCM2712 | VideoCore VII / V3D 7.1 | V3D 7.1 |
 
-The **BCM2835** through **BCM2837** family shares the same **VideoCore IV** GPU block. In Broadcom terminology "**VideoCore IV**" names the complete multimedia processor — an ARM-adjacent processor running firmware that manages display, camera, and audio, in addition to the 3D acceleration unit. The 3D acceleration portion is driven by **QPU**s (Quad Processor Units) — 16-way **SIMD** vector processors, each with an add-ALU and a multiply-ALU pipeline that together execute two floating-point operations per cycle. Every Pi 1–3 uses the **vc4** kernel **DRM** driver and the **vc4** **Mesa** Gallium driver for **OpenGL ES**.
+The **BCM2835** through **BCM2837** family shares the same **VideoCore IV** GPU block, driven entirely by the firmware-mediated **vc4** driver stack; **BCM2711** and **BCM2712** replace it with the directly-driven **V3D** block. The sections that follow work through each generation in turn.
 
-**VideoCore IV** uses a **tile-based deferred rendering** (**TBDR**) architecture in which a frame is divided into 64×64 pixel tiles, processed in a binning pass (coordinate shader + primitive binning into a **Tile Control List**) followed by a rendering pass (full vertex and fragment shading into an on-chip tile buffer). The **vc4** kernel driver, living at **drivers/gpu/drm/vc4/**, exposes the **DRM_IOCTL_VC4_SUBMIT_CL** submission interface accepting a **drm_vc4_submit_cl** structure; buffer objects are **CMA** (Contiguous Memory Allocator)-backed because **VideoCore IV** lacks an **MMU**. The **Mesa** **vc4** Gallium driver at **src/gallium/drivers/vc4/** compiles **TGSI** shaders to **QPU** binary and submits binning and render control lists via that **IOCTL**, supporting **GLES 2.0** on Pi 1–3.
+Section 2 covers **VideoCore IV** architecture (Pi 1–3):
 
-The **BCM2711** in Pi 4 introduced a new and substantially more capable 3D block, called **V3D 4.2** by Broadcom. This block is distinct from the **VideoCore VI** firmware processor: the firmware still runs on a **VideoCore VI** core managing boot and thermal policy, but the 3D accelerator communicates directly with the Linux kernel through the **v3d** **DRM** driver, completely bypassing the firmware blob for rendering. This architectural split — firmware-managed peripherals separate from a directly-driven 3D accelerator — was the enabling condition for a fully open-source 3D driver. **V3D 4.2** adds a hardware **MMU** with a two-level page table providing per-context **GPU** virtual address spaces, a Compute Shader Dispatch (**CSD**) unit for **OpenGL ES** compute shaders and **Vulkan** compute, and a **Texture Formatting Unit** (**TFU**) for format conversion and mipmap generation in fixed-function hardware without shader involvement. The **v3d** kernel driver at **drivers/gpu/drm/v3d/** exposes four hardware queues — bin, render, **TFU**, and **CSD** — each with its own submit **IOCTL** and integrated with the **DRM GPU scheduler**. The **Mesa** **v3d** Gallium driver at **src/gallium/drivers/v3d/** is **NIR**-based throughout and supports **GLES 3.1** on Pi 4 and Pi 5.
+- **VideoCore IV as multimedia processor** — in Broadcom terminology "**VideoCore IV**" names the complete multimedia processor, an ARM-adjacent processor running firmware that manages display, camera, and audio, in addition to the 3D acceleration unit
+- **QPU** (Quad Processor Unit) — 16-way **SIMD** vector processors, each with an add-ALU and a multiply-ALU pipeline that together execute two floating-point operations per cycle
+- **Tile-based deferred rendering** (**TBDR**) — a frame is divided into 64×64 pixel tiles, processed in a binning pass (coordinate shader + primitive binning into a **Tile Control List**) followed by a rendering pass (full vertex and fragment shading into an on-chip tile buffer)
+- **vc4 kernel DRM driver** (**drivers/gpu/drm/vc4/**) — exposes the **DRM_IOCTL_VC4_SUBMIT_CL** submission interface accepting a **drm_vc4_submit_cl** structure; buffer objects are **CMA** (Contiguous Memory Allocator)-backed because **VideoCore IV** lacks an **MMU**
+- **Mesa vc4 Gallium driver** (**src/gallium/drivers/vc4/**) — compiles **TGSI** shaders to **QPU** binary and submits binning and render control lists via that **IOCTL**, supporting **GLES 2.0** on Pi 1–3
 
-The **BCM2712** in Pi 5 advances to **V3D 7.1**, the same architectural family but with wider **QPU** slices and improved memory bandwidth. The Pi 5 also introduces the **RP1** southbridge chip (connected to **BCM2712** over **PCIe** 2.0 x4), which takes over USB, Gigabit Ethernet, **MIPI** camera/display interfaces, and GPIO from the main SoC, leaving **BCM2712** free to focus on CPU/GPU work. The Pi 5 display path uses an updated **HVS** (informally **HVS7**) with higher bandwidth and 4K pixel format support. [Source](https://www.raspberrypi.com/news/rp1-the-silicon-controlling-raspberry-pi-5-i-o-designed-here-at-raspberry-pi/)
+Section 3 covers **VideoCore VI** and the **V3D** driver introduced with Pi 4, extended to Pi 5:
 
-The **V3D** shader compiler, shared between the Gallium **v3d** driver and the Vulkan **v3dv** driver, lives at **src/broadcom/compiler/** and implements a pipeline that lowers **Mesa** **NIR** through **V3D**-specific passes (**v3d_nir_lower_io()**, **v3d_nir_lower_txf_ms()**, **v3d_nir_lower_image_load_store()**, **v3d_nir_lower_scratch()**, **nir_opt_sink()**) into **VIR** (V3D Intermediate Representation), then instruction-schedules **VIR** to hide texture lookup latency, performs graph-colouring register allocation, and emits 64-bit **QPU** binary words. Fragment shaders can run in 2-thread or 4-thread mode to hide **TMU** (Texture and Memory Unit) latency via hardware thread interleaving. Uniforms are consumed via the **LDUNIF** FIFO from a per-shader **uniforms BO** rather than from an indexed constant buffer hardware block.
+- **Firmware/accelerator split** — the **BCM2711**'s **V3D 4.2** block is distinct from the **VideoCore VI** firmware processor: firmware still runs on a **VideoCore VI** core managing boot and thermal policy, but the 3D accelerator communicates directly with the Linux kernel through the **v3d** **DRM** driver, completely bypassing the firmware blob for rendering — the enabling condition for a fully open-source 3D driver
+- **Hardware MMU** — a two-level page table providing per-context **GPU** virtual address spaces
+- **Compute Shader Dispatch** (**CSD**) unit — for **OpenGL ES** compute shaders and **Vulkan** compute
+- **Texture Formatting Unit** (**TFU**) — fixed-function format conversion and mipmap generation without shader involvement
+- **v3d kernel driver** (**drivers/gpu/drm/v3d/**) — four hardware queues (bin, render, **TFU**, **CSD**), each with its own submit **IOCTL** and integrated with the **DRM GPU scheduler**
+- **Mesa v3d Gallium driver** (**src/gallium/drivers/v3d/**) — **NIR**-based throughout, supports **GLES 3.1** on Pi 4 and Pi 5
+- **Pi 5 (BCM2712)** — advances to **V3D 7.1**, the same architectural family but with wider **QPU** slices and improved memory bandwidth
 
-Display across all Pi generations is managed by the **vc4** **DRM** driver, which registers the **HVS** (Hardware Video Scaler) as a global compositor accepting up to eight **DRM** planes, **Pixel Valve** (**PV**) blocks as **drm_crtc** objects, and encoders including **vc4_hdmi**, **vc4_dsi** (**MIPI DSI** for the official touchscreen), **vc4_vec** (composite video), and **vc4_dpi** (parallel display). The **KMS** atomic modeset path drives these through **vc4_hvs_atomic_check()** and **vc4_hvs_atomic_flush()**. **HDMI** audio is implemented via the internal **MAI** (Multi-channel Audio Interconnect) bus and exposed as an **ALSA** PCM device.
+Section 4 covers the **V3D** shader compiler (**src/broadcom/compiler/**), shared between the Gallium **v3d** driver and the Vulkan **v3dv** driver:
 
-On the multimedia and camera side, the chapter covers both the legacy **MMAL** (Multimedia Abstraction Layer) over **VCHI** (VideoCore Host Interface) path — which powered the deprecated **raspistill**/**raspivid** tools and the **bcm2835_v4l2** wrapper — and the modern **libcamera** stack. **libcamera**'s **PipelineHandlerRPi** drives **Unicam** (the **CSI-2** D-PHY receiver) and the hardware **ISP** (Image Signal Processor) directly, with 3A algorithms running in the **IPA** (Image Processing Algorithm) plugin at **src/ipa/rpi/**.
+- **NIR lowering passes** — **v3d_nir_lower_io()**, **v3d_nir_lower_txf_ms()**, **v3d_nir_lower_image_load_store()**, **v3d_nir_lower_scratch()**, **nir_opt_sink()**, lowering **Mesa** **NIR** into **VIR** (V3D Intermediate Representation)
+- **Instruction scheduling** — reorders **VIR** to hide texture lookup latency
+- **Register allocation** — graph-colouring allocation before emitting 64-bit **QPU** binary words
+- **Hardware thread interleaving** — fragment shaders run in 2-thread or 4-thread mode to hide **TMU** (Texture and Memory Unit) latency
+- **LDUNIF FIFO** — uniforms are consumed from this FIFO from a per-shader **uniforms BO** rather than from an indexed constant buffer hardware block
 
-Hardware video decode on Pi 4 and Pi 5 uses the **V4L2** Memory-to-Memory (**M2M**) framework via the **bcm2835-codec** driver at **drivers/staging/vc04_services/bcm2835-codec/**, which exposes **H.264**, **HEVC**, **MJPEG**, and other codecs as **/dev/video** nodes. **FFmpeg**'s **v4l2m2m** decoder family and **MPV** integrate directly with this driver. A zero-copy decode-to-display path is possible by exporting decoded **NV12** frames as **DMA-BUF** file descriptors, importing them into **Mesa** **v3d** via **EGL_EXT_image_dma_buf_import** as **EGLImage** objects, and compositing via a **Wayland** surface or a direct **DRM** overlay plane using the **HVS**'s native **NV12** support.
+Section 5 covers **KMS** and display, managed across all Pi generations by the **vc4** **DRM** driver:
 
-The **Raspberry Pi OS** graphics stack has evolved from **X11** + **Openbox** through **Wayfire** (the default Wayland compositor in Pi OS Bookworm, 2023) to **labwc** (the current default from November 2024). **Mesa** on Pi 4/5 exposes **libEGL.so** (**EGL 1.5**), **libGLESv2.so** (**GLES 3.1**), and the **vulkan-broadcom** package installs the **V3DV** Vulkan **ICD** (**libvulkan_broadcom.so**). GPU performance is commonly benchmarked with **GLmark2**.
+- **HVS** (Hardware Video Scaler) — registered as a global compositor accepting up to eight **DRM** planes
+- **Pixel Valve** (**PV**) blocks — exposed as **drm_crtc** objects
+- **Encoders** — **vc4_hdmi**, **vc4_dsi** (**MIPI DSI** for the official touchscreen), **vc4_vec** (composite video), and **vc4_dpi** (parallel display)
+- **Atomic modeset** — driven through **vc4_hvs_atomic_check()** and **vc4_hvs_atomic_flush()**
+- **HDMI audio** — implemented via the internal **MAI** (Multi-channel Audio Interconnect) bus and exposed as an **ALSA** PCM device
+- **Pi 5 display path** — an updated **HVS** (informally **HVS7**) with higher bandwidth and 4K pixel format support, alongside the **RP1** southbridge chip (connected to **BCM2712** over **PCIe** 2.0 x4), which takes over USB, Gigabit Ethernet, **MIPI** camera/display interfaces, and GPIO from the main SoC, leaving **BCM2712** free to focus on CPU/GPU work [Source](https://www.raspberrypi.com/news/rp1-the-silicon-controlling-raspberry-pi-5-i-o-designed-here-at-raspberry-pi/)
 
-The **V3DV** Vulkan driver at **src/broadcom/vulkan/** was developed primarily by **Igalia** and achieved **Vulkan 1.0** Khronos conformance in 2020, **Vulkan 1.2** in 2022, and **Vulkan 1.3** in **Mesa 24.3** (November 2024) for both **V3D 4.2** and **V3D 7.1**. Key driver structures include **v3dv_device**, **v3dv_cmd_buffer** (which accumulates a **BCL** and **RCL**), and **v3dv_pipeline**. Draw calls translate to **Control List** (**CL**) packet emission; compute dispatches submit **CSD** jobs via **DRM_IOCTL_V3D_SUBMIT_CSD**. The driver supports **VK_KHR_synchronization2** for integration with modern Vulkan applications and game engines.
+Section 6 covers multimedia and camera:
 
-In production environments the chapter covers kiosk and digital signage deployments using **Weston**'s kiosk shell, the **cage** single-app **Wayland** compositor (built on **wlroots**), and **Chromium** with **Ozone** Wayland support and **VA-API** hardware video decode via a **VA-API**→**V4L2** translation layer. Thermal management via **DVFS** (Dynamic Voltage and Frequency Scaling) and overclocking through **/boot/firmware/config.txt** are critical for production thermal budgets. The **Compute Module 4** (**CM4**) and **Compute Module 5** (**CM5**) form factors enable custom carrier boards for industrial **HMI**, machine vision, and edge AI use cases. **ROS 2** robotics pipelines on Pi combine **libcamera** capture, **OpenCV** with **GStreamer** **v4l2src**, **v4l2video10h264dec** hardware decode, and **OpenGL ES** or **Vulkan** compute for perception acceleration.
+- **Legacy MMAL over VCHI** — the **MMAL** (Multimedia Abstraction Layer) over **VCHI** (VideoCore Host Interface) path that powered the deprecated **raspistill**/**raspivid** tools and the **bcm2835_v4l2** wrapper
+- **Modern libcamera stack** — **libcamera**'s **PipelineHandlerRPi** drives **Unicam** (the **CSI-2** D-PHY receiver) and the hardware **ISP** (Image Signal Processor) directly, with 3A algorithms running in the **IPA** (Image Processing Algorithm) plugin at **src/ipa/rpi/**
+
+Section 7 covers hardware video decode on Pi 4 and Pi 5:
+
+- **V4L2 Memory-to-Memory** (**M2M**) framework — via the **bcm2835-codec** driver at **drivers/staging/vc04_services/bcm2835-codec/**, exposing **H.264**, **HEVC**, **MJPEG**, and other codecs as **/dev/video** nodes
+- **Userspace integration** — **FFmpeg**'s **v4l2m2m** decoder family and **MPV** integrate directly with this driver
+- **Zero-copy decode-to-display** — exporting decoded **NV12** frames as **DMA-BUF** file descriptors, importing them into **Mesa** **v3d** via **EGL_EXT_image_dma_buf_import** as **EGLImage** objects, and compositing via a **Wayland** surface or a direct **DRM** overlay plane using the **HVS**'s native **NV12** support
+
+Section 8 covers the **Raspberry Pi OS** graphics stack:
+
+- **Compositor evolution** — **X11** + **Openbox**, through **Wayfire** (the default Wayland compositor in Pi OS Bookworm, 2023), to **labwc** (the current default from November 2024)
+- **Mesa userspace libraries** — **libEGL.so** (**EGL 1.5**) and **libGLESv2.so** (**GLES 3.1**) on Pi 4/5
+- **Vulkan ICD** — the **vulkan-broadcom** package installs the **V3DV** Vulkan **ICD** (**libvulkan_broadcom.so**)
+- **Benchmarking** — GPU performance is commonly measured with **GLmark2**
+
+Section 9 covers the **V3DV** Vulkan driver (**src/broadcom/vulkan/**), developed primarily by **Igalia**:
+
+- **Conformance milestones** — **Vulkan 1.0** Khronos conformance in 2020, **Vulkan 1.2** in 2022, and **Vulkan 1.3** in **Mesa 24.3** (November 2024) for both **V3D 4.2** and **V3D 7.1**
+- **Key driver structures** — **v3dv_device**, **v3dv_cmd_buffer** (accumulates a **BCL** and **RCL**), and **v3dv_pipeline**
+- **Command translation** — draw calls translate to **Control List** (**CL**) packet emission; compute dispatches submit **CSD** jobs via **DRM_IOCTL_V3D_SUBMIT_CSD**
+- **Synchronisation** — supports **VK_KHR_synchronization2** for integration with modern Vulkan applications and game engines
+
+Section 10 covers production deployments:
+
+- **Kiosk and digital signage** — **Weston**'s kiosk shell, the **cage** single-app **Wayland** compositor (built on **wlroots**), and **Chromium** with **Ozone** Wayland support and **VA-API** hardware video decode via a **VA-API**→**V4L2** translation layer
+- **Thermal management** — **DVFS** (Dynamic Voltage and Frequency Scaling) and overclocking through **/boot/firmware/config.txt**, critical for production thermal budgets
+- **Compute Module form factors** — **Compute Module 4** (**CM4**) and **Compute Module 5** (**CM5**) enable custom carrier boards for industrial **HMI**, machine vision, and edge AI use cases
+- **ROS 2 robotics pipelines** — combine **libcamera** capture, **OpenCV** with **GStreamer** **v4l2src**, **v4l2video10h264dec** hardware decode, and **OpenGL ES** or **Vulkan** compute for perception acceleration
 
 ### A History of Openness
 
-When the original Pi shipped in 2012, its GPU was driven entirely by a closed firmware blob (**start.elf**) loaded from the SD card boot partition by the **VideoCore** before ARM was even released from reset. The firmware exposed a **VCHI** (**VideoCore Host Interface**) IPC channel over which the ARM-side **MMAL** (**Multimedia Abstraction Layer**) API communicated. 3D rendering was available only through a proprietary **EGL**/**GLES** library distributed in **/opt/vc/**.
+The transition from a closed firmware blob to a fully open driver stack unfolded in three stages:
 
-The first crack in that wall was Herman Hermitage's reverse engineering of the **VideoCore IV** ISA starting in 2012. The [videocoreiv](https://github.com/hermanhermitage/videocoreiv) project documented the assembly language, **QPU** pipeline, and control list format, providing the foundation that later driver work depended on.
-
-Eric Anholt (then at Intel, later at Broadcom/Raspberry Pi) wrote the open-source **vc4** kernel **DRM** driver and accompanying **Mesa** Gallium driver, merged into Linux 4.4 and **Mesa** 10.6 respectively. For the first time, a Pi could render **OpenGL ES** using standard, firmware-free kernel interfaces. Eric subsequently authored the **v3d** kernel driver and **Mesa** driver for Pi 4, completing the transition to a fully open graphics stack. **Igalia** then led the development of the **v3dv** Vulkan driver, achieving Khronos conformance in 2020.
+- **2012 — closed firmware era**: at launch, the Pi's GPU was driven entirely by a closed firmware blob (**start.elf**) loaded from the SD card boot partition by the **VideoCore** before ARM was even released from reset. The firmware exposed a **VCHI** (**VideoCore Host Interface**) IPC channel over which the ARM-side **MMAL** (**Multimedia Abstraction Layer**) API communicated; 3D rendering was available only through a proprietary **EGL**/**GLES** library distributed in **/opt/vc/**
+- **2012 — reverse engineering**: Herman Hermitage's reverse engineering of the **VideoCore IV** ISA cracked that wall. The [videocoreiv](https://github.com/hermanhermitage/videocoreiv) project documented the assembly language, **QPU** pipeline, and control list format, providing the foundation that later driver work depended on
+- **Linux 4.4 / Mesa 10.6 onward — open drivers**: Eric Anholt (then at Intel, later at Broadcom/Raspberry Pi) wrote the open-source **vc4** kernel **DRM** driver and accompanying **Mesa** Gallium driver, letting a Pi render **OpenGL ES** using standard, firmware-free kernel interfaces for the first time. He subsequently authored the **v3d** kernel driver and **Mesa** driver for Pi 4, completing the transition to a fully open graphics stack; **Igalia** then led the development of the **v3dv** Vulkan driver, achieving Khronos conformance in 2020
 
 ### 1.1 What is VideoCore IV?
 

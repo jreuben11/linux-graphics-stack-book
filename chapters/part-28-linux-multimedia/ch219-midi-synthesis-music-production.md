@@ -34,7 +34,16 @@
 
 ## Overview
 
-Linux provides a full-stack music production environment spanning the MIDI wire protocol, synthesis engines, plugin standards, and professional DAW infrastructure. This chapter covers the entire signal chain for audio application developers: from raw MIDI byte encoding through the ALSA sequencer's client/port routing model and PipeWire's UMP graph, into SoundFont synthesis with FluidSynth, plugin authorship under LV2 and CLAP, and high-level production tools including Ardour, SuperCollider, and Csound. Systems engineers will find detailed coverage of USB MIDI class-compliance, kernel UMP support introduced in Linux 6.5, and real-time scheduling constraints that govern every audio callback.
+Linux provides a full-stack music production environment spanning the MIDI wire protocol, synthesis engines, plugin standards, and professional DAW infrastructure. This chapter covers the entire signal chain for audio application developers:
+
+- **MIDI fundamentals** (Section 1) — raw MIDI byte encoding, the starting point of the chain, plus kernel UMP support introduced in Linux 6.5
+- **ALSA sequencer** (Section 2) — the client/port routing model that connects MIDI sources and sinks
+- **PipeWire MIDI** (Section 3) — PipeWire's UMP graph
+- **FluidSynth** (Section 5) — SoundFont synthesis
+- **Plugin authorship** (Sections 7, 8, 14) — the **LV2** and **CLAP** plugin standards
+- **Production tools** (Sections 10–12) — **Ardour**, **SuperCollider**, and **Csound**
+
+Systems engineers will find detailed coverage of USB MIDI class-compliance (Section 4) and the real-time scheduling constraints that govern every audio callback (Section 16).
 
 For the kernel-level ALSA PCM engine and ASoC framework see Ch38b; for PipeWire's session management and audio graph internals see Ch38.
 

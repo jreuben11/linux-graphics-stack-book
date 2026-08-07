@@ -44,13 +44,40 @@
 
 The COSMIC desktop environment is System76's from-scratch replacement for the GNOME-based desktop that shipped on earlier Pop!_OS releases. What makes it interesting for a book about the Linux graphics stack is not that it is another desktop — it is that the *entire* stack, from the Wayland compositor that drives KMS scanout up to the widget library that lays out buttons, is written in Rust with no C GUI-toolkit dependency in the critical path. Where a GNOME session runs Mutter (C) plus GTK4 (C) plus libadwaita (C), and a KDE Plasma session runs KWin (C++) plus Qt (C++), a COSMIC session runs `cosmic-comp` (Rust, on the `smithay` library) plus `libcosmic` (Rust, on the `iced` toolkit). [Source](https://github.com/pop-os/cosmic-epoch)
 
-This chapter treats libcosmic as a framework and the COSMIC desktop as a case study. It has two natural readerships. The first is the application developer who wants to ship a COSMIC-native GUI and needs the current `cosmic::Application` API, the widget set, the theming model, and the `cosmic-config` persistence layer. The second is the systems developer who wants to see how a Rust compositor implements the same DRM/KMS atomic-commit and GBM buffer paths (Ch2, Ch4) as wlroots-based compositors (Ch21) and Mutter (Ch22), but with a different type discipline.
+This chapter treats libcosmic as a framework and the COSMIC desktop as a case study. A note on scope and overlap: Ch39e already covers the *rendering mechanics* of the iced toolkit — the Elm-architecture model, the `iced_wgpu::Engine`, the primitive render loop that turns quads, text, and images into `wgpu` command buffers, and the software `tiny_skia` fallback. This chapter does not re-derive those; where the widget or theming sections touch iced's renderer, they cross-link Ch39e and instead go deeper on what is specific to *COSMIC*.
 
-A note on scope and overlap. Ch39e already covers the *rendering mechanics* of the iced toolkit — the Elm-architecture model, the `iced_wgpu::Engine`, the primitive render loop that turns quads, text, and images into `wgpu` command buffers, and the software `tiny_skia` fallback. This chapter does not re-derive those; where the widget or theming sections touch iced's renderer, they cross-link Ch39e and instead go deeper on what is specific to *COSMIC*: the compositor internals, the current application API, `cosmic-config`, `cosmic-settings` as a worked example, XWayland support, and the desktop-stack framing.
+Section 1 covers the COSMIC desktop architecture:
 
-One correction is worth stating up front because it recurs. libcosmic *applications* render through `wgpu` (via iced), and on Linux `wgpu` resolves to the Vulkan backend against Mesa drivers (Ch18). The `cosmic-comp` *compositor*, however, does **not** render through `wgpu` — it uses smithay's OpenGL ES renderer (`GlowRenderer`, over the `glow` crate). The two layers of the "pure-Rust GPU stack" therefore reach the GPU by different routes, and §2.6 spells this out.
+- **Desktop-stack framing** — how a COSMIC session (`cosmic-comp` on `smithay`, `libcosmic` on `iced`) compares to a GNOME session (Mutter, GTK4, libadwaita — all C) and a KDE Plasma session (KWin, Qt — C++)
 
-A second orientation point: **COSMIC's public API is explicitly not yet stable.** The upstream example source carries the line "The libcosmic API is not stable yet." [Source](https://github.com/pop-os/libcosmic/blob/master/examples/application/src/main.rs) The code in this chapter is drawn from upstream examples current as of mid-2026 (COSMIC Epoch 1.0, released December 2025), and should be treated as representative of the shape of the API rather than a frozen contract.
+Section 2 examines `cosmic-comp`, the smithay-based compositor:
+
+- **Compositor internals** — how this Rust compositor implements the same DRM/KMS atomic-commit and GBM buffer paths (Ch2, Ch4) as wlroots-based compositors (Ch21) and Mutter (Ch22), but with a different type discipline
+- **Rendering correction (§2.6)** — `cosmic-comp` does **not** render through `wgpu`; it uses smithay's OpenGL ES renderer (`GlowRenderer`, over the `glow` crate), whereas libcosmic *applications* render through `wgpu` (via iced), which on Linux resolves to the Vulkan backend against Mesa drivers (Ch18) — the two layers of the "pure-Rust GPU stack" therefore reach the GPU by different routes
+
+Section 3 covers libcosmic architecture:
+
+- **Current application API** — the `cosmic::Application` API used to build COSMIC-native applications
+- **cosmic-config** — the persistence layer application developers use for settings
+- **API stability** — **COSMIC's public API is explicitly not yet stable**; the upstream example source carries the line "The libcosmic API is not stable yet." [Source](https://github.com/pop-os/libcosmic/blob/master/examples/application/src/main.rs) Code in this chapter is drawn from upstream examples current as of mid-2026 (COSMIC Epoch 1.0, released December 2025), and should be treated as representative of the shape of the API rather than a frozen contract
+
+Section 4 covers the COSMIC widget library:
+
+- **Widget set** — the widget catalogue application developers use when shipping a COSMIC-native GUI
+
+Section 5 covers the COSMIC theming system:
+
+- **Theming model** — the theming model application developers use when shipping a COSMIC-native GUI
+
+Section 7 covers `cosmic-settings`:
+
+- **Worked example** — a real COSMIC application used as a worked example of the application API and configuration model described in this chapter
+
+Section 8 addresses XWayland and legacy application support:
+
+- **XWayland support** — legacy X11 application support within a COSMIC session
+
+This chapter has two natural readerships: the application developer who wants to ship a COSMIC-native GUI, and the systems developer who wants to see how a Rust compositor compares to wlroots-based compositors and Mutter, but with a different type discipline.
 
 ---
 

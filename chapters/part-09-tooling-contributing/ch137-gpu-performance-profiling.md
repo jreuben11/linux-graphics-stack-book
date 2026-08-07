@@ -38,9 +38,21 @@ It covers every layer of the Linux GPU profiling stack — from hardware perform
 
 ## 1. Introduction
 
-GPU performance profiling on Linux is a layered discipline. At the bottom, GPU silicon exposes fixed-function hardware performance counters — cycle counts, cache hit rates, memory bandwidth bytes — that the kernel makes accessible through its `perf` Performance Monitoring Unit (PMU) framework or through driver-level ioctls. Above that sits the graphics API layer: Vulkan's `VK_KHR_performance_query` extension and timestamp query pools give applications a portable way to measure GPU-side timing without vendor-specific code. Higher still, Mesa and each vendor driver expose their own instrumentation — environment variables that toggle heads-up displays, generate CSV timing files, or trigger frame-level hardware traces. Finally, vendor desktop tools — AMD's Radeon GPU Profiler, Intel's Graphics Performance Analyzers, NVIDIA's Nsight Graphics — tie all of this together into interactive frame debuggers with wavefront-level or EU-level granularity.
+GPU performance profiling on Linux is a layered discipline, with each layer exposing a different resolution of detail:
 
-The Linux landscape differs meaningfully from Windows. On Windows, PIX for Windows and NVIDIA Nsight Graphics are the dominant frame profilers. On Linux, no single tool occupies that position: AMD ships a native Qt-based RGP client; Intel's tooling straddles open-source (`intel_gpu_top`, `INTEL_MEASURE`) and proprietary (GPA, VTune); NVIDIA's tooling requires the proprietary driver; and cross-vendor tooling (`perf`, Perfetto, Vulkan query pools) fills the gaps. Understanding when to reach for each layer — and how to compose the outputs — is the core skill this chapter develops.
+- **Fixed-function hardware counters** — GPU silicon exposes cycle counts, cache hit rates, and memory bandwidth bytes, made accessible by the kernel through its `perf` Performance Monitoring Unit (PMU) framework or through driver-level ioctls
+- **Graphics API layer** — Vulkan's `VK_KHR_performance_query` extension and timestamp query pools give applications a portable way to measure GPU-side timing without vendor-specific code
+- **Driver-level instrumentation** — Mesa and each vendor driver expose their own instrumentation: environment variables that toggle heads-up displays, generate CSV timing files, or trigger frame-level hardware traces
+- **Vendor desktop tools** — AMD's Radeon GPU Profiler, Intel's Graphics Performance Analyzers, and NVIDIA's Nsight Graphics tie all of this together into interactive frame debuggers with wavefront-level or EU-level granularity
+
+The Linux landscape differs meaningfully from Windows, where PIX for Windows and NVIDIA Nsight Graphics are the dominant frame profilers. On Linux, no single tool occupies that position:
+
+- **AMD** — ships a native Qt-based RGP client
+- **Intel** — tooling straddles open-source (`intel_gpu_top`, `INTEL_MEASURE`) and proprietary (GPA, VTune)
+- **NVIDIA** — tooling requires the proprietary driver
+- **Cross-vendor tooling** — `perf`, Perfetto, and Vulkan query pools fill the gaps
+
+Understanding when to reach for each layer — and how to compose the outputs — is the core skill this chapter develops.
 
 A useful mental model: CPU profiling gives you the *call graph*; GPU profiling tells you what the *GPU was doing* during each CPU-side call. Both signals are needed. A workload that looks CPU-bound in `perf` may be waiting for GPU timeline semaphores; a workload that shows high GPU utilization may be hiding severe shader occupancy problems invisible to system-level monitors.
 
@@ -48,7 +60,15 @@ A useful mental model: CPU profiling gives you the *call graph*; GPU profiling t
 
 MangoHud is a Vulkan and OpenGL overlay layer for Linux that renders real-time GPU performance metrics as a heads-up display within a running application's frame. It integrates with the Mesa Vulkan loader via the `VK_LAYER_MANGOHUD_overlay_x86_64` implicit layer, intercepting `vkQueuePresentKHR` to inject HUD geometry before each frame is presented to the compositor. On the OpenGL path, MangoHud uses a preloaded shared library that overrides `glXSwapBuffers` and `eglSwapBuffers`.
 
-The overlay exposes a configurable set of metrics: GPU utilization percentage (sourced from sysfs `/sys/class/drm/card0/device/gpu_busy_percent` or vendor-specific ioctl), GPU core and memory frequencies, VRAM usage, CPU utilization, frame time in milliseconds, and a frame-time graph. Because these metrics are sampled at presentation time rather than mid-frame, MangoHud is a lightweight monitoring tool rather than a profiler — it cannot attribute GPU load to individual draw calls or shader stages.
+The overlay exposes a configurable set of metrics:
+
+- **GPU utilization percentage** — sourced from sysfs `/sys/class/drm/card0/device/gpu_busy_percent` or vendor-specific ioctl
+- **GPU core and memory frequencies**
+- **VRAM usage**
+- **CPU utilization**
+- **Frame time in milliseconds**, plotted as a frame-time graph
+
+Because these metrics are sampled at presentation time rather than mid-frame, MangoHud is a lightweight monitoring tool rather than a profiler — it cannot attribute GPU load to individual draw calls or shader stages.
 
 MangoHud is configured through `~/.config/MangoHud/MangoHud.conf` or the `MANGOHUD_CONFIG` environment variable. Its source is maintained at [https://github.com/flightlessmango/MangoHud](https://github.com/flightlessmango/MangoHud). In this chapter, MangoHud occupies the "ambient monitoring" tier of the profiling stack — the first tool to reach for when establishing whether a workload is GPU-bound, and the quickest way to confirm that an optimization had a measurable effect on overall frame rate.
 
@@ -56,7 +76,15 @@ MangoHud is configured through `~/.config/MangoHud/MangoHud.conf` or the `MANGOH
 
 RenderDoc is an open-source, cross-vendor GPU frame capture and analysis tool that intercepts a running application's graphics API calls, records a complete snapshot of all GPU state and resource contents for one or more frames, and replays that capture offline for detailed inspection. It supports Vulkan, OpenGL, OpenGL ES, and Vulkan Compute on Linux, and stores captures in a self-contained `.rdc` file format that can be transferred to another machine for analysis.
 
-RenderDoc's capture mechanism operates through an API-level interception layer: on Vulkan it uses a Vulkan layer (`VK_LAYER_RENDERDOC_Capture`), on OpenGL it uses an `LD_PRELOAD`-style interception of libGL entry points. When a frame is captured, RenderDoc serializes the complete draw call list, all shader bytecode (SPIR-V on Vulkan), framebuffer attachments, buffer contents, and descriptor bindings. The replay path reissues each API call exactly, allowing the user to step through the frame draw-call by draw-call and inspect the GPU output texture or buffer after each command.
+RenderDoc's capture mechanism operates through an API-level interception layer: on Vulkan it uses a Vulkan layer (`VK_LAYER_RENDERDOC_Capture`), on OpenGL it uses an `LD_PRELOAD`-style interception of libGL entry points. When a frame is captured, RenderDoc serializes:
+
+- The complete draw call list
+- All shader bytecode (SPIR-V on Vulkan)
+- Framebuffer attachments
+- Buffer contents
+- Descriptor bindings
+
+The replay path reissues each API call exactly, allowing the user to step through the frame draw-call by draw-call and inspect the GPU output texture or buffer after each command.
 
 Within this chapter, RenderDoc represents the "frame analysis" tier of the profiling stack: it answers questions about what the GPU was asked to do (draw call overhead, resource usage, pipeline state), whereas hardware counter tools such as RGP, Intel GPA, and NVIDIA Nsight answer questions about how efficiently the GPU executed those requests. The RenderDoc project is maintained at [https://github.com/baldurk/renderdoc](https://github.com/baldurk/renderdoc).
 
@@ -64,7 +92,12 @@ Within this chapter, RenderDoc represents the "frame analysis" tier of the profi
 
 Perfetto is a production-grade, open-source system-level tracing framework used in Android, Chrome, and Linux. On Linux it combines a userspace tracing daemon (`traced`), a set of kernel data sources including `ftrace` ring buffers and the `perf` PMU subsystem, and a web-based trace viewer (available at [https://ui.perfetto.dev](https://ui.perfetto.dev)) that renders timeline lanes, counter tracks, and slice hierarchies across CPU and GPU simultaneously.
 
-GPU profiling support in Perfetto on Linux is provided through two mechanisms: driver-submitted GPU counters that the Mesa Vulkan drivers (RADV, ANV, Turnip) can write to Perfetto's shared memory ring buffer using the `MESA_VK_TRACE=perfetto` environment variable, and kernel-level GPU activity events that arrive via DRM scheduler tracepoints (`drm_sched_job_wait_dep`, `dma_fence_signaled`) and driver-specific ftrace events such as `amdgpu_cs_ioctl`. The result is a unified timeline showing CPU thread execution, GPU command buffer submission, fence signaling, and hardware counter samples aligned on a single timestamp axis.
+GPU profiling support in Perfetto on Linux is provided through two mechanisms:
+
+- **Driver-submitted GPU counters** — the Mesa Vulkan drivers (RADV, ANV, Turnip) can write to Perfetto's shared memory ring buffer using the `MESA_VK_TRACE=perfetto` environment variable
+- **Kernel-level GPU activity events** — arrive via DRM scheduler tracepoints (`drm_sched_job_wait_dep`, `dma_fence_signaled`) and driver-specific ftrace events such as `amdgpu_cs_ioctl`
+
+The result is a unified timeline showing CPU thread execution, GPU command buffer submission, fence signaling, and hardware counter samples aligned on a single timestamp axis.
 
 Perfetto fills the "system tracing" tier in this chapter's profiling stack. It is the appropriate tool when the bottleneck hypothesis involves CPU-GPU synchronization, scheduler latency, or multi-process GPU contention — scenarios where neither an API-level frame debugger nor a hardware wavefront profiler gives a complete picture. The Perfetto project is maintained at [https://perfetto.dev](https://perfetto.dev) and [https://github.com/google/perfetto](https://github.com/google/perfetto).
 

@@ -31,19 +31,27 @@ Readers should be comfortable with core Vulkan concepts — command buffers, des
 
 ### 1.1 What VkPipeline Bundles
 
-The `VkPipeline` object is one of Vulkan's most recognisable design choices. A `VkGraphicsPipeline` bakes together — at creation time — the compiled machine code for every shader stage, the rasterization state (fill mode, cull mode, polygon offset), the depth/stencil state, the colour-blend state, the vertex-input layout, the primitive topology, and the render-pass format. The rationale was sound: by handing the driver a complete description of what the draw call will do, the driver can perform full inter-stage optimisations and produce ISA code tuned to the exact fixed-function state the hardware expects. This was a direct response to the OpenGL driver model, where the driver had to defer much of this work to draw time because the application could change state at will.
+The `VkPipeline` object is one of Vulkan's most recognisable design choices. A `VkGraphicsPipeline` bakes together — at creation time — several categories of state:
+
+- **Shader stage machine code** — the compiled code for every shader stage
+- **Rasterization state** — fill mode, cull mode, polygon offset
+- **Depth/stencil state**
+- **Colour-blend state**
+- **Vertex-input layout**
+- **Primitive topology**
+- **Render-pass format**
+
+The rationale was sound: by handing the driver a complete description of what the draw call will do, the driver can perform full inter-stage optimisations and produce ISA code tuned to the exact fixed-function state the hardware expects. This was a direct response to the OpenGL driver model, where the driver had to defer much of this work to draw time because the application could change state at will.
 
 However, the model's strength is also its weakness. State that will not change for the lifetime of a draw call *must still be re-declared* every time a new pipeline variant is needed. In a rendering engine with N material types, M lighting configurations, and K render-target formats, the combinatorial explosion of pipeline variants can reach the tens or hundreds of thousands. The pipeline creation cost — dominated by the final shader compilation step that converts SPIR-V or an intermediate IR into GPU machine code — is paid for each variant. On PC GPU drivers, this can take milliseconds to hundreds of milliseconds per pipeline. The consequence in shipped titles is *pipeline compilation stutter*: a visible frame-time spike the first time an unseen state combination appears, often at precisely the worst moment — a new area loads, a new particle effect fires, an enemy type appears for the first time.
 
 ### 1.2 Prior Mitigations
 
-The Vulkan ecosystem developed several mitigations, none fully satisfactory.
+The Vulkan ecosystem developed several mitigations, none fully satisfactory:
 
-**Pipeline caches** (`VkPipelineCache`) allow compiled pipeline objects to be serialised to disk and reloaded in a subsequent run. On a warm cache the compilation step is skipped. But the first run still stutters, the cache is driver-specific and not portable across driver versions, and the cache must be invalidated whenever the driver or GPU changes.
-
-**Background compilation** (deferred pipeline creation, available via `VK_EXT_pipeline_creation_cache_control`) allows the application to submit pipeline creation work to a background thread while continuing to render with a placeholder. This trades the stutter for a potentially incorrect rendering until the pipeline is ready. Managing the lifecycle — detecting completion, swapping in the real pipeline — adds application complexity.
-
-**Graphics pipeline libraries** (`VK_KHR_pipeline_library`, `VK_EXT_graphics_pipeline_library`) decompose the pipeline into four independently compiled parts: vertex input, pre-rasterization shaders, fragment shader, and fragment output. The first three can be compiled without knowing the render-target format; only the fast-link step combining them requires the complete state. This reduces the per-variant compilation burden and enables earlier compilation of partial pipelines. However, it does not eliminate the link step, and the link step still requires knowing the complete set of state at link time. The combination-space problem remains.
+- **Pipeline caches** (`VkPipelineCache`) — allow compiled pipeline objects to be serialised to disk and reloaded in a subsequent run; on a warm cache the compilation step is skipped, but the first run still stutters, the cache is driver-specific and not portable across driver versions, and it must be invalidated whenever the driver or GPU changes
+- **Background compilation** (deferred pipeline creation, available via `VK_EXT_pipeline_creation_cache_control`) — allows the application to submit pipeline creation work to a background thread while continuing to render with a placeholder; this trades the stutter for a potentially incorrect rendering until the pipeline is ready, and managing the lifecycle — detecting completion, swapping in the real pipeline — adds application complexity
+- **Graphics pipeline libraries** (`VK_KHR_pipeline_library`, `VK_EXT_graphics_pipeline_library`) — decompose the pipeline into four independently compiled parts: vertex input, pre-rasterization shaders, fragment shader, and fragment output; the first three can be compiled without knowing the render-target format, and only the fast-link step combining them requires the complete state, reducing the per-variant compilation burden and enabling earlier compilation of partial pipelines. However, it does not eliminate the link step, and the link step still requires knowing the complete set of state at link time — the combination-space problem remains
 
 [Source — VK_EXT_graphics_pipeline_library proposal](https://docs.vulkan.org/features/latest/features/proposals/VK_EXT_graphics_pipeline_library.html)
 

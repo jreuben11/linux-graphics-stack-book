@@ -34,17 +34,45 @@ Virtualising a GPU is fundamentally harder than virtualising a CPU or network ca
 
 **Software emulation** (**virtio-gpu** in **`DRIVER_MODESET`**-only mode, or the legacy **QXL** driver) converts display output to a CPU-rendered framebuffer. Compatibility is essentially universal — any guest kernel sees a standard PCI device — but performance is limited to what the host CPU can push through a **virtio** ring. Emulation is sufficient for **VDI** text desktops or headless workloads with software rendering.
 
-**Paravirtualisation / API forwarding** lifts the abstraction one level: the guest exports a stream of 3D API commands (**OpenGL** via **VirGL**, **Vulkan** via **Venus**) over virtio, and a host-side renderer translates them to real GPU calls. This gives near-native throughput for graphics-API-centric workloads without dedicating hardware to a single VM. The **virtio-gpu** driver implements a full **DRM/KMS** stack including atomic modesetting, **GEM** memory management, and blob resources for zero-copy buffer sharing. **VirGL** serialises a **Gallium3D**-derived state-object stream using **TGSI** shaders and host-side **virglrenderer**, while **Venus** transmits **Vulkan** commands nearly verbatim as **SPIR-V** binaries over a shared-memory **`vn_ring`** command ring, decoded by **virglrenderer** and forwarded to the host **Vulkan** **ICD** (such as **RADV** or **ANV**).
+**Paravirtualisation / API forwarding** lifts the abstraction one level: the guest exports a stream of 3D API commands over virtio, and a host-side renderer translates them to real GPU calls. This gives near-native throughput for graphics-API-centric workloads without dedicating hardware to a single VM. The **virtio-gpu** driver implements a full **DRM/KMS** stack including atomic modesetting, **GEM** memory management, and blob resources for zero-copy buffer sharing. Two forwarding protocols run over it:
 
-**SR-IOV and mediated devices** partition one physical GPU into multiple hardware Virtual Functions (**VF**s) or software-mediated slices. **Intel GVT-g** (covering Gen8–Gen12, implemented via the kernel **mdev** framework and the **`kvmgt`** module) and its successor **Xe SR-IOV** (introduced in Linux 6.8 for **Intel Arc**/**Battlemage**, implemented under **`drivers/gpu/drm/xe/`**), and **AMD MxGPU** (using spatial partitioning managed by the **GIM** host module and the in-kernel **`amdgpu_virt`** subsystem) use these mechanisms to run multiple independent guests with hardware-accelerated compute and display simultaneously. **SR-IOV** is the technology of choice for **VDI** and multi-tenant ML training.
+- **VirGL** — carries **OpenGL**, serialising a **Gallium3D**-derived state-object stream using **TGSI** shaders and host-side **virglrenderer**
+- **Venus** — carries **Vulkan**, transmitting commands nearly verbatim as **SPIR-V** binaries over a shared-memory **`vn_ring`** command ring, decoded by **virglrenderer** and forwarded to the host **Vulkan** **ICD** (such as **RADV** or **ANV**)
 
-**VFIO passthrough** assigns the entire GPU to a single VM at the **IOMMU** boundary. The guest driver runs on bare-metal register access; there is effectively zero virtualisation overhead. Passthrough is the gold standard for cloud gaming and single-tenant dedicated GPU compute, but consumes an entire card per guest and requires careful **IOMMU group** design on the host. The foundations of **VFIO** — including **VT-d** and **AMD-Vi** hardware, **IOMMU groups** under **`/sys/kernel/iommu_groups/`**, **`vfio-pci`** stub binding, **interrupt remapping**, and **PCIe FLR** (Function Level Reset) for safe device reassignment — underpin all hardware-isolation approaches in this chapter. Practical **VFIO** passthrough involves **QEMU** with **OVMF** firmware and **`-mem-path /dev/hugepages`**, the **ACS** (Access Control Services) override patch for consumer-platform **IOMMU group** constraints, and **Looking Glass** (**KVMFR**) for low-latency framebuffer capture via an **IVSHMEM** shared-memory device.
+**SR-IOV and mediated devices** partition one physical GPU into multiple hardware Virtual Functions (**VF**s) or software-mediated slices, letting multiple independent guests run with hardware-accelerated compute and display simultaneously. **SR-IOV** is the technology of choice for **VDI** and multi-tenant ML training. Three implementations are covered in this chapter:
 
-**NVIDIA** offers two proprietary virtualisation technologies: **vGPU**, a time-sliced implementation requiring the **NVIDIA vGPU Manager** and a per-GPU annual licence, and **MIG** (Multi-Instance GPU), available from the **A100** through **H100**, **H200**, and **Blackwell**, which partitions the physical GPU into **GPU Instances** (**GI**s) and **Compute Instances** (**CIs**) with dedicated **SM**s, **L2** partitions, and **HBM** channels. **MIG** partitions are exposed as **`/dev/nvidia-caps/`** capability files and targeted via the **`NVIDIA_VISIBLE_DEVICES`** environment variable.
+- **Intel GVT-g** — covering Gen8–Gen12, implemented via the kernel **mdev** framework and the **`kvmgt`** module
+- **Xe SR-IOV** — Intel's successor to GVT-g, introduced in Linux 6.8 for **Intel Arc**/**Battlemage**, implemented under **`drivers/gpu/drm/xe/`**
+- **AMD MxGPU** — uses spatial partitioning managed by the **GIM** host module and the in-kernel **`amdgpu_virt`** subsystem
 
-**WSL2** (Windows Subsystem for Linux 2) provides GPU access through a Microsoft-proprietary path: the **`dxgkrnl`** kernel module exposes **`/dev/dxg`** and forwards **WDDM D3DKMT** ioctls over **Hyper-V VMBUS** to the Windows GPU driver. The **Mesa** **`d3d12`** Gallium driver translates **OpenGL**/**Gallium** calls into **Direct3D 12** via **`libdxcore.so`**, and **VA-API** video decode is bridged through the same stack. **WSLg** provides GUI support via a **Weston** compositor with a **RAIL**/**VAIL** **RDP** backend. **DirectML** is the recommended **ONNX Runtime** inference path in this environment.
+**VFIO passthrough** assigns the entire GPU to a single VM at the **IOMMU** boundary. The guest driver runs on bare-metal register access; there is effectively zero virtualisation overhead. Passthrough is the gold standard for cloud gaming and single-tenant dedicated GPU compute, but consumes an entire card per guest and requires careful **IOMMU group** design on the host. The foundations of **VFIO** underpin all hardware-isolation approaches in this chapter:
 
-GPU containers and orchestration are covered in depth: the **NVIDIA Container Toolkit** (supporting both legacy **OCI** hook mode and modern **CDI** — Container Device Interface — via **`/etc/cdi/`** specs), **AMD ROCm** containers using **`/dev/kfd`** and **DRM** render nodes, **Intel** GPU containers via **`/dev/dri/renderD128`**, the **Kubernetes** device plugin framework (**`nvidia.com/gpu`**, **`amd.com/gpu`**, **`intel.com/gpu`**), **Dynamic Resource Allocation** (**DRA**) as of **Kubernetes** 1.31, and **cgroup v2** **eBPF**-based device access control via **`BPF_CGROUP_DEVICE`**.
+- **VT-d** and **AMD-Vi** hardware, exposed as **IOMMU groups** under **`/sys/kernel/iommu_groups/`**
+- **`vfio-pci`** stub binding, **interrupt remapping**, and **PCIe FLR** (Function Level Reset) for safe device reassignment
+- Practical setup with **QEMU**, **OVMF** firmware, and **`-mem-path /dev/hugepages`**
+- The **ACS** (Access Control Services) override patch, for consumer-platform **IOMMU group** constraints
+- **Looking Glass** (**KVMFR**), for low-latency framebuffer capture via an **IVSHMEM** shared-memory device
+
+**NVIDIA** offers two proprietary virtualisation technologies:
+
+- **vGPU** — a time-sliced implementation requiring the **NVIDIA vGPU Manager** and a per-GPU annual licence
+- **MIG** (Multi-Instance GPU) — available from the **A100** through **H100**, **H200**, and **Blackwell**, partitions the physical GPU into **GPU Instances** (**GI**s) and **Compute Instances** (**CIs**) with dedicated **SM**s, **L2** partitions, and **HBM** channels; partitions are exposed as **`/dev/nvidia-caps/`** capability files and targeted via the **`NVIDIA_VISIBLE_DEVICES`** environment variable
+
+**WSL2** (Windows Subsystem for Linux 2) provides GPU access through a Microsoft-proprietary path:
+
+- The **`dxgkrnl`** kernel module — exposes **`/dev/dxg`** and forwards **WDDM D3DKMT** ioctls over **Hyper-V VMBUS** to the Windows GPU driver
+- The **Mesa** **`d3d12`** Gallium driver — translates **OpenGL**/**Gallium** calls into **Direct3D 12** via **`libdxcore.so`**; **VA-API** video decode is bridged through the same stack
+- **WSLg** — provides GUI support via a **Weston** compositor with a **RAIL**/**VAIL** **RDP** backend
+- **DirectML** — the recommended **ONNX Runtime** inference path in this environment
+
+Section 10 covers GPU containers and orchestration in depth:
+
+- **NVIDIA Container Toolkit** — supporting both legacy **OCI** hook mode and modern **CDI** (Container Device Interface) via **`/etc/cdi/`** specs
+- **AMD ROCm** containers — using **`/dev/kfd`** and **DRM** render nodes
+- **Intel** GPU containers — via **`/dev/dri/renderD128`**
+- **Kubernetes** device plugin framework — advertising **`nvidia.com/gpu`**, **`amd.com/gpu`**, and **`intel.com/gpu`**
+- **Dynamic Resource Allocation** (**DRA**) — as of **Kubernetes** 1.31
+- **cgroup v2** **eBPF**-based device access control — via **`BPF_CGROUP_DEVICE`**
 
 The chapter closes with a qualitative performance comparison across all approaches — **VFIO passthrough**, **SR-IOV VF**, **NVIDIA MIG**, **Intel GVT-g**, **Venus**, **VirGL**, and **virtio-gpu** display-only — and a decision guide covering cloud gaming, multi-user **VDI**, multi-tenant ML training and inference, development environments, **CI/CD** pipelines, and frame timing jitter in cloud gaming scenarios.
 

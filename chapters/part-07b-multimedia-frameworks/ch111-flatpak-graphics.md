@@ -64,7 +64,14 @@ Readers who need the underlying Vulkan ICD mechanics (loader, JSON manifests, RA
 
 Flatpak's central promise is that a Linux application can be distributed as a self-contained package that runs inside a well-defined security boundary regardless of the host distribution. That promise interacts with GPU access in a structurally difficult way.
 
-A GPU on Linux is not a single device file and a single library. It is a layered stack: a kernel driver (`i915`, `amdgpu`, `nouveau`, `nvidia`), a render node character device (`/dev/dri/renderD128`), a primary node (`/dev/dri/card0`), and a userspace driver — Mesa on open-source hardware — that is a collection of architecture-specific shared objects whose ABI must match the kernel module running on the host. When Flatpak installs an application it mounts a *runtime* — a versioned read-only root filesystem (e.g., `org.freedesktop.Platform//24.08`) — into the sandbox, not the host root. That runtime ships its own Mesa build. The problem: Mesa links into the kernel via DRM ioctls, and the ioctl interface is not guaranteed stable across Mesa versions. On hardware like NVIDIA, the situation is even stricter: the kernel module version (`/sys/module/nvidia/version`) and the userspace GLVND libraries must match *exactly*, down to the minor release.
+A GPU on Linux is not a single device file and a single library — it is a layered stack:
+
+- **Kernel driver** — `i915`, `amdgpu`, `nouveau`, `nvidia`
+- **Render node** — a character device, e.g. `/dev/dri/renderD128`
+- **Primary node** — e.g. `/dev/dri/card0`
+- **Userspace driver** — Mesa on open-source hardware, a collection of architecture-specific shared objects whose ABI must match the kernel module running on the host
+
+When Flatpak installs an application it mounts a *runtime* — a versioned read-only root filesystem (e.g., `org.freedesktop.Platform//24.08`) — into the sandbox, not the host root. That runtime ships its own Mesa build. The problem: Mesa links into the kernel via DRM ioctls, and the ioctl interface is not guaranteed stable across Mesa versions. On hardware like NVIDIA, the situation is even stricter: the kernel module version (`/sys/module/nvidia/version`) and the userspace GLVND libraries must match *exactly*, down to the minor release.
 
 The sandbox must therefore solve three distinct sub-problems simultaneously:
 
@@ -76,15 +83,12 @@ The mechanism Flatpak uses to address (2) is the *GL extension* — a separately
 
 ### 1.1 Why GPU Sandboxing Is Uniquely Hard
 
-Sandboxing a pure CPU process is conceptually straightforward: restrict filesystem visibility, deny dangerous syscalls, isolate namespaces. GPU access breaks these assumptions at every layer.
+Sandboxing a pure CPU process is conceptually straightforward: restrict filesystem visibility, deny dangerous syscalls, isolate namespaces. GPU access breaks these assumptions at every layer:
 
-**Mesa DRI ABI**: Unlike libc, which maintains a stable public ABI, Mesa's internal DRI interface between the GL/EGL front-end and the Gallium driver back-end is internal-only and changes between Mesa releases. The freedesktop.Platform runtime ships a Mesa build at a specific version; if the host kernel `amdgpu` or `i915` driver module expects a particular TTM ioctl or GEM object layout that a different Mesa version does not produce, the result can be GPU hangs, corrupted rendering, or EFAULT failures from the kernel. This is why the GL extension version is pinned to the runtime version — the entire userspace driver stack must be internally consistent.
-
-**NVIDIA strict ABI**: NVIDIA's proprietary userspace does not expose a stable public ABI at all. The NVKMS and NV-NVKMS kernel modules are compiled to match exactly the userspace libraries (`libEGL_nvidia.so.VERSION`, `libGL.so.1.7.0`, etc.) that ship with the same driver tarball. A one-version difference between the host NVIDIA kernel module and the Flatpak-loaded NVIDIA userspace causes immediate failures with `ERR_INVALID_STATE` from `nvidia-modprobe` or crash dumps from the loader. This is why the extension ID encodes the driver version: `org.freedesktop.Platform.GL.nvidia-565-77` for kernel module version 565.77.
-
-**Firmware blobs**: The kernel driver may load GPU firmware from `/lib/firmware/` on the host. This is a host-side concern that does not enter the sandbox (firmware is loaded by the kernel before the DRM character device becomes usable), but it means a missing firmware blob on the host manifests as GPU unavailability inside every Flatpak on that host, not as a Flatpak-specific problem.
-
-**DRM file descriptor lifetime**: GPU work is submitted via ioctls on a file descriptor opened on the render node. That file descriptor — and the GPU context attached to it — has a lifetime tied to the process that opened it. Inside a Flatpak sandbox, Mesa opens `/dev/dri/renderD128` at GL context creation time and holds it open for the lifetime of the application. This is identical to non-sandboxed behaviour; the sandbox boundary does not affect the kernel-side fd lifetime or GPU scheduling.
+- **Mesa DRI ABI** — Unlike libc, which maintains a stable public ABI, Mesa's internal DRI interface between the GL/EGL front-end and the Gallium driver back-end is internal-only and changes between Mesa releases. The freedesktop.Platform runtime ships a Mesa build at a specific version; if the host kernel `amdgpu` or `i915` driver module expects a particular TTM ioctl or GEM object layout that a different Mesa version does not produce, the result can be GPU hangs, corrupted rendering, or EFAULT failures from the kernel. This is why the GL extension version is pinned to the runtime version — the entire userspace driver stack must be internally consistent.
+- **NVIDIA strict ABI** — NVIDIA's proprietary userspace does not expose a stable public ABI at all. The NVKMS and NV-NVKMS kernel modules are compiled to match exactly the userspace libraries (`libEGL_nvidia.so.VERSION`, `libGL.so.1.7.0`, etc.) that ship with the same driver tarball. A one-version difference between the host NVIDIA kernel module and the Flatpak-loaded NVIDIA userspace causes immediate failures with `ERR_INVALID_STATE` from `nvidia-modprobe` or crash dumps from the loader. This is why the extension ID encodes the driver version: `org.freedesktop.Platform.GL.nvidia-565-77` for kernel module version 565.77.
+- **Firmware blobs** — The kernel driver may load GPU firmware from `/lib/firmware/` on the host. This is a host-side concern that does not enter the sandbox (firmware is loaded by the kernel before the DRM character device becomes usable), but it means a missing firmware blob on the host manifests as GPU unavailability inside every Flatpak on that host, not as a Flatpak-specific problem.
+- **DRM file descriptor lifetime** — GPU work is submitted via ioctls on a file descriptor opened on the render node. That file descriptor — and the GPU context attached to it — has a lifetime tied to the process that opened it. Inside a Flatpak sandbox, Mesa opens `/dev/dri/renderD128` at GL context creation time and holds it open for the lifetime of the application. This is identical to non-sandboxed behaviour; the sandbox boundary does not affect the kernel-side fd lifetime or GPU scheduling.
 
 ### 1.2 What is Flatpak?
 

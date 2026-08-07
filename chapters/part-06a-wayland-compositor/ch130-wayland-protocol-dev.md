@@ -24,7 +24,22 @@
 
 ## 1. Introduction: Wayland's Extensibility Model
 
-The Wayland core protocol (`wayland.xml`) is deliberately minimal. It defines only the lowest-common-denominator objects that every compositor and client must agree on: the display singleton (`wl_display`), the global registry (`wl_registry`), compositor (`wl_compositor`), surfaces (`wl_surface`), and a handful of input and output objects. Everything else—desktop shell integration, XDG toplevel windows, DRM buffer import, explicit GPU synchronisation, presentation feedback, screen capture, HDR signalling—is implemented as a *protocol extension*.
+The Wayland core protocol (`wayland.xml`) is deliberately minimal. It defines only the lowest-common-denominator objects that every compositor and client must agree on:
+
+- **wl_display** — the display singleton
+- **wl_registry** — the global registry
+- **wl_compositor** — the compositor object
+- **wl_surface** — surfaces
+- A handful of input and output objects
+
+Everything else is implemented as a *protocol extension*, including:
+
+- **Desktop shell integration** and **XDG toplevel windows**
+- **DRM buffer import**
+- **Explicit GPU synchronisation**
+- **Presentation feedback**
+- **Screen capture**
+- **HDR signalling**
 
 This design is not an accident. Protocol extensibility allows the ecosystem to evolve without breaking existing compositors or clients. A compositor that does not understand a new extension simply does not advertise it in the registry; a client that does not find the extension gracefully degrades. The separation of concerns also allows different vendors to innovate at their own pace while contributing their best ideas back to the shared `wayland-protocols` repository when they are ready.
 
@@ -43,9 +58,22 @@ By the end, you will be able to write a new protocol from scratch, wire it into 
 
 ### 1.1 What is a Wayland Protocol Extension?
 
-A Wayland protocol extension is a formally specified, versioned contract between a compositor and one or more clients that defines new object types, requests, and events beyond those in the core `wayland.xml` protocol. Extensions are described in XML files that share a common grammar, compiled to C bindings by `wayland-scanner`, and loaded at runtime through the `wl_registry` global advertisement mechanism. Because the core protocol deliberately limits itself to the lowest-common-denominator objects—displays, surfaces, inputs, and outputs—virtually all real desktop functionality is implemented as extensions: XDG shell windows, DMA-BUF buffer import, explicit GPU synchronisation, screen capture, HDR metadata signalling, and many others.
+A Wayland protocol extension is a formally specified, versioned contract between a compositor and one or more clients that defines new object types, requests, and events beyond those in the core `wayland.xml` protocol. Extensions are described in XML files that share a common grammar, compiled to C bindings by `wayland-scanner`, and loaded at runtime through the `wl_registry` global advertisement mechanism. Because the core protocol deliberately limits itself to the lowest-common-denominator objects—displays, surfaces, inputs, and outputs—virtually all real desktop functionality is implemented as extensions, including:
 
-A compositor that implements an extension registers a global for it; clients discover that global by listening to `wl_registry.global` events. If a client does not find a particular global, it gracefully degrades to a fallback code path or reports the feature unavailable. This negotiation model allows new capabilities to be deployed incrementally without breaking existing implementations. Each extension lives in its own namespace: the `wl_` prefix is reserved for the core Wayland protocol, `xdg_` for the XDG shell family, and `ext_`, `wp_`, `zwp_`, or compositor-specific prefixes for others. Extensions serve throughout this chapter as the vehicle for understanding the wire protocol, the XML grammar, the code-generation pipeline, and the governance model that allows experimental protocols to graduate to stable.
+- **XDG shell windows**
+- **DMA-BUF buffer import**
+- **Explicit GPU synchronisation**
+- **Screen capture**
+- **HDR metadata signalling**
+- Many others
+
+A compositor that implements an extension registers a global for it; clients discover that global by listening to `wl_registry.global` events. If a client does not find a particular global, it gracefully degrades to a fallback code path or reports the feature unavailable. This negotiation model allows new capabilities to be deployed incrementally without breaking existing implementations. Each extension lives in its own namespace:
+
+- **`wl_`** — reserved for the core Wayland protocol
+- **`xdg_`** — the XDG shell family
+- **`ext_`, `wp_`, `zwp_`, or compositor-specific prefixes** — for others
+
+Extensions serve throughout this chapter as the vehicle for understanding the wire protocol, the XML grammar, the code-generation pipeline, and the governance model that allows experimental protocols to graduate to stable.
 
 ### 1.2 What is wayland-scanner?
 
@@ -55,9 +83,20 @@ The generated code is purely mechanical; it encodes the argument types, opcodes,
 
 ### 1.3 What is wayland-protocols?
 
-`wayland-protocols` is the canonical upstream repository for Wayland protocol extensions intended for broad ecosystem adoption rather than remaining compositor-specific. It is hosted at `https://gitlab.freedesktop.org/wayland/wayland-protocols` and maintained under freedesktop.org governance. The repository organises protocols into three stability tiers: **stable** protocols have completed a public review process, are considered API-frozen, and carry a guarantee of backwards compatibility; **staging** protocols are under active development and may change between minor releases; and **unstable** protocols (carrying the older `zwp_` prefix) exist for historical reasons and will not receive new versions.
+`wayland-protocols` is the canonical upstream repository for Wayland protocol extensions intended for broad ecosystem adoption rather than remaining compositor-specific. It is hosted at `https://gitlab.freedesktop.org/wayland/wayland-protocols` and maintained under freedesktop.org governance. The repository organises protocols into three stability tiers:
 
-A protocol enters `wayland-protocols` through a merge-request process: the submitter provides the XML, a reference implementation in at least one compositor and one client, a rationale document, and test coverage. Reviewers evaluate the protocol for correctness, generality, and fit with the existing corpus before it advances from staging to stable. Protocols that remain compositor-specific—features not intended for general use—live in the compositor's own repository and are never submitted upstream. For systems engineers writing extensions, understanding the governance model determines whether to invest in a `wayland-protocols`-quality design (§7) or to ship a private protocol under a compositor-specific prefix. This chapter covers both paths.
+- **stable** — protocols have completed a public review process, are considered API-frozen, and carry a guarantee of backwards compatibility
+- **staging** — protocols are under active development and may change between minor releases
+- **unstable** — protocols (carrying the older `zwp_` prefix) exist for historical reasons and will not receive new versions
+
+A protocol enters `wayland-protocols` through a merge-request process; the submitter provides:
+
+- The XML
+- A reference implementation in at least one compositor and one client
+- A rationale document
+- Test coverage
+
+Reviewers evaluate the protocol for correctness, generality, and fit with the existing corpus before it advances from staging to stable. Protocols that remain compositor-specific—features not intended for general use—live in the compositor's own repository and are never submitted upstream. For systems engineers writing extensions, understanding the governance model determines whether to invest in a `wayland-protocols`-quality design (§7) or to ship a private protocol under a compositor-specific prefix. This chapter covers both paths.
 
 ---
 

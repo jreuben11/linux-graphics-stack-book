@@ -73,9 +73,20 @@
 
 ## Overview
 
-**KDE Plasma** is one of the two dominant Linux desktop environments (the other being GNOME, covered in the companion chapter). Where GNOME is built almost entirely on **GTK4** and **libadwaita**, Plasma is built on **Qt6** and a large, tiered collection of libraries called **KDE Frameworks 6** (**KF6**). This chapter traces the Plasma stack from the bottom up: the framework layering that keeps low-level utilities usable outside of KDE, the **KWin** Wayland compositor that owns the display, the **plasmashell** process that draws panels and the desktop, and **Kirigami** — the adaptive QML toolkit that lets a single codebase run on a phone and a workstation.
+**KDE Plasma** is one of the two dominant Linux desktop environments (the other being GNOME, covered in the companion chapter). Where GNOME is built almost entirely on **GTK4** and **libadwaita**, Plasma is built on **Qt6** and a large, tiered collection of libraries called **KDE Frameworks 6** (**KF6**).
 
-Three architectural themes recur. First, **layering discipline**: KF6 is explicitly organised into dependency tiers so that a library like **KArchive** or **KConfig** can be pulled into an unrelated Qt project without dragging in a window manager. Second, **QML everywhere**: Plasma's shell, its widgets ("plasmoids"), and most modern KWin effects are written in **QML** driven by a C++ core, so the same **Qt Quick** scene graph that renders an application also renders the desktop that hosts it. Third, **Wayland-first**: since Plasma 6.0 (released February 2024) the default session is a Wayland session, and KWin is simultaneously a compositor, a Wayland server, and a KMS/DRM display driver.
+This chapter traces the Plasma stack from the bottom up:
+
+- **Section 1 — KF6 Architecture** — the framework layering that keeps low-level utilities usable outside of KDE
+- **Section 2 — KWin** — the Wayland compositor that owns the display
+- **Section 3 — Plasma Shell** — the **plasmashell** process that draws panels and the desktop
+- **Section 4 — Kirigami** — the adaptive QML toolkit that lets a single codebase run on a phone and a workstation
+
+Three architectural themes recur across these sections:
+
+- **Layering discipline** — **KF6** is explicitly organised into dependency tiers so that a library like **KArchive** or **KConfig** can be pulled into an unrelated Qt project without dragging in a window manager
+- **QML everywhere** — Plasma's shell, its widgets ("plasmoids"), and most modern KWin effects are written in **QML** driven by a C++ core, so the same **Qt Quick** scene graph that renders an application also renders the desktop that hosts it
+- **Wayland-first** — since Plasma 6.0 (released February 2024) the default session is a Wayland session, and KWin is simultaneously a compositor, a Wayland server, and a KMS/DRM display driver
 
 This chapter is deliberately framework-architecture-focused. KWin's role as a *production compositor* — its place among Mutter and wlroots, explicit sync, and the broader Wayland ecosystem — is treated in Chapter 22; the deep KMS/HDR/VRR/color-pipeline mechanics live in the display chapters. Here the emphasis is on how the pieces of KDE fit together and how an application developer writes against them.
 

@@ -47,19 +47,37 @@ It targets three overlapping audiences:
 
 ### The Market Reality
 
-The Linux gaming ecosystem faces an asymmetry: the overwhelming majority of commercial PC game titles are authored against Direct3D, not Vulkan or OpenGL. As of 2026, ProtonDB reports that approximately 89.7% of Windows titles on Steam launch successfully on Linux, with 42% of new releases earning Platinum ratings — all made possible by DXVK and VKD3D-Proton. [Source](https://commandlinux.com/statistics/steam-linux-runtime/) In the March 2026 Steam hardware survey, Linux reached 5.33% of all Steam users for the first time, representing roughly 7 million Linux gamers, the vast majority relying on Proton. [Source](https://windowsforum.com/threads/linux-gaming-hits-5-33-on-steam-mar-2026-steam-deck-proton-windows-10-end.413359/)
+The Linux gaming ecosystem faces an asymmetry: the overwhelming majority of commercial PC game titles are authored against Direct3D, not Vulkan or OpenGL. The scale of the resulting reliance on translation layers shows up in the numbers:
+
+- **ProtonDB compatibility** — as of 2026, approximately 89.7% of Windows titles on Steam launch successfully on Linux, with 42% of new releases earning Platinum ratings, all made possible by DXVK and VKD3D-Proton. [Source](https://commandlinux.com/statistics/steam-linux-runtime/)
+- **Steam hardware share** — in the March 2026 Steam hardware survey, Linux reached 5.33% of all Steam users for the first time, representing roughly 7 million Linux gamers, the vast majority relying on Proton. [Source](https://windowsforum.com/threads/linux-gaming-hits-5-33-on-steam-mar-2026-steam-deck-proton-windows-10-end.413359/)
 
 The alternative to translation layers would be native Vulkan ports or OpenGL ports — neither of which game publishers have historically provided at scale. Translation layers turn the existing Windows library of ~117,000 Steam titles into a de facto Linux library, and they do so at performance levels that often match or approach the Windows reference.
 
 ### The Projects
 
-**DXVK** implements Direct3D 8, 9, 10, and 11 on top of Vulkan. It was created by Philip "doitsujin" Rebohle; in 2018 Valve began sponsoring its development full-time. The project is hosted at [github.com/doitsujin/dxvk](https://github.com/doitsujin/dxvk). As of version 2.7.1 (the latest stable release at time of writing), DXVK requires Vulkan 1.3 and `VK_KHR_maintenance5` as mandatory extensions. It is implemented in C++ with a Meson build system and cross-compiled for Windows PE targets using Mingw-w64.
+**DXVK** implements Direct3D 8, 9, 10, and 11 on top of Vulkan:
 
-**VKD3D-Proton** implements Direct3D 12 on top of Vulkan. It is a fork of the upstream `vkd3d` project (maintained by WineHQ), created by Hans-Kristian Arntzen ("HansKristian-Work") specifically for Proton. The fork aggressively uses modern Vulkan extensions and explicitly rejects backwards compatibility with older driver versions. It is hosted at [github.com/HansKristian-Work/vkd3d-proton](https://github.com/HansKristian-Work/vkd3d-proton). Version 3.0.1, released May 2026, is the current stable release.
+- **Origin** — created by Philip "doitsujin" Rebohle; in 2018 Valve began sponsoring its development full-time
+- **Repository** — hosted at [github.com/doitsujin/dxvk](https://github.com/doitsujin/dxvk)
+- **Requirements** — as of version 2.7.1 (the latest stable release at time of writing), DXVK requires Vulkan 1.3 and `VK_KHR_maintenance5` as mandatory extensions
+- **Implementation** — C++ with a Meson build system, cross-compiled for Windows PE targets using Mingw-w64
+
+**VKD3D-Proton** implements Direct3D 12 on top of Vulkan:
+
+- **Origin** — a fork of the upstream `vkd3d` project (maintained by WineHQ), created by Hans-Kristian Arntzen ("HansKristian-Work") specifically for Proton
+- **Philosophy** — aggressively uses modern Vulkan extensions and explicitly rejects backwards compatibility with older driver versions
+- **Repository** — hosted at [github.com/HansKristian-Work/vkd3d-proton](https://github.com/HansKristian-Work/vkd3d-proton)
+- **Current release** — version 3.0.1, released May 2026
 
 Both projects ship as part of Valve's **Proton** compatibility tool for Steam. Outside of Proton, DXVK is also widely used standalone in Lutris, Bottles, and Heroic Games Launcher for running non-Steam Windows games.
 
-Multiple translation layers coexist because no single layer covers the entire D3D API surface with equal fidelity: DXVK targets D3D9–11 via Vulkan with full state-cache support, while VKD3D-Proton exclusively targets D3D12 and exploits bleeding-edge Vulkan extensions that the older API generations cannot benefit from. WineD3D and Mesa Nine fill complementary niches — WineD3D as the universal fallback that works even without Vulkan support, and Mesa Nine as a zero-overhead native Gallium path for D3D9 workloads on Mesa drivers that bypasses translation entirely.
+Multiple translation layers coexist because no single layer covers the entire D3D API surface with equal fidelity:
+
+- **DXVK** — targets D3D9–11 via Vulkan with full state-cache support
+- **VKD3D-Proton** — exclusively targets D3D12 and exploits bleeding-edge Vulkan extensions that the older API generations cannot benefit from
+- **WineD3D** — the universal fallback that works even without Vulkan support
+- **Mesa Nine** — a zero-overhead native Gallium path for D3D9 workloads on Mesa drivers that bypasses translation entirely
 
 | Layer | D3D target | Output API | Shader translator | State cache | Ray tracing | Integration | Maintained by |
 |---|---|---|---|---|---|---|---|
@@ -70,7 +88,11 @@ Multiple translation layers coexist because no single layer covers the entire D3
 
 ### 1.1 What is DXVK?
 
-DXVK is an open-source translation layer that implements the Direct3D 8, 9, 10, and 11 APIs on top of Vulkan. When a Windows game or application loads `d3d9.dll`, `d3d10.dll`, or `d3d11.dll`, DXVK substitutes its own Windows PE-format DLLs, intercepting the Direct3D COM interface calls and translating them into the corresponding Vulkan operations. The translation is performed at the API boundary: DXVK maps calls such as `IDirect3DDevice9::DrawPrimitive` and `ID3D11DeviceContext::Draw` into Vulkan command buffer recordings, converts D3D resource types into `VkImage` and `VkBuffer` objects, and compiles Direct3D Shader Bytecode (DXBC) into SPIR-V at shader creation time.
+DXVK is an open-source translation layer that implements the Direct3D 8, 9, 10, and 11 APIs on top of Vulkan. When a Windows game or application loads `d3d9.dll`, `d3d10.dll`, or `d3d11.dll`, DXVK substitutes its own Windows PE-format DLLs, intercepting the Direct3D COM interface calls and translating them into the corresponding Vulkan operations. The translation happens at the API boundary, at three levels:
+
+- **Call translation** — maps calls such as `IDirect3DDevice9::DrawPrimitive` and `ID3D11DeviceContext::Draw` into Vulkan command buffer recordings
+- **Resource translation** — converts D3D resource types into `VkImage` and `VkBuffer` objects
+- **Shader translation** — compiles Direct3D Shader Bytecode (DXBC) into SPIR-V at shader creation time
 
 DXVK is implemented in C++ and cross-compiled for Windows PE targets using Mingw-w64, producing DLLs that Wine and Proton inject into a Windows-format process address space. It requires Vulkan 1.3 on the host driver and exploits numerous Vulkan extensions — notably `VK_EXT_graphics_pipeline_library` for low-latency pipeline compilation and `VK_EXT_descriptor_buffer` for reduced CPU overhead in descriptor-heavy workloads.
 
@@ -78,7 +100,11 @@ In the Linux graphics stack, DXVK sits between the Wine or Proton process enviro
 
 ### 1.2 What is VKD3D-Proton?
 
-VKD3D-Proton is a Vulkan-based implementation of the Direct3D 12 API, developed as a Proton-specific fork of the upstream `vkd3d` library maintained by WineHQ. Where DXVK targets the older D3D9 through D3D11 generations, VKD3D-Proton exclusively implements D3D12, which represents a fundamentally different programming model: applications manage GPU memory explicitly via `ID3D12Heap`, record commands into `ID3D12GraphicsCommandList` objects, and insert `ID3D12ResourceBarrier` synchronisation transitions manually — concepts that map directly onto Vulkan's `VkDeviceMemory`, `VkCommandBuffer`, and `VkImageMemoryBarrier2` primitives.
+VKD3D-Proton is a Vulkan-based implementation of the Direct3D 12 API, developed as a Proton-specific fork of the upstream `vkd3d` library maintained by WineHQ. Where DXVK targets the older D3D9 through D3D11 generations, VKD3D-Proton exclusively implements D3D12, which represents a fundamentally different programming model — one whose core concepts map directly onto Vulkan primitives:
+
+- **Memory management** — applications manage GPU memory explicitly via `ID3D12Heap`, mapping onto Vulkan's `VkDeviceMemory`
+- **Command recording** — commands are recorded into `ID3D12GraphicsCommandList` objects, mapping onto `VkCommandBuffer`
+- **Synchronisation** — `ID3D12ResourceBarrier` transitions are inserted manually, mapping onto `VkImageMemoryBarrier2`
 
 VKD3D-Proton diverges from the upstream `vkd3d` project in that it is not constrained by broad Wine integration compatibility requirements. It aggressively adopts modern Vulkan extensions — including `VK_KHR_ray_tracing_pipeline`, `VK_EXT_descriptor_buffer`, `VK_KHR_pipeline_library`, and `VK_NV_device_generated_commands` — and requires driver capabilities that were unavailable on hardware older than RDNA2 or Turing, accepting reduced compatibility in exchange for substantially higher performance on current GPU generations.
 
@@ -86,7 +112,15 @@ In the Linux graphics stack, VKD3D-Proton occupies the same horizontal layer as 
 
 ### 1.3 What is Proton?
 
-Proton is Valve's compatibility tool for running Windows games through Steam on Linux and Steam Deck. It is a curated software package that combines several open-source components: Wine (which provides Windows API compatibility for CPU and OS subsystems), DXVK (D3D9/10/11 Vulkan translation), VKD3D-Proton (D3D12 Vulkan translation), the Steam Linux Runtime container (Pressure Vessel), and a collection of game-specific patches and workarounds. Users install Proton through the Steam client and enable it per-game through the Steam Play compatibility settings.
+Proton is Valve's compatibility tool for running Windows games through Steam on Linux and Steam Deck. It is a curated software package that combines several open-source components:
+
+- **Wine** — provides Windows API compatibility for CPU and OS subsystems
+- **DXVK** — D3D9/10/11 Vulkan translation
+- **VKD3D-Proton** — D3D12 Vulkan translation
+- **Steam Linux Runtime container** — also known as Pressure Vessel
+- **Patches and workarounds** — a collection of game-specific fixes
+
+Users install Proton through the Steam client and enable it per-game through the Steam Play compatibility settings.
 
 Within the Linux graphics stack, Proton functions as the integration layer that wires together the translation components into a working game environment. When a user launches a Windows game via Steam Play, the Proton launch script sets up a Steam Linux Runtime OCI container, configures Wine with DXVK and VKD3D-Proton DLLs substituted for the Windows system DLLs, and launches the game binary. Graphics API calls flow from the game through Wine's PE loader into DXVK or VKD3D-Proton, and from there into the host Linux Vulkan driver stack.
 

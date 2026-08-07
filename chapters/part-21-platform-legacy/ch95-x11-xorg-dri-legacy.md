@@ -29,7 +29,14 @@
 
 ## 1. Introduction — Why X11 Matters in 2026
 
-X11 is not dead. Enterprise Linux deployments — Red Hat Enterprise Linux, SUSE Linux Enterprise, and their derivatives — still ship X11-based sessions as a supported option, in part because critical business software (proprietary CAD tools, legacy Java Swing applications, decades-old Motif programs) depends on X11 semantics that have no exact Wayland equivalent. Chromebooks run Linux apps under an XWayland-backed Crostini container. Remote desktop protocols (VNC, NX, X2Go) still speak X over network sockets. Even on a modern GNOME 46 or KDE Plasma 6 system running a Wayland compositor, *every X11 application* — and there remain millions of them — runs inside XWayland, an X11 server that is itself a Wayland client. Understanding X11 is therefore not archaeological interest: it is prerequisite knowledge for understanding the compatibility layer on which the Linux desktop depends today.
+X11 is not dead. It persists across several concrete deployment contexts, each depending on X11 semantics that have no exact Wayland equivalent:
+
+- **Enterprise Linux** — Red Hat Enterprise Linux, SUSE Linux Enterprise, and their derivatives still ship X11-based sessions as a supported option, in part because critical business software (proprietary CAD tools, legacy Java Swing applications, decades-old Motif programs) depends on it
+- **Chromebooks** — run Linux apps under an XWayland-backed Crostini container
+- **Remote desktop protocols** — VNC, NX, and X2Go still speak X over network sockets
+- **Modern Wayland desktops** — even on a GNOME 46 or KDE Plasma 6 system running a Wayland compositor, *every X11 application* — and there remain millions of them — runs inside XWayland, an X11 server that is itself a Wayland client
+
+Understanding X11 is therefore not archaeological interest: it is prerequisite knowledge for understanding the compatibility layer on which the Linux desktop depends today.
 
 Beyond pragmatics, X11's architectural choices — and their failure modes — are the direct explanation for Wayland's design. Every Wayland protocol that seems over-engineered (the strict per-surface isolation, the absence of global input capture, the mandatory compositor-mediated clipboard) is a considered response to a concrete X11 problem. You cannot reason about Wayland's design philosophy without understanding what X11 got wrong and why those errors were structurally inevitable given X11's client-server model.
 
@@ -39,11 +46,24 @@ Beyond pragmatics, X11's architectural choices — and their failure modes — a
 
 X11 (the X Window System, protocol version 11) is a client-server protocol for building graphical user interfaces on Unix-like operating systems. The server — called the display server — owns exclusive access to the physical screen, keyboard, and pointer. Clients connect to the server over a transport (Unix-domain socket locally, TCP remotely) and issue requests to create windows, draw graphics, and receive input events. The server is authoritative: clients never write directly to the framebuffer or read raw input; everything passes through the server.
 
-X11's defining characteristic is network transparency: a client running on a remote host can render into windows on a local display, because the protocol operates purely over a byte stream. This architecture was specified in 1987 and has not changed its major version number since; it is governed by the X.Org Foundation and documented at [x.org](https://www.x.org/releases/X11R7.6/doc/xproto/x11protocol.html). Network transparency came at a cost — the single shared server process became a bottleneck for GPU-accelerated rendering, motivating the DRI architecture described in Section 6. The global, permissive event model (any client may observe events on any visible window) also created fundamental security problems addressed in Section 10. Understanding both strengths and failure modes of X11 is necessary groundwork for understanding why Wayland replaced it.
+X11's defining characteristic is network transparency: a client running on a remote host can render into windows on a local display, because the protocol operates purely over a byte stream. This architecture was specified in 1987 and has not changed its major version number since; it is governed by the X.Org Foundation and documented at [x.org](https://www.x.org/releases/X11R7.6/doc/xproto/x11protocol.html). Network transparency came at a cost, addressed later in this chapter:
+
+- **GPU-accelerated rendering bottleneck** — the single shared server process became a bottleneck for GPU-accelerated rendering, motivating the DRI architecture described in Section 6
+- **Permissive event model** — any client may observe events on any visible window, creating fundamental security problems addressed in Section 10
+
+Understanding both strengths and failure modes of X11 is necessary groundwork for understanding why Wayland replaced it.
 
 ### 1.2 What is Xorg?
 
-Xorg is the dominant open-source implementation of the X11 display server. It is the reference server that ships with virtually every Linux distribution, maintained at [gitlab.freedesktop.org/xorg/xserver](https://gitlab.freedesktop.org/xorg/xserver). Xorg runs as a privileged process (historically as root, later via `systemd-logind` device takeover) and loads a set of kernel and userspace driver components: a kernel DRM driver for modesetting and buffer management, a DDX (Device-Dependent X) driver for display output configuration, and extension modules for OpenGL (GLX), compositing (Composite), and display configuration (RANDR). The modesetting DDX driver, which relies entirely on the kernel DRM/KMS interfaces, is now the standard path; older vendor-specific DDX drivers (the `xf86-video-*` family) are largely deprecated.
+Xorg is the dominant open-source implementation of the X11 display server. It is the reference server that ships with virtually every Linux distribution, maintained at [gitlab.freedesktop.org/xorg/xserver](https://gitlab.freedesktop.org/xorg/xserver). Xorg runs as a privileged process (historically as root, later via `systemd-logind` device takeover) and loads a set of kernel and userspace driver components:
+
+- **Kernel DRM driver** — for modesetting and buffer management
+- **DDX (Device-Dependent X) driver** — for display output configuration
+- **Extension module for OpenGL** — GLX
+- **Extension module for compositing** — Composite
+- **Extension module for display configuration** — RANDR
+
+The modesetting DDX driver, which relies entirely on the kernel DRM/KMS interfaces, is now the standard path; older vendor-specific DDX drivers (the `xf86-video-*` family) are largely deprecated.
 
 Xorg's extension architecture means that the core server binary changes rarely — capabilities such as OpenGL support, multi-touch input, and display reconfiguration were added without protocol version bumps. The drawback is that extensions loaded into the server process share its address space and privilege level, meaning a misbehaving extension can crash or compromise the entire display. This chapter examines the most significant extensions — GLX, Composite, RANDR, and the DRI family — in Sections 3 through 8.
 
@@ -51,13 +71,25 @@ Xorg's extension architecture means that the core server binary changes rarely �
 
 DRI (Direct Rendering Infrastructure) is the protocol and kernel subsystem that allows Mesa (the OpenGL and Vulkan implementation) to submit GPU commands directly to the kernel DRM driver, bypassing the X server process entirely for rendering work. Without DRI, all GPU rendering had to pass through the X server, which serialised it like any other X request and imposed a severe latency penalty. With DRI, a client obtains an authenticated channel to the GPU kernel driver, allocates GPU buffers, and issues rendering commands without X server involvement; only the final buffer-swap is coordinated with the display server.
 
-DRI evolved through three generations — DRI1 (1998), DRI2 (2008), and DRI3 (2013) — each addressing critical deficiencies of the previous design around buffer sharing, multi-GPU support, and security. DRI is implemented jointly in the kernel (`drivers/gpu/drm/` in the Linux source tree), in Mesa (`src/loader/`, `src/glx/`), and in the X server extension (`hw/xfree86/dri3/`). Section 6 traces the full evolution. The same kernel DRM subsystem that powered DRI is the foundation on which Wayland compositors operate natively, making DRI history directly relevant to understanding the modern Linux graphics stack.
+DRI evolved through three generations — DRI1 (1998), DRI2 (2008), and DRI3 (2013) — each addressing critical deficiencies of the previous design around buffer sharing, multi-GPU support, and security. DRI is implemented jointly across three components:
+
+- **Kernel** — `drivers/gpu/drm/` in the Linux source tree
+- **Mesa** — `src/loader/`, `src/glx/`
+- **X server extension** — `hw/xfree86/dri3/`
+
+Section 6 traces the full evolution. The same kernel DRM subsystem that powered DRI is the foundation on which Wayland compositors operate natively, making DRI history directly relevant to understanding the modern Linux graphics stack.
 
 ### 1.4 What is XWayland?
 
 XWayland is an X11 display server that runs as a Wayland client. On a system running a Wayland compositor (GNOME's Mutter, KDE's KWin, sway, wlroots-based compositors), XWayland starts on demand to handle X11 applications. Those applications connect to XWayland exactly as they would to a conventional Xorg server; XWayland translates their X11 protocol operations into Wayland protocol on the compositor side. From the Wayland compositor's perspective, XWayland is simply another Wayland client that happens to produce surfaces on behalf of many X11 programs.
 
-XWayland is maintained in the same repository as Xorg ([gitlab.freedesktop.org/xorg/xserver](https://gitlab.freedesktop.org/xorg/xserver), `hw/xwayland/`) and shares the core Xorg DIX (Device-Independent X) layer. Its significance is that it means no Linux desktop ships without X11 support: even a compositor that never started Xorg still runs X11 applications through XWayland. The translation layer is not lossless — certain X11 semantics (global hotkeys via `XGrabKey`, precise cursor positioning across windows, clipboard synchronisation timing) require explicit workarounds — but for the vast majority of X11 applications it is transparent. Section 9 covers the XWayland architecture and its limitations in detail.
+XWayland is maintained in the same repository as Xorg ([gitlab.freedesktop.org/xorg/xserver](https://gitlab.freedesktop.org/xorg/xserver), `hw/xwayland/`) and shares the core Xorg DIX (Device-Independent X) layer. Its significance is that it means no Linux desktop ships without X11 support: even a compositor that never started Xorg still runs X11 applications through XWayland. The translation layer is not lossless — certain X11 semantics require explicit workarounds:
+
+- **Global hotkeys** — via `XGrabKey`
+- **Precise cursor positioning** — across windows
+- **Clipboard synchronisation** — timing
+
+For the vast majority of X11 applications, however, the translation is transparent. Section 9 covers the XWayland architecture and its limitations in detail.
 
 ---
 

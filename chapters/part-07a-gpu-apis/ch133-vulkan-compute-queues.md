@@ -34,11 +34,21 @@ This chapter targets four audiences:
 
 OpenGL gives the application a single implicit command stream: every draw call and compute dispatch goes into one ring buffer and executes in the order it was recorded. Drivers may reorder under the hood, but the application sees a sequentially consistent GPU. Vulkan discards this fiction and exposes the GPU's actual hardware queue structure directly to the programmer.
 
-Modern discrete GPUs contain several independent command processors. On AMD RDNA hardware there are one or more Compute/Graphics front-ends, multiple Asynchronous Compute Engines (ACEs) that drive compute work independently, and one or two System DMA (SDMA) engines for memory copies. On NVIDIA, a unified graphics/compute engine coexists with dedicated copy engines and dedicated video decode/encode engines. On Intel Xe2, separate render, compute, copy, and video queue types are exposed.
+Modern discrete GPUs contain several independent command processors, with engine layouts that vary by vendor:
+
+- **AMD RDNA** — one or more Compute/Graphics front-ends, multiple Asynchronous Compute Engines (ACEs) that drive compute work independently, and one or two System DMA (SDMA) engines for memory copies
+- **NVIDIA** — a unified graphics/compute engine, coexisting with dedicated copy engines and dedicated video decode/encode engines
+- **Intel Xe2** — separate render, compute, copy, and video queue types
 
 Vulkan maps these hardware engines to **queue families**: groups of queues that share the same capability flags. An application that uses only one queue family leaves performance on the table. A well-structured frame can run TAA compute and particle simulation on an ACE queue while the main GFX queue is processing the Z-prepass; simultaneously a DMA engine streams next-frame textures over PCIe. Getting all three to cooperate without data races or redundant stalls is what this chapter is about.
 
-The tools are: `VkQueueFamilyProperties` for capability discovery, `VkDeviceQueueCreateInfo` for queue reservation, timeline semaphores (`VK_KHR_timeline_semaphore`, core in Vulkan 1.2) for cross-queue and CPU–GPU signalling, `vkCmdPipelineBarrier2` (Vulkan 1.3 / `VK_KHR_synchronization2`) for cache and execution ordering within a queue, and the **frame graph** pattern for coordinating dozens of render and compute passes without hand-inserting every barrier.
+The tools this chapter covers are:
+
+- **`VkQueueFamilyProperties`** — capability discovery
+- **`VkDeviceQueueCreateInfo`** — queue reservation
+- **Timeline semaphores** (`VK_KHR_timeline_semaphore`, core in Vulkan 1.2) — cross-queue and CPU–GPU signalling
+- **`vkCmdPipelineBarrier2`** (Vulkan 1.3 / `VK_KHR_synchronization2`) — cache and execution ordering within a queue
+- **The frame graph pattern** — coordinating dozens of render and compute passes without hand-inserting every barrier
 
 ### 1.1 What is a Vulkan Queue Family?
 
@@ -54,9 +64,19 @@ Async compute requires explicit cross-queue synchronisation: a compute dispatch 
 
 ### 1.3 What is a Frame Graph (Task Graph)?
 
-A frame graph — also called a task graph or render graph — is a directed acyclic graph (DAG) that represents all rendering and compute passes in a frame along with the resources (buffers, images) they produce and consume. Rather than requiring the application to manually insert `vkCmdPipelineBarrier2` calls between every pass, a frame graph compiler analyses the producer-consumer relationships and emits the minimal set of barriers, image layout transitions, and semaphore signals that guarantee correct execution order. The compiler also determines which passes can run asynchronously on compute queues, which resources can be allocated transiently and reused across passes, and which sequential passes can be merged into a single Vulkan render pass for on-tile hardware.
+A frame graph — also called a task graph or render graph — is a directed acyclic graph (DAG) that represents all rendering and compute passes in a frame along with the resources (buffers, images) they produce and consume. Rather than requiring the application to manually insert `vkCmdPipelineBarrier2` calls between every pass, a frame graph compiler analyses the producer-consumer relationships and emits the minimal set of barriers, image layout transitions, and semaphore signals that guarantee correct execution order. The compiler also determines:
 
-This pattern emerged in the game engine community as a response to the unmaintainable tangle of hand-authored barriers that accumulates as real-time rendering pipelines grow more complex. In Vulkan, a frame graph maps cleanly onto the synchronisation primitives covered in this chapter: timeline semaphores for cross-queue ordering, `VkDependencyInfo` structures for intra-queue resource transitions, and render-pass merge for subpass optimisation. Section 8 examines practical frame graph designs and the trade-offs between compile-time and runtime graph evaluation in production engines.
+- **Which passes can run asynchronously** on compute queues
+- **Which resources can be allocated transiently** and reused across passes
+- **Which sequential passes can be merged** into a single Vulkan render pass for on-tile hardware
+
+This pattern emerged in the game engine community as a response to the unmaintainable tangle of hand-authored barriers that accumulates as real-time rendering pipelines grow more complex. In Vulkan, a frame graph maps cleanly onto the synchronisation primitives covered in this chapter:
+
+- **Timeline semaphores** — cross-queue ordering
+- **`VkDependencyInfo` structures** — intra-queue resource transitions
+- **Render-pass merge** — subpass optimisation
+
+Section 8 examines practical frame graph designs and the trade-offs between compile-time and runtime graph evaluation in production engines.
 
 ---
 

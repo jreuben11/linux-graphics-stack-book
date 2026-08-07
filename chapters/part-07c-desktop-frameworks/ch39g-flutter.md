@@ -55,7 +55,36 @@
 
 Flutter reached official stable support for Linux in Flutter 3.0 (May 2022), with the **GTK embedding** as the primary path. Flutter 3.22 (2024) brought **Impeller** to Linux stable, replacing the legacy Skia-based renderer. [Source: Flutter 3.22 release notes](https://docs.flutter.dev/release/release-notes/release-notes-3.22.0)
 
-This chapter covers Flutter on Linux from the engine downward. Section 1 explains the three-layer architecture (framework, engine, embedder) and the Dart runtime model. Section 2 covers the two Linux embedder paths — the official GTK embedding and the community `flutter-elinux` Wayland-direct path — and how each creates a surface for the renderer. Section 3 is the heart of the chapter: Impeller's entity-pass-pipeline architecture, SPIR-V shader compilation at build time, and the Vulkan backend that places Flutter squarely in the same Mesa driver path as the rest of this book's toolkit stack. Sections 4–7 cover the widget rendering pipeline, platform channels (the Dart↔native IPC), text rendering, and theming. Sections 8–9 cover Linux packaging and profiling.
+This chapter covers Flutter on Linux from the engine downward.
+
+Section 1 explains Flutter's architecture:
+
+- **Three-layer architecture** — framework, engine, and embedder
+- **Dart runtime model**
+
+Section 2 covers the Linux embedder:
+
+- **GTK embedding** — the official Linux embedder path
+- **`flutter-elinux`** — the community Wayland-direct path
+- How each path creates a surface for the renderer
+
+Section 3 is the heart of the chapter, covering Impeller, Flutter's GPU renderer:
+
+- **Entity-pass-pipeline architecture** — Impeller's core abstractions
+- **SPIR-V shader compilation at build time**
+- **Vulkan backend** — places Flutter squarely in the same Mesa driver path as the rest of this book's toolkit stack
+
+Sections 4–7 cover the widget rendering pipeline, platform channels, text rendering, and theming:
+
+- **Widget rendering pipeline**
+- **Platform channels** — the Dart↔native IPC
+- **Text rendering**
+- **Theming**
+
+Sections 8–9 cover Linux packaging and profiling:
+
+- **Linux packaging**
+- **Profiling**
 
 ```mermaid
 flowchart TD

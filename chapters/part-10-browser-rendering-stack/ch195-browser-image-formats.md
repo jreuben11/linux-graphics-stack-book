@@ -32,7 +32,13 @@
 
 Every `<img>` tag, CSS `background-image`, `<picture>` element, and `createImageBitmap()` call initiates an image decode pipeline that spans network, CPU, and GPU. The format of the image determines which codec library decodes it, what colour metadata is preserved, and whether HDR content survives the trip to the compositor.
 
-The Linux browser's image pipeline is entirely CPU-side for still images — no VA-API acceleration for JPEG, AVIF, or PNG (unlike video; see Ch147). The CPU decode produces a raster in a canonical format (`SkBitmap`, typically RGBA8 or RGBA16F for HDR), which is then uploaded to the GPU as a texture and made available to the compositor via `gpu::SharedImage`. The format choice affects decode time, file size, colour fidelity, and HDR capability, but is invisible to the GPU rasterisation pipeline downstream.
+Section 1 traces the `<img>` decode pipeline in Chrome:
+
+- **CPU-only decode** — the Linux browser's image pipeline is entirely CPU-side for still images, with no VA-API acceleration for JPEG, AVIF, or PNG (unlike video; see Ch147)
+- **Canonical raster output** — CPU decode produces a raster in a canonical format (`SkBitmap`, typically RGBA8 or RGBA16F for HDR)
+- **GPU upload** — the raster is then uploaded to the GPU as a texture and made available to the compositor via `gpu::SharedImage`
+
+The format choice affects decode time, file size, colour fidelity, and HDR capability, but is invisible to the GPU rasterisation pipeline downstream.
 
 ---
 

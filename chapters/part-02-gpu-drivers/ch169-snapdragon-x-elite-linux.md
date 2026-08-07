@@ -29,17 +29,51 @@ The Snapdragon X Elite marks a pivotal transition for Qualcomm's relationship wi
 
 The transition is not merely one of form factor. It is one of platform architecture. Mobile Adreno SoCs live in a world where the bootloader supplies a Device Tree Blob (DTB) that exactly describes every peripheral. The X Elite enters UEFI territory, where the Linux kernel discovers hardware through a combination of ACPI tables and a platform-specific device tree overlay; each OEM laptop model still requires its own `.dts` file to wire together the ACPI enumerations. This makes Linux bring-up per-laptop-model work rather than per-SoC work — a sharp contrast to the phone world where a single kernel tree images many handsets from the same chipset.
 
-Why does this matter for graphics developers? Because the GPU and display drivers — the `msm` DRM driver, the `msm_dpu` KMS front-end, and the Mesa freedreno/Turnip stack — were already upstream. Qualcomm had been contributing them since around 2012 for mobile SoCs. The X Elite story is therefore less about writing new drivers from scratch and more about extending proven mobile-lineage code to handle the new platform environment: ACPI-enumerated PCI-style resources, panel-self-refresh on eDP panels, HDR-capable display pipelines, and the IRIS video decoder replacing the older Venus firmware interface. This chapter traces that extension work, documents what is upstream and what remains out-of-tree as of mid-2026, and equips driver and embedded developers to navigate the Snapdragon X Elite on Linux.
+Why does this matter for graphics developers? Because the GPU and display drivers — the `msm` DRM driver, the `msm_dpu` KMS front-end, and the Mesa freedreno/Turnip stack — were already upstream. Qualcomm had been contributing them since around 2012 for mobile SoCs. The X Elite story is therefore less about writing new drivers from scratch and more about extending proven mobile-lineage code to handle the new platform environment:
+
+- **ACPI-enumerated PCI-style resources**
+- **Panel-self-refresh** on eDP panels
+- **HDR-capable display pipelines**
+- **IRIS video decoder** — replacing the older Venus firmware interface
+
+This chapter traces that extension work, documents what is upstream and what remains out-of-tree as of mid-2026, and equips driver and embedded developers to navigate the Snapdragon X Elite on Linux.
 
 ### 1.1 What is the Snapdragon X Elite?
 
-The Snapdragon X Elite (internal designation X1E80100, also referenced as SC8380XP in pre-release documentation) is a heterogeneous system-on-chip from Qualcomm, manufactured on TSMC's 4nm process and targeting the thin-and-light laptop market. It integrates Qualcomm's Oryon CPU cores, the Adreno X1-85 GPU, the Hexagon NPU for neural-network inference, and an IRIS video processing unit — all sharing a unified LPDDR5X memory pool over a 128-bit bus. Unlike discrete GPU platforms, there is no separate VRAM; the CPU and GPU allocate from the same physical address space, with coherency assisted by a 6 MB System Level Cache on the SoC.
+The Snapdragon X Elite (internal designation X1E80100, also referenced as SC8380XP in pre-release documentation) is a heterogeneous system-on-chip from Qualcomm, manufactured on TSMC's 4nm process and targeting the thin-and-light laptop market. It integrates:
 
-From a Linux platform perspective, the Snapdragon X Elite occupies a structurally novel position. It boots via UEFI rather than the raw bootloader of a smartphone, yet its SoC peripherals are described by a Device Tree Blob delivered through the EFI stub rather than by pure ACPI tables. Each OEM laptop model — Lenovo ThinkPad T14s Gen 6, Dell XPS 13 9345, ASUS Vivobook S 15, HP OmniBook X 14, and others — requires its own `.dts` entry under `arch/arm64/boot/dts/qcom/`, even though all share the same X1E80100 die. Core SoC support (pinctrl, clocks, power domains, SMMU, PCIe, USB PHY) landed across Linux 6.8 and 6.9; GPU and display support targeted Linux 6.11 and became practically usable around Linux 6.14 combined with Mesa 25.0. The platform represents Qualcomm's first SoC aimed squarely at a desktop-class Linux environment in which Wayland compositors, Chromium, and general productivity software are primary workloads alongside the mobile-derived GPU hardware.
+- **Oryon CPU cores** — Qualcomm's custom cores
+- **Adreno X1-85 GPU**
+- **Hexagon NPU** — for neural-network inference
+- **IRIS video processing unit**
+
+All four share a unified LPDDR5X memory pool over a 128-bit bus. Unlike discrete GPU platforms, there is no separate VRAM; the CPU and GPU allocate from the same physical address space, with coherency assisted by a 6 MB System Level Cache on the SoC.
+
+From a Linux platform perspective, the Snapdragon X Elite occupies a structurally novel position. It boots via UEFI rather than the raw bootloader of a smartphone, yet its SoC peripherals are described by a Device Tree Blob delivered through the EFI stub rather than by pure ACPI tables. Each OEM laptop model requires its own `.dts` entry under `arch/arm64/boot/dts/qcom/`, even though all share the same X1E80100 die:
+
+- **Lenovo ThinkPad T14s Gen 6**
+- **Dell XPS 13 9345**
+- **ASUS Vivobook S 15**
+- **HP OmniBook X 14**
+- and others
+
+Kernel and Mesa support for the platform landed in stages:
+
+- **Core SoC support** (pinctrl, clocks, power domains, SMMU, PCIe, USB PHY) — landed across Linux 6.8 and 6.9
+- **GPU and display support** — targeted Linux 6.11, becoming practically usable around Linux 6.14 combined with Mesa 25.0
+
+The platform represents Qualcomm's first SoC aimed squarely at a desktop-class Linux environment in which Wayland compositors, Chromium, and general productivity software are primary workloads alongside the mobile-derived GPU hardware.
 
 ### 1.2 What is freedreno?
 
-freedreno is the open-source driver stack for Qualcomm Adreno GPUs on Linux. The name covers two coupled components: the `msm` DRM kernel driver at `drivers/gpu/drm/msm/` and the Mesa Gallium3D user-space driver at `src/gallium/drivers/freedreno/`. The kernel component manages GPU command-ring submission, the Graphics Management Unit (GMU) firmware interface for GPU power states, GPU memory mapping through the SoC's SMMU IOMMU, and the KMS display pipeline through the `msm_dpu` subsystem. The Mesa Gallium3D component translates OpenGL API calls through the NIR shader intermediate representation into the Adreno IR3 instruction set, managing render-pass state, buffer objects, and hardware queries.
+freedreno is the open-source driver stack for Qualcomm Adreno GPUs on Linux. The name covers two coupled components: the `msm` DRM kernel driver at `drivers/gpu/drm/msm/` and the Mesa Gallium3D user-space driver at `src/gallium/drivers/freedreno/`. The `msm` kernel component manages:
+
+- **GPU command-ring submission**
+- **GMU firmware interface** — the Graphics Management Unit interface for GPU power states
+- **GPU memory mapping** — through the SoC's SMMU IOMMU
+- **KMS display pipeline** — through the `msm_dpu` subsystem
+
+The Mesa Gallium3D component translates OpenGL API calls through the NIR shader intermediate representation into the Adreno IR3 instruction set, managing render-pass state, buffer objects, and hardware queries.
 
 freedreno has been an in-tree kernel driver since approximately 2012, initially supporting Adreno 3xx mobile SoCs. Successive kernel releases expanded coverage through the A4xx, A5xx, A6xx, and A7xx GPU generations. For the Snapdragon X Elite the existing driver was extended — not replaced — by adding the X185 catalog entry, a `gmxc.lvl` voltage rail, and the X1E80100 DPU configuration table. The Gallium3D path in Mesa gained initial A7xx support in Mesa 24.3. The freedreno name is sometimes used loosely to refer to the entire Qualcomm open-source GPU driver ecosystem, encompassing both the OpenGL path described here and the Vulkan driver, Turnip, covered in the next subsection and in detail in §4 and §5.
 
