@@ -16,6 +16,7 @@
 - [5. Buffer and Memory Management](#5-buffer-and-memory-management)
 - [6. Compute in Bevy](#6-compute-in-bevy)
 - [7. Unreal Engine 5 and Unity: The Closed-Source Counterpoints](#7-unreal-engine-5-and-unity-the-closed-source-counterpoints)
+- [8. Popular Bevy Third-Party Crates](#8-popular-bevy-third-party-crates)
 - [Roadmap](#roadmap)
 - [Integrations](#integrations)
 - [References](#references)
@@ -925,6 +926,66 @@ In either case, the output is SPIR-V that enters Mesa NIR through the standard `
 ### The Broader Picture
 
 UE5 and Unity are significant data points for Mesa driver development: their diverse, production-scale workloads exercise corners of the SPIR-V spec and Vulkan feature set that synthetic benchmarks miss. RADV developers have cited UE5-specific shader patterns when optimising ACO's instruction selection, and NVK gained early correctness fixes from Unity workloads. The fact that both engines reach Mesa as SPIR-V means that improvements to `vk_spirv_to_nir()`, ACO, and the NIR optimisation passes described in Chapters 14 and 15 benefit all three engines — Bevy, UE5, and Unity — without any engine-specific code in Mesa.
+
+### Gameplay Feature Comparison: What Bevy Lacks Natively
+
+The table at the top of this section is scoped to rendering-stack concerns — API, shader language, Wayland support. It says nothing about the gameplay-layer functionality these engines ship out of the box. Bevy's core deliberately excludes most of it, following the same modular philosophy as its ECS; Godot and Unreal, by contrast, ship most of the following as first-party engine features:
+
+- **Physics.** Godot ships two built-in 3D physics engines (Godot Physics and Jolt, selectable per-project) plus a built-in 2D physics engine. Unreal ships Chaos Physics natively. Bevy has no first-party physics engine — projects depend on the third-party `avian` or `bevy_rapier` crates (§8.1). [Source](https://www.youngju.dev/blog/culture/2026-05-15-game-engines-2026-godot-unity-bevy-unreal-defold-stride-comparison-deep-dive.en)
+- **Networking and replication.** Unreal has actor replication, RPCs, and relevancy/priority systems built into the engine core. Godot has a built-in high-level multiplayer API (`MultiplayerAPI`, RPC annotations). Bevy ships no netcode at all — the ecosystem standardised on the third-party `bevy_replicon` and `lightyear` crates (§8.2). [Source](https://github.com/simgine/bevy_replicon)
+- **Particles and VFX.** Unreal ships Niagara, a node-based GPU VFX graph. Godot ships `GPUParticles2D`/`GPUParticles3D` natively. Bevy has no first-party particle system; even a *low-level* particle framework for the engine core remains an open, unresolved tracking issue as of 2026, leaving `bevy_hanabi` (§8.3) as the community standard. [Source](https://github.com/bevyengine/bevy/issues/20569)
+- **Navigation and pathfinding.** Unreal ships a full NavMesh and Navigation System with crowd avoidance and dynamic obstacles. Godot ships `NavigationServer2D`/`3D` built in. Bevy has neither — `vleue_navigator` and `oxidized_navigation` (§8.4) fill the gap from outside the engine. [Source](https://github.com/vleue/vleue_navigator)
+- **Animation depth.** Godot's `AnimationTree` (blend trees, state machines) and Unreal's Animation Blueprints and Control Rig (state machines, blending, full IK) are mature first-party systems. Bevy's `bevy_animation` covers clip playback and basic blending but has no built-in IK solver and no visual state-machine or blend-tree equivalent.
+- **Audio.** Unreal ships MetaSounds, a node-based procedural audio and mixing system. Godot has a built-in audio bus architecture with built-in effects (reverb, EQ, compression). Bevy's `bevy_audio` is a thin wrapper over `rodio` — basic playback and spatial positioning, with no mixing-bus graph; projects that need one reach for `bevy_kira_audio` (§8.6).
+- **Visual scripting.** Unreal's Blueprints let non-programmers build substantial gameplay logic without touching C++. Bevy has no visual-scripting layer — everything is Rust. Godot is not actually an exception here: it removed its own VisualScript system in the Godot 4 rewrite, so this is an Unreal-specific advantage rather than a shared Godot/Unreal one.
+- **Terrain and console platform support.** Unreal ships a built-in Landscape system and official, licensed console SDK support (PlayStation, Xbox, Switch). Godot has neither natively either — terrain requires the community Terrain3D plugin, and console support requires the commercial W4 Games SDK — so both of these are Unreal-specific gaps for Bevy, not general open-source-engine gaps.
+
+None of this makes Bevy behaviourally incomplete for shipping a game — it means a production Bevy project assembles its engine from more independently maintained pieces than a Godot or Unreal project needs out of the box. Section 8 catalogues the crates the Bevy ecosystem has converged on for each of these gaps.
+
+---
+
+## 8. Popular Bevy Third-Party Crates
+
+Because Bevy's core excludes most of the gameplay-layer systems §7 compares against Godot and Unreal, a production Bevy project is assembled from a small set of independently maintained crates rather than configured from engine-provided modules. The crates below are the ones the Bevy Foundation itself curates as the go-to solution per category on the official Bevy Assets directory; all are third-party (not maintained by the Bevy Foundation) unless noted otherwise. [Source](https://bevy.org/assets/)
+
+### 8.1 Physics
+
+- **avian** — an ECS-native 2D/3D physics engine that stores physics state directly as Bevy components and runs its solver as ordinary Bevy systems, rather than maintaining a separate physics-world representation. As of 2026 it is the de facto default for new Bevy projects, prized for tight ECS integration and solver performance. [Source](https://taintedcoders.com/bevy/physics/avian)
+- **bevy_rapier** — a plugin wrapping the Rapier physics engine (also used outside Bevy, in other Rust and non-Rust projects). Rapier keeps its own internal physics-world representation and projects results back onto Bevy's ECS each frame; it remains the more battle-tested option for projects that value maturity over native ECS integration. [Source](https://bevy.org/assets/)
+- **bevy-tnua** — a physics-engine-agnostic character-controller crate (works atop either avian or bevy_rapier) implementing "floating capsule" character movement, the common technique for responsive platformer/FPS controllers on top of a rigid-body physics engine. [Source](https://bevy.org/assets/)
+
+### 8.2 Networking and Replication
+
+- **bevy_replicon** — a server-authoritative state-replication crate: it synchronises ECS world state from server to clients and provides bidirectional event messaging, but deliberately ships no network I/O of its own — transport (UDP, QUIC, WebRTC) is a pluggable backend. [Source](https://github.com/simgine/bevy_replicon)
+- **lightyear** — a more complete client-server networking solution (transport, input handling, prediction/rollback) that as of 2026 builds its replication layer on top of `bevy_replicon` rather than duplicating it, reflecting the ecosystem consolidating around `bevy_replicon` as the shared replication core. [Source](https://github.com/cBournhonesque/lightyear)
+- **bevy_quinnet** — a lower-level QUIC-based client/server transport crate, often used as the transport backend underneath `bevy_replicon`. [Source](https://bevy.org/assets/)
+
+### 8.3 Particles and VFX
+
+- **bevy_hanabi** — a GPU-driven particle system plugin; particle simulation and rendering run as compute and render-graph passes rather than being updated per-particle on the CPU, following the same GPU-driven design philosophy as Bevy's own render graph (§1). [Source](https://bevy.org/assets/)
+- **bevy-vfx-bag** — a smaller GPU visual-effects plugin providing common post-processing effects (chromatic aberration, wave distortion, tinting) as drop-in render-graph nodes. [Source](https://bevy.org/assets/)
+
+### 8.4 Navigation and Pathfinding
+
+- **vleue_navigator** — navmesh generation and pathfinding for 2D and 3D scenes using the Polyanya algorithm, with support for live navmesh updates as obstacles move — relevant to the dynamic-obstacle case Unreal's Navigation System handles natively (§7). [Source](https://github.com/vleue/vleue_navigator)
+- **oxidized_navigation** — runtime navmesh generation and pathfinding for 3D worlds, a Rust implementation in the spirit of the industry-standard Recast/Detour navmesh toolkit that Unreal and Unity both build on. [Source](https://bevy.org/assets/)
+
+### 8.5 UI and Input
+
+- **bevy_egui** — integrates the immediate-mode `egui` GUI library into Bevy, and is the most common choice for debug UI and tooling (including some `bevy_editor_prototypes` surfaces referenced in the Roadmap) while Bevy's own retained-mode UI stack (Bevy UI, Bevy Feathers) matures. [Source](https://bevy.org/assets/)
+- **leafwing_input_manager** — maps raw input (keyboard, mouse, gamepad) to semantic game actions with configurable cross-device bindings, the same input-abstraction problem Unreal's Enhanced Input system and Godot's Input Map solve natively. [Source](https://bevy.org/assets/)
+- **bevy_enhanced_input** — a newer input-mapping crate explicitly modelled on Unreal Engine's Enhanced Input system (contextual input mapping, modifiers, triggers). [Source](https://bevy.org/assets/)
+
+### 8.6 Audio
+
+- **bevy_kira_audio** — replaces Bevy's built-in `bevy_audio` (a thin `rodio` wrapper) with the Kira audio library, adding a mixing/bus model, dynamic parameter automation, and more precise playback control — closer in spirit to Godot's built-in audio bus system than Bevy's own default audio crate. [Source](https://bevy.org/assets/)
+- **bevy_sonus** — adds spatial audio with occlusion and material-based sound transmission, modelling how geometry between a listener and a sound source attenuates or filters it. [Source](https://bevy.org/assets/)
+
+### 8.7 Tweening and Asset Loading
+
+- **bevy_tweening** and **bevy_tween** — animate component and asset field values (position, colour, opacity) over time using configurable easing curves, filling the simple-value-animation role that a scripting-language `tween()` call provides natively in Godot and Unity. [Source](https://bevy.org/assets/)
+- **bevy_asset_loader** — declaratively loads collections of assets during a configurable Bevy `State` (for example, a loading screen), removing manual asset-handle bookkeeping. [Source](https://bevy.org/assets/)
+- **bevy_common_assets** — adds `AssetLoader` implementations for common non-binary formats (JSON, YAML, RON, TOML, MessagePack) that Bevy's core asset system does not parse out of the box. [Source](https://bevy.org/assets/)
 
 ---
 
