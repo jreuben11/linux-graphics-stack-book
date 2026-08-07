@@ -16,6 +16,7 @@
 - [5. Buffer and Memory Management](#5-buffer-and-memory-management)
 - [6. Compute in Bevy](#6-compute-in-bevy)
 - [7. Unreal Engine 5 and Unity: The Closed-Source Counterpoints](#7-unreal-engine-5-and-unity-the-closed-source-counterpoints)
+- [Roadmap](#roadmap)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -221,6 +222,55 @@ The Entity-Component-System (ECS) pattern is a data-oriented architectural desig
 ECS contrasts with the object-oriented approach in which a shared base class carries both the data and the method that produces draw calls. In ECS, data and behaviour are separated: component storage is laid out contiguously in memory so that iterating over all entities that share a given component set is a sequential array scan rather than a pointer chase through a heap of heterogeneous objects. Bevy uses archetype storage, where entities that share exactly the same component types are stored together in a tightly packed table, making component iteration predictable for the CPU prefetcher.
 
 In Bevy's rendering context, ECS underpins both the simulation layer and the GPU command recording layer. Render proxies and their GPU resources are ECS entities, and the systems that extract, prepare, queue, and submit them are ordinary Bevy systems scheduled inside the render app. Understanding ECS is a prerequisite for reading the dual-world and render schedule subsections that follow. [Source](https://bevyengine.org/learn/quick-start/getting-started/ecs/)
+
+The canonical example below shows the three concepts in code: `#[derive(Component)]` attaches plain data to entities, `Commands::spawn` creates an entity by attaching a tuple of components (Bevy replaced explicit `Bundle` structs with component tuples in 0.15), and a system declares the data it needs as a `Query` parameter rather than being handed a specific object to call a method on.
+
+```rust
+use bevy::prelude::*;
+
+// Components are plain data — no methods, no behaviour.
+#[derive(Component)]
+struct Person;
+
+#[derive(Component)]
+struct Name(String);
+
+// A system that spawns entities: each `commands.spawn((...))` call creates
+// one entity and attaches the given component tuple to it.
+fn add_people(mut commands: Commands) {
+    commands.spawn((Person, Name("Elaina Proctor".to_string())));
+    commands.spawn((Person, Name("Renzo Hume".to_string())));
+    commands.spawn((Person, Name("Zayna Nieves".to_string())));
+}
+
+// A system that reads: `Query<&Name, With<Person>>` matches every entity
+// that has both a `Name` component and a `Person` component, and the loop
+// body runs once per matching entity.
+fn greet_people(query: Query<&Name, With<Person>>) {
+    for name in &query {
+        println!("hello {}!", name.0);
+    }
+}
+
+// A system that writes: `&mut Name` grants mutable access to the matched
+// component so the system can update it in place.
+fn update_people(mut query: Query<&mut Name, With<Person>>) {
+    for mut name in &mut query {
+        if name.0 == "Elaina Proctor" {
+            name.0 = "Elaina Hume".to_string();
+        }
+    }
+}
+
+fn main() {
+    App::new()
+        .add_systems(Startup, add_people)
+        .add_systems(Update, (update_people, greet_people).chain())
+        .run();
+}
+```
+
+`App::new()` constructs the `World` implicitly; `add_systems(Startup, ...)` schedules `add_people` to run once before the first frame, and `add_systems(Update, ...)` schedules `update_people` and `greet_people` to run every frame, with `.chain()` forcing `update_people` to complete before `greet_people` starts so the greeting reflects the renamed entity. Neither system holds a reference to the other or to a shared object — the scheduler resolves data dependencies from each system's `Query` type and runs systems with disjoint data access in parallel across threads. [Source](https://bevy.org/learn/quick-start/getting-started/ecs/)
 
 ---
 
@@ -879,6 +929,18 @@ UE5 and Unity are significant data points for Mesa driver development: their div
 ---
 
 ## Roadmap
+
+### Current Limitations and Adoption Barriers
+
+Bevy remains pre-1.0, and the features and forks tracked below need to be read against a set of well-documented gaps that currently limit adoption beyond hobby and small-team projects:
+
+- **API churn between releases.** Bevy ships a new minor version roughly every three months, and each has historically carried breaking changes — UI, scenes, and asset-loading APIs have all seen multi-release migrations. Community discussion has centred on this instability directly: one developer described "always find[ing] myself chasing the next version, never get[ting] to stabilize the games," and the pace leaves documentation, third-party tutorials, and AI coding assistants perpetually a few versions behind the crate actually in use. [Source](https://github.com/bevyengine/bevy/discussions/21838)
+- **No official editor or scene inspector.** Unlike Unity or Godot, Bevy ships no first-party editor; `bevy_editor_prototypes` (tracked in the Medium-term section below) is still pre-release. Developers have reported abandoning Bevy specifically because inspecting what assets are loaded into a running scene requires custom tooling rather than anything built in. [Source](https://biggo.com/news/202510190724_Bevy_Game_Engine_Community_Discussion)
+- **Incomplete mobile platform support.** Shipping to Android and iOS is possible but not easy: developers hit rough edges around multi-touch input and pixel-level surface handling, and there is no standardised export template comparable to Unity's or Godot's mobile build pipelines. A Bevy maintainer has attributed this directly to a chicken-and-egg adoption problem — there are not yet enough Bevy developers shipping on mobile to drive the ergonomics work forward — compounded by Rust itself lacking the first-party Apple/Google tooling support that GC'd, officially-backed engines get. [Source](https://github.com/bevyengine/bevy/discussions/20998)
+- **Small core team relative to scope.** The Bevy Foundation runs with a small number of full-time maintainers reviewing contributions across rendering, ECS, UI, and asset systems simultaneously; project lead Cart has publicly acknowledged that community-driven prioritisation and perfectionist review cycles have slowed delivery of higher-priority work such as a stable UI stack, with 2026 plans focused on clearer governance and working groups to reduce rework. [Source](https://github.com/bevyengine/bevy/discussions/21838)
+- **Rust compile times compound iteration speed.** Bevy inherits Rust's compilation model, and the edit-compile-run loop is measurably longer than in C#-based Unity or GDScript-based Godot; this is most acutely felt during prototyping and game jams, where fast iteration matters more than runtime performance. [Source](https://biggo.com/news/202510190724_Bevy_Game_Engine_Community_Discussion)
+
+None of these are architectural dead ends — they are largely a function of Bevy's pre-1.0 status and small team, and the items below are the concrete, tracked work closing each gap.
 
 ### Near-term (6–12 months)
 
