@@ -536,6 +536,12 @@ VTK-m's design separates the **what** (algorithm logic as worklets) from the **w
 
 The Kokkos adapter (added in VTK-m 1.7) is the recommended path for AMD ROCm 6+ (`VTKM_ENABLE_KOKKOS=ON`, with `CMAKE_CXX_COMPILER=hipcc`). [Source](https://github.com/Kitware/VTK-m)
 
+### Kokkos: The Portability Layer Behind the Adapter
+
+Kokkos is not a VTK-m-specific technology — it is a general-purpose C++ performance-portability library that originated at Sandia National Laboratories, first released in 2017 and now maintained at [github.com/kokkos/kokkos](https://github.com/kokkos/kokkos). It exposes a single template-based C++ API for parallel loops, reductions, and multidimensional array views, with a pluggable backend that compiles the same source against CUDA (NVIDIA), HIP (AMD/ROCm), SYCL (Intel oneAPI and other cross-vendor targets), OpenMP, or serial CPU execution — the calling application does not maintain separate device-specific code paths. [Source](https://www.osti.gov/servlets/purl/1457941) Kokkos underpins Sandia's Trilinos numerical libraries and has been used to port production HPC codes such as LAMMPS (molecular dynamics) and SPARTA (direct simulation Monte Carlo) to run, largely unmodified, across NVIDIA, AMD, and Intel GPUs, including on OLCF Frontier, the first exascale system. [Source](https://www.nas.nasa.gov/pubs/ams/2024/04-04-24.html)
+
+VTK-m's `VTKM_DEVICE_ADAPTER_KOKKOS` adapter delegates worklet execution to Kokkos rather than talking to CUDA, HIP, or SYCL directly, so a single Kokkos-backed VTK-m build can retarget GPU vendor by switching `Kokkos_ENABLE_*` CMake flags instead of VTK-m maintaining separate CUDA and HIP device adapters in parallel. This is the basis for the Roadmap's (below) expectation that Kokkos matures into VTK-m's single unified GPU compute path, and for VTK-m 2.1's targeted Kokkos/SYCL work for Intel GPUs (PVC/Xe), which reaches the hardware through the Level Zero backend that Intel's SYCL implementation uses on its own GPUs. [Source](https://github.com/Kitware/VTK-m)
+
 ### Key Filters
 
 - **`vtkm::filter::contour::Contour`** — Marching Cubes isosurface extraction, fully parallel on GPU. On a 512³ volume, GPU execution (CUDA/HIP) typically completes in ~50 ms versus ~5 seconds on CPU. [Note: benchmark figures from VTK-m Users' Guide V.2.0; specific hardware and configuration may vary. Source: [OSTI](https://www.osti.gov/biblio/1959590)]
@@ -659,9 +665,15 @@ Parallel XML formats (`.pvtu`, `.pvtp`) store a master XML index file that refer
 
 ### VTK HDF Format (VTKHDF)
 
-Introduced in VTK 9.1, the VTKHDF format uses HDF5 as the storage layer but with a VTK-defined group/dataset layout that supports parallel I/O via MPI-IO and time-series data via internal caching. Reader: `vtkHDFReader`. Supported dataset types: PolyData, UnstructuredGrid, ImageData, HyperTreeGrid, OverlappingAMR, MultiBlockDataSet, PartitionedDataSetCollection. [Source](https://www.kitware.com/vtk-hdf-reader/)
+Introduced in VTK 9.1, the VTKHDF format uses HDF5 as the storage layer but with a VTK-defined group/dataset layout, avoiding the auxiliary XML mapping file that plain XDMF-over-HDF5 requires and the extra machinery ADIOS2 brings for developers who just want a self-describing HDF5 file. Reader: `vtkHDFReader`. Supported dataset types: PolyData, UnstructuredGrid, ImageData, RectilinearGrid, StructuredGrid, HyperTreeGrid, Table, and the composite types OverlappingAMR, MultiBlockDataSet, and PartitionedDataSetCollection. [Source](https://www.kitware.com/vtk-hdf-reader/)
 
-The format is actively developed as the preferred successor to the legacy `.vtk` and parallel XML formats for large-scale simulations. A 2025 status update reports significant I/O performance improvements for temporal datasets. [Source](https://www.kitware.com/vtkhdf-file-format-2025-status-update/)
+**Group/dataset schema.** Every VTKHDF file opens with a top-level `/VTKHDF` group carrying two attributes: `Version` (a two-integer array — 2.5 as of the 2025 status update) and `Type` (a string naming the dataset class stored in the file, e.g. `UnstructuredGrid`). For an UnstructuredGrid, that group holds the flattened `Points` and `Connectivity` datasets plus the count datasets `NumberOfPoints`, `NumberOfCells`, and `NumberOfConnectivityIds`, alongside `PointData`, `CellData`, and `FieldData` subgroups that mirror VTK's in-memory attribute model directly, so no separate schema translation is needed on read. ImageData instead stores its regular grid using HDF5 chunking, so hyperslabs align with VTK's native array layout without re-splitting arrays. [Source](https://docs.vtk.org/en/latest/vtk_file_formats/vtkhdf_file_format/vtkhdf_specifications.html)
+
+**Parallel I/O.** For UnstructuredGrid and PolyData, each MPI rank writes its own contiguous "piece" into the shared, flattened `Points`/`Connectivity` arrays; the `NumberOfPoints`, `NumberOfCells`, and `NumberOfConnectivityIds` datasets record one entry per piece, letting every rank compute its own byte offset and issue an independent HDF5 hyperslab read or write — no intermediate copy and no per-rank piece file. This replaces the master-index-plus-piece-files design of parallel VTK XML (`.pvtu`/`.pvtp`, above) with a single shared file that HDF5's own parallel I/O layer (built on MPI-IO) writes to concurrently. ImageData parallelizes the same way, via chunked hyperslabs over the regular grid. [Source](https://www.kitware.com/vtk-hdf-reader/)
+
+**Time-series indexing.** Temporal data is stored by flattening every timestep's arrays end-to-end and tracking positions in a dedicated `Steps` group: `NSteps` records the timestep count, `Values` holds the simulation time for each step, and a family of offset datasets — `PointOffsets`, `CellOffsets`, `ConnectivityIdOffsets`, `PartOffsets`/`NumberOfParts`, `PointDataOffsets` — tell the reader where each timestep's geometry and field data begin within the flattened arrays. Because the offsets are explicit rather than implied by a fixed per-step stride, a static-geometry simulation can repeat the same `PointOffsets`/`CellOffsets` entry across steps and store only the changing field data — the "static mesh" caching added in the 2025 update, which lets `vtkHDFReader` skip re-reading unchanging topology at every timestep. VTK 9.6/9.7 development extended this composite/parallel/time-dependent writer support specifically to unstructured meshes. [Source](https://www.kitware.com/how-to-write-time-dependent-data-in-vtkhdf-files/)
+
+This is why the Roadmap (below) expects VTKHDF to supersede `.pvtu`/`.pvtp` for new HPC codes: one shared file replaces a master-index-plus-N-piece-files layout, HDF5's native parallel I/O substitutes for VTK's own MPI-IO glue code around the XML readers/writers, and the `Steps` group gives ParaView's animation scene (Section 8, above) direct random access to any timestep without scanning a directory of piece files. A 2025 status update reports these I/O performance improvements for temporal datasets specifically. [Source](https://www.kitware.com/vtkhdf-file-format-2025-status-update/)
 
 ### ADIOS2
 
@@ -1329,6 +1341,13 @@ This chapter connects to the following chapters across the book:
 - [VTK-m Documentation](https://docs-m.vtk.org/latest/)
 - [VTK-m Users Guide V.2.0](https://www.osti.gov/biblio/1959590)
 - [VTKHDF File Format](https://docs.vtk.org/en/latest/vtk_file_formats/vtkhdf_file_format/index.html)
+- [VTKHDF Format Specification](https://docs.vtk.org/en/latest/vtk_file_formats/vtkhdf_file_format/vtkhdf_specifications.html)
+- [Kitware — VTK HDF Reader](https://www.kitware.com/vtk-hdf-reader/)
+- [Kitware — VTKHDF File Format: 2025 Status Update](https://www.kitware.com/vtkhdf-file-format-2025-status-update/)
+- [Kitware — How to Write Time-Dependent Data in VTKHDF Files](https://www.kitware.com/how-to-write-time-dependent-data-in-vtkhdf-files/)
+- [Kokkos: The C++ Performance Portability Programming Ecosystem (OSTI)](https://www.osti.gov/servlets/purl/1457941)
+- [Kokkos: Performance Portability for the Exascale Era — NASA Advanced Supercomputing](https://www.nas.nasa.gov/pubs/ams/2024/04-04-24.html)
+- [kokkos/kokkos Repository](https://github.com/kokkos/kokkos)
 - [ParaView Documentation](https://docs.paraview.org/en/latest/)
 - [Catalyst In-Situ Documentation](https://catalyst-in-situ.readthedocs.io/en/latest/)
 - [VTK ANARI Module](https://docs.vtk.org/en/latest/release_details/9.4/add-anari-rendering-capability.html)
