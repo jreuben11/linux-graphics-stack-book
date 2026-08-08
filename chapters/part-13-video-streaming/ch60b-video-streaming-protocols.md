@@ -42,6 +42,7 @@
    - 8.3 [BOLA: Lyapunov Optimisation](#83-bola-lyapunov-optimisation)
    - 8.4 [MPC: Model Predictive Control](#84-mpc-model-predictive-control)
    - 8.5 [Pensieve: Reinforcement Learning ABR](#85-pensieve-reinforcement-learning-abr)
+   - 8.6 [ABR Algorithm Comparison and When to Use Each](#86-abr-algorithm-comparison-and-when-to-use-each)
 9. [Segment Packaging and CMAF Chunking](#9-segment-packaging-and-cmaf-chunking)
 10. [CDN Delivery Strategies](#10-cdn-delivery-strategies)
 11. [Linux Streaming Server Landscape](#11-linux-streaming-server-landscape)
@@ -152,6 +153,30 @@ graph TD
     MOQT --> Codec
     Codec --> HW
 ```
+
+### Protocol Selection Guide
+
+Before reading the protocol-by-protocol detail, the table below answers the practical question: **which protocol should I choose for a given delivery scenario, and what latency/throughput trade-off does it imply?**
+
+| Protocol | Typical glass-to-glass latency | Transport / reliability | Delivery model | Best for | Limitations |
+|---|---|---|---|---|---|
+| **RTMP** | 2–5 s (ingest leg only) | TCP (reliable, ordered) | Push, persistent connection | Live ingest from encoder to origin/CDN (OBS, hardware encoders → YouTube Live/Twitch) | No adaptive bitrate; not used for last-mile delivery; TCP head-of-line blocking under packet loss [Source: Mux — RTMP vs. SRT vs. WebRTC](https://www.mux.com/articles/rtmp-vs-srt-webrtc-live-streaming-ingest-protocols) |
+| **RTSP + RTP** | 100–500 ms (typically 150–250 ms on a LAN) | UDP (RTP) or TCP-interleaved | Push/pull, session-controlled | IP cameras, NVRs, surveillance (ONVIF mandates it) | Not HTTP/CDN-friendly (NAT/firewall traversal); no built-in ABR; doesn't scale to large audiences [Source: Happytimesoft — Latency Comparison of Live Streaming Protocols](http://happytimesoft.com/knowledge/latency-in-mainstream-streaming-protocols.html) |
+| **SRT** | Configurable: ~20–40 ms (LAN) up to 600+ ms (intercontinental), set to ≥ 4× one-way RTT | UDP + ARQ (selective retransmission) | Push, point-to-point or point-to-multipoint | Contribution/backhaul over unreliable public internet (remote production) | Latency budget must be manually tuned to path RTT at both ends; not browser-native or CDN-cacheable |
+| **HLS** | ~15–20 s (6 s segments; up to 30 s with larger playlist windows) | HTTP(S), pull | Segment + text (M3U8) manifest, CDN-cacheable | VOD and broad-reach live delivery; universal device/hardware support | High latency unless the LL-HLS extension is used |
+| **LL-HLS** | 2–4 s | HTTP(S), pull (chunked/blocking-reload long-poll) | Segment + parts, CDN-cacheable | Apple-ecosystem low-latency live | Requires HTTP/2 or long-poll-aware CDN/origin; more complex packaging config |
+| **MPEG-DASH** | Comparable to HLS, segment-duration dependent (4–6 s segments → tens of seconds) | HTTP(S), pull | Segment + XML (MPD) manifest, CDN-cacheable | Codec-agnostic, multi-DRM (CENC) VOD/live, broadcast deployments | Same latency ceiling as HLS unless the low-latency profile is used |
+| **LL-DASH (CMAF chunked)** | 1–3 s | HTTP(S) chunked transfer encoding | Segment + manifest, chunk-streamed to CDN edge | Low-latency DASH over existing CDN/HTTP infrastructure | Requires CDN support for chunked-transfer passthrough |
+| **WebRTC** | < 500 ms (sub-second) | UDP, SRTP over ICE-negotiated path | Peer-to-peer or SFU-routed | Interactive/conversational video; ultra-low-latency 1:many via an SFU | Doesn't scale like a CDN without an SFU fleet; not HTTP-cacheable |
+| **WebTransport** | Sub-100 ms media-chunk delivery | QUIC (UDP) | Server push over HTTP/3 | Browser-native low-latency push without WebRTC's signaling complexity | Still an emerging W3C/IETF draft; limited production tooling |
+| **MOQT** | Targets the gap between WebRTC (< 500 ms) and HLS/DASH (> 5 s) | QUIC (UDP), publish/subscribe | CDN-relayable, cache-and-forward | CDN-scale live streaming at low latency without a per-viewer SFU mesh | IETF draft as of mid-2026; FFmpeg/GStreamer support experimental |
+
+**Key trade-offs in brief:**
+- **Latency vs. reach**: WebRTC, RTSP, and SRT deliver sub-second-to-low-latency media but don't benefit from HTTP/CDN caching; HLS and DASH scale to millions of viewers on plain HTTP infrastructure but trade away latency — a gap the LL-HLS/LL-DASH extensions narrow to 1–4 s without abandoning the cacheable segment model.
+- **Push vs. pull**: RTMP, RTSP, WebRTC, and SRT are push/session-oriented — the sender actively transmits packets, minimising latency at the cost of stateful infrastructure (SFUs, session servers, matched latency-budget configuration). HLS and DASH are pull-based over stateless HTTP — the client fetches segments, which is exactly what makes them horizontally scalable behind a CDN.
+- **Reliability model**: TCP-based protocols (RTMP; HLS/DASH over HTTP) guarantee in-order delivery but risk head-of-line blocking under loss. UDP-based protocols (RTSP/RTP, WebRTC, SRT, the QUIC-based transports) tolerate loss and prioritise timeliness; SRT and QUIC add selective retransmission (ARQ) without TCP's full-stream blocking.
+- **Pipeline role**: RTMP and SRT are contribution/ingest protocols (camera/encoder → origin); HLS, DASH, WebRTC, and MOQT are last-mile delivery protocols (origin → viewer); RTSP spans both roles in camera/surveillance deployments.
+- **Where the field is heading**: MOQT and WebTransport aim to collapse the historical latency-vs-scale trade-off into a single QUIC-based protocol family (§6), but as of mid-2026 both remain pre-production for the delivery role that HLS, DASH, and WebRTC currently split between them.
 
 ### 1.1 What is Adaptive Bitrate (ABR) Streaming?
 
@@ -804,6 +829,18 @@ The state fed to the policy network at each decision step includes:
 The policy network (3-layer fully connected, ~30K parameters) outputs a softmax distribution over bitrate choices; the action with the highest probability is selected. Pensieve demonstrates that learned policies can discover non-obvious strategies (e.g., temporarily downloading lower quality to grow the buffer before a predicted bandwidth drop) that rule-based algorithms miss.
 
 On Linux, the Pensieve inference model can run as a sidecar process alongside a DASH client, with the player querying the model via a local socket at each segment boundary. Production deployment requires retraining on network traces representative of the target audience's ISP mix.
+
+### 8.6 ABR Algorithm Comparison and When to Use Each
+
+| Algorithm | Primary signal(s) | Adaptation behaviour | Oscillation risk | Implementation complexity | When to use |
+|---|---|---|---|---|---|
+| **EWMA** (throughput-based, §8.1) | Smoothed download throughput | Fast to react but purely reactive — a lagging indicator of true available bandwidth | High under bursty/variable networks | Low — a moving average and a lookup table | Simple players, tight CPU/battery budget, reasonably stable networks |
+| **BBA** (buffer-based, §8.2) | Buffer occupancy only | Reacts to buffer trend; ignores instantaneous throughput noise entirely | Low — the buffer itself smooths short spikes | Low | Networks with highly variable/bursty throughput where raw bandwidth estimates are noisy |
+| **BOLA** (Lyapunov optimisation, §8.3) | Buffer level + per-quality segment sizes | Provably near-optimal quality/rebuffering trade-off via a control-theoretic bound | Low — theoretically stable by construction | Medium — needs segment-size awareness per rendition | Players wanting formally bounded rebuffering guarantees (used in dash.js, Shaka Player) |
+| **MPC** (model predictive control, §8.4) | Throughput history + buffer + segment sizes, optimised over a look-ahead horizon | Best short-term prediction of the algorithms surveyed here, at higher compute cost | Low | High — solves a constrained optimisation at every decision step | High-value VOD/live where extra client CPU budget is available and QoE tuning matters |
+| **Pensieve** (reinforcement learning, §8.5) | Learned policy over throughput history, buffer, and segment sizes (trained offline) | Can discover non-obvious strategies (e.g. pre-buffering ahead of a predicted bandwidth drop) | Depends entirely on how representative the training traces are | Highest — requires a trained model plus ongoing retraining | Large-scale platforms that can invest in training and maintaining a model on traces representative of their audience's ISP mix |
+
+No single algorithm dominates: EWMA and BBA are the pragmatic default for most players because they need no per-title tuning; BOLA is preferred when a formal rebuffering bound is a product requirement; MPC and Pensieve trade implementation and operational complexity for quality gains that matter most at large scale, where a fractional QoE improvement multiplies across millions of playback sessions. Production players frequently blend approaches — e.g. dash.js implements both BOLA and a throughput-based fallback, switching between them based on detected network stability.
 
 ---
 
