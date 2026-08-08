@@ -52,17 +52,17 @@
 
 ## 1. Overview
 
-This chapter focuses on the protocol layer and adaptation algorithms that sit above the codec layer (Chapter 60) and the hardware acceleration paths (Chapters 26, 50). Chapter 57 (**FFmpeg**) touches on streaming protocols from a library-integration perspective — how to write an **HLS** muxer invocation or open an **RTMP** URL. This chapter goes deeper: what the protocols themselves specify, how adaptive bitrate algorithms decide which quality level to request next, and how low-latency variants (**LL-HLS**, **LL-DASH**, **MOQT**) reduce glass-to-glass latency from tens of seconds to sub-second.
+This chapter focuses on the protocol layer and adaptation algorithms that sit above the codec layer (Chapter 60) and the hardware acceleration paths (Chapters 26, 50). Chapter 57 (**FFmpeg**) touches on streaming protocols from a library-integration perspective — how to write an **HLS** muxer invocation or open an **RTMP** URL. This chapter goes deeper: what the protocols themselves specify, how adaptive bitrate algorithms decide which quality level to request next, and how low-latency variants (**LL-HLS** — Low-Latency HLS, **LL-DASH** — Low-Latency DASH, **MOQT** — Media Over QUIC Transport) reduce glass-to-glass latency from tens of seconds to sub-second.
 
 The chapter targets engineers who need to design or debug a streaming delivery system on Linux:
 - packaging live content from **FFmpeg** or **GStreamer** into **HLS**/**DASH**
-- tuning **ABR** for low-latency live sports
+- tuning **ABR (Adaptive Bitrate)** for low-latency live sports
 - building **WebRTC**-based low-latency paths
 - evaluating whether **SRT** or **QUIC** is the right transport for a broadcast ingest link
 
 **HLS** (**HTTP Live Streaming**, **RFC 8216**) is covered first:
-- **Two-tier playlist grammar** — master playlist and media playlist in **M3U8** format
-- **Segment containers** — **MPEG-2 TS** vs. **fMP4**/**CMAF**
+- **Two-tier playlist grammar** — master playlist and media playlist in **M3U8** (UTF-8 M3U playlist) format
+- **Segment containers** — **MPEG-2 TS** (Transport Stream) vs. **fMP4** (fragmented MP4)/**CMAF**
 - **LL-HLS extension** — uses sub-segment **parts** and **`#EXT-X-PRELOAD-HINT`** to reach 2–4 second latency
 - **FFmpeg `hls` muxer** — practical packaging with `-hls_segment_type fmp4`
 
@@ -70,30 +70,30 @@ The chapter targets engineers who need to design or debug a streaming delivery s
 - **MPD** (**Media Presentation Description**) — XML hierarchy of `Period`, `AdaptationSet`, `Representation`, and `SegmentTemplate`
 - **Segment addressing modes** — `$Number$`-based, `$Time$`-based with **`SegmentTimeline`**, and **`SegmentList`**
 - **CMAF** (**Common Media Application Format**, **ISO 23000-19**) — chunked transfer for **Low-Latency DASH**
-- **DASH-IF interoperability points** — including **CENC** (**Common Encryption**) and live profile constraints
+- **DASH-IF** (DASH Industry Forum) **interoperability points** — including **CENC** (**Common Encryption**) and live profile constraints
 
 **WebRTC** (**RFC 8825**) provides sub-second peer-to-peer and SFU-routed delivery. The chapter covers the full signaling stack:
 - **SDP** (**Session Description Protocol**, **RFC 8866**) — offer/answer exchange
 - **ICE** (**Interactive Connectivity Establishment**, **RFC 8445**) — candidate gathering using **STUN** (**RFC 8489**) and **TURN** (**RFC 8656**)
 - **DTLS-SRTP** media plane (**RFC 5764**, **RFC 9147**) — key derivation
-- **RTP**/**RTCP** (**RFC 3550**) — transport with **PLI**, **NACK**, **REMB**, and **Transport-CC** feedback
-- **Linux integration** — **GStreamer** `webrtcbin` (`gst-plugins-bad`) together with **Pion** and **mediasoup** **SFU** implementations
+- **RTP** (Real-time Transport Protocol)/**RTCP** (RTP Control Protocol) (**RFC 3550**) — transport with **PLI** (Picture Loss Indication), **NACK** (Negative Acknowledgement), **REMB** (Receiver Estimated Maximum Bitrate), and **Transport-CC** (Transport-wide Congestion Control) feedback
+- **Linux integration** — **GStreamer** `webrtcbin` (`gst-plugins-bad`) together with **Pion** and **mediasoup** **SFU** (Selective Forwarding Unit) implementations
 
 **SRT** (**Secure Reliable Transport**), developed by **Haivision** and hosted at `github.com/Haivision/srt`, targets broadcast contribution links. Covered topics include:
-- **Protocol architecture** — **UDT**-derived design with four-way handshake (`HSREQ`/`HSRSP`/`KMREQ`/`KMRSP`)
+- **Protocol architecture** — **UDT** (UDP-based Data Transfer Protocol)-derived design with four-way handshake (`HSREQ`/`HSRSP` — Handshake Request/Response — and `KMREQ`/`KMRSP` — Key Material Request/Response)
 - **ARQ** (**Automatic Repeat reQuest**) — configurable `SRTO_LATENCY` budget
-- **AES-128/256 encryption**
+- **AES**-128/256 (Advanced Encryption Standard) encryption
 - **Deployment** — **libsrt** (`libsrt-dev`) with **FFmpeg** (`--enable-libsrt`), **GStreamer** `srtsrc`/`srtsink`, and **MediaMTX**
 
 **QUIC**-based media transport (**RFC 9000**) encompasses two emerging standards:
-- **WebTransport** (W3C/IETF) — exposes **QUIC** streams and datagrams to browser **JavaScript** for low-latency **fMP4**/**CMAF** chunk delivery
+- **WebTransport** (**W3C** — World Wide Web Consortium — /**IETF** — Internet Engineering Task Force) — exposes **QUIC** streams and datagrams to browser **JavaScript** for low-latency **fMP4**/**CMAF** chunk delivery
 - **MOQT** (**Media Over QUIC Transport**, `draft-ietf-moq-transport`) — CDN-scalable live streaming with a **Track**/**Group**/**Object** data model using reliable **QUIC** streams or unreliable **QUIC** datagrams
 
 Linux **QUIC** libraries include **quiche** (Cloudflare), **msquic** (Microsoft), and **aioquic** (Python).
 
 **RTSP** (**RFC 7826**) and **RTMP** (Adobe) are covered as legacy and ingest protocols:
-- **RTSP**/**RTP** — for **IP** cameras and **NVR** equipment; implemented in **GStreamer** via `gst-rtsp-server` and in **FFmpeg**
-- **RTMP**/**RTMPS** — dominant live ingest protocol used by **OBS**, **FFmpeg**, and hardware encoders feeding platforms such as YouTube Live and Twitch; primary Linux implementations: **SRS**, **nginx-rtmp**, and **MediaMTX**
+- **RTSP**/**RTP** — for **IP** cameras and **NVR** (Network Video Recorder) equipment; implemented in **GStreamer** via `gst-rtsp-server` and in **FFmpeg**
+- **RTMP**/**RTMPS** — dominant live ingest protocol used by **OBS** (Open Broadcaster Software), **FFmpeg**, and hardware encoders feeding platforms such as YouTube Live and Twitch; primary Linux implementations: **SRS** (Simple Realtime Server), **nginx-rtmp**, and **MediaMTX**
 
 The **adaptive bitrate** (**ABR**) section surveys the five major algorithm families implemented in players today:
 - **EWMA** (**Exponentially Weighted Moving Average**) — throughput-based estimation
@@ -102,14 +102,14 @@ The **adaptive bitrate** (**ABR**) section surveys the five major algorithm fami
 - **MPC** (**Model Predictive Control**) — harmonic-mean throughput prediction
 - **Pensieve** — reinforcement-learning policy network trained to maximise **QoE** (**Quality of Experience**)
 
-Segment packaging digs into the **CMAF** box structure — `ftyp`, `moov`, `moof`, `mdat`, `tfdt`, `trun` — and explains how **HTTP/1.1** chunked transfer encoding (**`Transfer-Encoding: chunked`**) is used in **LL-DASH** to stream `moof`+`mdat` pairs to the **CDN** edge before a segment closes. CDN delivery strategy covers:
+Segment packaging digs into the **CMAF** box structure — `ftyp`, `moov`, `moof`, `mdat`, `tfdt`, `trun` — and explains how **HTTP/1.1** chunked transfer encoding (**`Transfer-Encoding: chunked`**) is used in **LL-DASH** to stream `moof`+`mdat` pairs to the **CDN** (Content Delivery Network) edge before a segment closes. CDN delivery strategy covers:
 - Segment cache headers
 - Origin shielding
 - Manifest rewriting for multi-CDN failover
 - **HTTP/3** (**QUIC**) at the edge
 - **`sidx`**-box-based byte-range seeking
 
-The chapter closes with a survey of the Linux streaming server landscape, including the emerging **WHIP**/**WHEP** (**RFC 9725**) standard for **HTTP**-based **WebRTC** ingest and egress signaling:
+The chapter closes with a survey of the Linux streaming server landscape, including the emerging **WHIP** (WebRTC-HTTP Ingestion Protocol)/**WHEP** (WebRTC-HTTP Egress Protocol) (**RFC 9725**) standard for **HTTP**-based **WebRTC** ingest and egress signaling:
 - **SRS**
 - **MediaMTX**
 - **nginx-rtmp**

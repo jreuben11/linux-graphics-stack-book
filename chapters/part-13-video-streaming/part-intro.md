@@ -22,11 +22,11 @@ Video streaming occupies the layer of the Linux graphics stack that sits directl
 
 ### Camera Capture: MIPI CSI-2, VB2, and ISP
 
-**MIPI CSI-2 (Camera Serial Interface 2)** is the physical interface from image sensor to SoC. It uses 2 or 4 DPHY or CPHY lanes carrying compressed differential serial data. The sensor transmits RAW Bayer or YUV frames at up to several Gbps per lane. The CSI-2 receiver inside the SoC is a DMA engine that writes frames into memory via the IOMMU; V4L2 models this as a `v4l2_subdev` linked into a media controller graph.
+**MIPI CSI-2 (Camera Serial Interface 2)** is the physical interface from image sensor to **SoC (System on Chip)**. It uses 2 or 4 **D-PHY** (MIPI's differential clock/data physical layer) or **C-PHY** (MIPI's three-wire trio physical layer) lanes carrying compressed differential serial data. The sensor transmits RAW Bayer or YUV frames at up to several Gbps per lane. The CSI-2 receiver inside the SoC is a **DMA (Direct Memory Access)** engine that writes frames into memory via the **IOMMU (I/O Memory Management Unit)**; V4L2 models this as a `v4l2_subdev` linked into a media controller graph.
 
-**VB2 (videobuf2)** is the kernel framework for DMA buffer management in V4L2 drivers. It handles the mechanics of `VIDIOC_REQBUFS`, `VIDIOC_QBUF`/`VIDIOC_DQBUF`, and memory type selection (MMAP, USERPTR, DMABUF). For zero-copy GPU pipelines, buffers are allocated as GBM objects, exported as DMA-BUF file descriptors, and imported into V4L2 via `V4L2_MEMORY_DMABUF` — the same buffer flows directly from camera capture to GPU texture without a CPU copy.
+**VB2 (videobuf2)** is the kernel framework for DMA buffer management in V4L2 drivers. It handles the mechanics of `VIDIOC_REQBUFS`, `VIDIOC_QBUF`/`VIDIOC_DQBUF`, and memory type selection (MMAP, USERPTR, DMABUF). For zero-copy GPU pipelines, buffers are allocated as **GBM (Generic Buffer Management)** objects, exported as DMA-BUF file descriptors, and imported into V4L2 via `V4L2_MEMORY_DMABUF` — the same buffer flows directly from camera capture to GPU texture without a CPU copy.
 
-**ISP (Image Signal Processor)** is the dedicated hardware pipeline between the RAW Bayer sensor output and a displayable frame. ISP stages include: demosaicing (converting Bayer CFA patterns to RGB), auto-white balance (AWB), auto-exposure (AE), noise reduction (NR), and lens shading correction. On-SoC ISPs (Rockchip RKISP1, Allwinner sun6i, NXP i.MX) are modelled as V4L2 sub-devices in the media controller graph. ISP tuning (AWB/AE gains, noise reduction parameters) is typically vendor-proprietary.
+**ISP (Image Signal Processor)** is the dedicated hardware pipeline between the RAW Bayer sensor output and a displayable frame. ISP stages include: demosaicing (converting Bayer **CFA (Color Filter Array)** patterns to RGB), auto-white balance (AWB), auto-exposure (AE), noise reduction (NR), and lens shading correction. On-SoC ISPs (Rockchip RKISP1, Allwinner sun6i, NXP i.MX) are modelled as V4L2 sub-devices in the media controller graph. ISP tuning (AWB/AE gains, noise reduction parameters) is typically vendor-proprietary.
 
 ### Codec Workflows: Remuxing, Transcoding, Two-Pass Encoding
 
@@ -40,7 +40,7 @@ Video streaming occupies the layer of the Linux graphics stack that sits directl
 
 **RTMP (Real-Time Messaging Protocol)** is a TCP-based protocol originally developed by Adobe for Flash streaming. RTMP uses a persistent connection and multiplexes audio, video, and data channels. Despite Flash's death, RTMP remains the dominant **ingest** protocol for live streaming (Twitch, YouTube, Facebook Live all accept RTMP ingest) due to its low-latency properties and wide encoder support (OBS, FFmpeg).
 
-**RTSP (Real-Time Streaming Protocol)** is a signaling protocol (like HTTP for media control) that negotiates media session setup; the actual media is transported via **RTP** over UDP or TCP. RTSP is used by IP cameras, CCTV systems, and traditional broadcast equipment. It is rarely used for internet delivery — HLS/DASH are preferred there.
+**RTSP (Real-Time Streaming Protocol)** is a signaling protocol (like HTTP for media control) that negotiates media session setup; the actual media is transported via **RTP (Real-time Transport Protocol)** over UDP or TCP. RTSP is used by IP cameras, **CCTV (Closed-Circuit Television)** systems, and traditional broadcast equipment. It is rarely used for internet delivery — HLS/DASH are preferred there.
 
 **SRT (Secure Reliable Transport)** is a UDP-based low-latency transport protocol with ARQ (Automatic Repeat Request) and AES encryption. SRT is designed for unreliable networks: it maintains a live stream at configurable latency (typically 120–500 ms) by retransmitting lost packets within the latency budget. SRT is increasingly used for contribution links (venue → production) and as a streaming ingest alternative to RTMP.
 
@@ -48,7 +48,7 @@ Video streaming occupies the layer of the Linux graphics stack that sits directl
 
 **DASH (Dynamic Adaptive Streaming over HTTP)** uses an XML manifest (**MPD — Media Presentation Description**) describing available AdaptationSets (video bitrate ladders), Representations (individual quality levels), and SegmentTemplate URLs. **CMAF (Common Media Application Format)** is the fMP4 fragment format used for both HLS and DASH segments, enabling segment sharing between the two protocols. DASH + CMAF is the dominant standard for large-scale VOD and live streaming (Netflix, Amazon Prime, Disney+).
 
-**WebRTC** uses **SDP (Session Description Protocol)** for offer/answer negotiation of codec capabilities, IP/port candidates, and transport parameters. **ICE (Interactive Connectivity Establishment)** with **STUN** (Session Traversal Utilities for NAT) and **TURN** (Traversal Using Relays around NAT) performs NAT traversal. Media is encrypted via **DTLS-SRTP** (Datagram TLS-keyed SRTP). The real-time transport uses **RTP** for media and **RTCP** for feedback (NACK, PLI, REMB/TWCC for bandwidth estimation).
+**WebRTC** uses **SDP (Session Description Protocol)** for offer/answer negotiation of codec capabilities, IP/port candidates, and transport parameters. **ICE (Interactive Connectivity Establishment)** with **STUN** (Session Traversal Utilities for **NAT**, Network Address Translation) and **TURN** (Traversal Using Relays around NAT) performs NAT traversal. Media is encrypted via **DTLS-SRTP** (Datagram TLS-keyed **SRTP**, Secure Real-time Transport Protocol). The real-time transport uses **RTP** for media and **RTCP (RTP Control Protocol)** for feedback (**NACK** — Negative Acknowledgement, **PLI** — Picture Loss Indication, **REMB** — Receiver Estimated Maximum Bitrate, and **TWCC** — Transport-Wide Congestion Control — for bandwidth estimation).
 
 ### Codec Fundamentals
 
@@ -77,17 +77,17 @@ Video streaming occupies the layer of the Linux graphics stack that sits directl
 
 **MPC (Model Predictive Control)** ABR formulates quality selection as an optimisation problem over a horizon of future segments, predicting bandwidth with EWMA and maximising a combined utility function of bitrate, rebuffering, and quality smoothness. Used in Netflix's BBA2.
 
-**ARQ (Automatic Repeat reQuest)** is SRT's packet loss recovery mechanism: the sender maintains a packet history buffer; the receiver sends NAK for missing packets; the sender retransmits within the configured latency budget (`SRTO_LATENCY`). If a packet cannot be retransmitted within the budget, it is dropped (SRT degrades gracefully under extreme loss rather than stalling).
+**ARQ (Automatic Repeat reQuest)** is SRT's packet loss recovery mechanism: the sender maintains a packet history buffer; the receiver sends a NAK (Negative Acknowledgement) for missing packets; the sender retransmits within the configured latency budget (`SRTO_LATENCY`). If a packet cannot be retransmitted within the budget, it is dropped (SRT degrades gracefully under extreme loss rather than stalling).
 
 ### Entropy Coders and In-Loop Filters
 
-**CABAC (Context-Adaptive Binary Arithmetic Coding)** is H.264/H.265's entropy coder. It encodes syntax elements (motion vectors, transform coefficients, prediction flags) as binary sequences using context-adapted probability models, achieving ~10–15% better compression than CAVLC at comparable quality. CABAC decoding is sequential and inherently serial, which is why H.264/H.265 decoder hardware devotes significant area to CABAC engines.
+**CABAC (Context-Adaptive Binary Arithmetic Coding)** is H.264/H.265's entropy coder. It encodes syntax elements (motion vectors, transform coefficients, prediction flags) as binary sequences using context-adapted probability models, achieving ~10–15% better compression than **CAVLC (Context-Adaptive Variable-Length Coding)** at comparable quality. CABAC decoding is sequential and inherently serial, which is why H.264/H.265 decoder hardware devotes significant area to CABAC engines.
 
-**ANS (Asymmetric Numeral Systems)** is AV1's entropy coder (specifically the rANS variant used in the DAALA/AOM codec research). ANS is faster for software implementations than arithmetic coding and is more amenable to SIMD optimisation; it is part of what makes AV1 software decode faster than HEVC at similar compression.
+**ANS (Asymmetric Numeral Systems)** is AV1's entropy coder (specifically the rANS variant used in the DAALA/**AOM (Alliance for Open Media)** codec research). ANS is faster for software implementations than arithmetic coding and is more amenable to **SIMD (Single Instruction, Multiple Data)** optimisation; it is part of what makes AV1 software decode faster than HEVC at similar compression.
 
 **In-loop filters** are applied to reconstructed frames *inside* the encode/decode loop, before those frames enter the DPB as references. They reduce blocking artefacts and ringing that degrade reference frame quality and propagate through inter-prediction:
 - **Deblocking filter** (H.264/H.265/AV1): smooths block boundaries by detecting and softening sharp edges along 4×4/8×8/64×64 block boundaries
-- **SAO (Sample Adaptive Offset)** (H.265): adds per-CTU offset tables to reduce banding and ringing artefacts
+- **SAO (Sample Adaptive Offset)** (H.265): adds per-**CTU (Coding Tree Unit)** offset tables to reduce banding and ringing artefacts
 - **CDEF (Constrained Directional Enhancement Filter)** (AV1): directional filter that enhances edges without blurring
 - **Loop Restoration** (AV1): Wiener filter + self-guided filter applied in larger 64×64 or 256×256 tiles to recover fine texture detail
 

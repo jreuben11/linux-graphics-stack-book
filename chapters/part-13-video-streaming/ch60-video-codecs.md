@@ -31,36 +31,36 @@
 
 This chapter covers the mathematical and algorithmic foundations of block-based video compression — the layer beneath every hardware-accelerated decode path, every codec API, and every streaming pipeline on Linux. Readers who have worked through Chapter 26 (**VA-API**) and Chapter 50 (**Vulkan Video**) will have encountered the data structures these codecs generate; this chapter explains what those structures mean and how the compression machinery behind them works.
 
-The chapter begins with the compression duality between intra-frame spatial redundancy and inter-frame temporal redundancy, establishing the **rate–distortion (R-D)** trade-off and the Lagrangian cost function that governs every encoder mode decision. Quality is measured through **PSNR**, **SSIM**, and **VMAF** — the **libvmaf** library and **FFmpeg**'s `-vf vmaf` filter make **VMAF** scriptable on Linux — with each metric capturing a different aspect of perceptual fidelity.
+The chapter begins with the compression duality between intra-frame spatial redundancy and inter-frame temporal redundancy, establishing the **rate–distortion (R-D)** trade-off and the Lagrangian cost function that governs every encoder mode decision. Quality is measured through **PSNR** (Peak Signal-to-Noise Ratio), **SSIM** (Structural Similarity Index Measure), and **VMAF** (Video Multimethod Assessment Fusion) — the **libvmaf** library and **FFmpeg**'s `-vf vmaf` filter make **VMAF** scriptable on Linux — with each metric capturing a different aspect of perceptual fidelity.
 
 The transform coding foundation and inter-prediction building blocks covered include:
 
 - **2D DCT** (Discrete Cosine Transform) — energy compaction property, integer **DCT** approximations, zigzag scan coefficient ordering, and quantisation matrices for luma vs. chroma channels
 - **MJPEG** (Motion JPEG) — per-frame **JPEG** intra-only compression with four per-frame **Huffman** tables; still common in webcams and capture cards
-- **Motion estimation** — block-matching fast-search algorithms (**Diamond Search**, **Hexagonal Search (HEX)**, and **EPZS (Enhanced Predictive Zonal Search)**), half-pixel and quarter-pixel (**qpel**) sub-pixel interpolation via **6-tap FIR** filters, and eighth-pixel multi-filter interpolation in **AV1**
+- **Motion estimation** — block-matching fast-search algorithms (**Diamond Search**, **Hexagonal Search (HEX)**, and **EPZS (Enhanced Predictive Zonal Search)**), half-pixel and quarter-pixel (**qpel**) sub-pixel interpolation via **6-tap FIR (Finite Impulse Response)** filters, and eighth-pixel multi-filter interpolation in **AV1** (**AOMedia Video 1**)
 - **Decoded Picture Buffer (DPB)**, **memory management control operations (MMCO)**, and **B-frame** DTS/PTS reordering — the inter-prediction foundation
 
 The chapter is organised around four codec generations:
 
-- **H.264/AVC** — covers the **NAL** unit architecture, **Sequence Parameter Set (SPS)** and **Picture Parameter Set (PPS)** parsing, slice header fields, the in-loop **deblocking filter** with Boundary Strength (**Bs**) logic, and both **CAVLC** and **CABAC** entropy coding. The **x264** encoder API (**x264_encoder_open()**, **x264_encoder_encode()**, **x264_nal_t**) and **Macroblock-Tree (MB-Tree)** lookahead rate control are demonstrated with working code.
-- **H.265/HEVC** — introduces the **Coding Tree Unit (CTU)** / **Coding Unit (CU)** / **Prediction Unit (PU)** / **Transform Unit (TU)** quadtree hierarchy, 35 intra prediction modes, the extended 1,000-model **HEVC CABAC** context set, **Sample Adaptive Offset (SAO)** edge and band offset filtering, and the **x265** encoder API (**x265_encoder_open()**, **x265_encoder_encode()**) with **WPP (Wavefront Parallel Processing)**, frame-level threading, and **CU-Tree**.
-- **AV1** — brings 128×128 **superblock** recursive partitioning, 71 intra prediction modes, compound inter prediction, **warped motion**, **OBMC**, **palette mode** for screen content, **ANS (Asymmetric Numeral Systems)** / **MSAC** entropy coding, the **CDEF (Constrained Directional Enhancement Filter)** de-ringing filter, and the **Loop Restoration Filter** (**Wiener** and **self-guided** modes). The **libaom** encoder API (**aom_codec_enc_config_default()**, **aom_codec_enc_cfg_t**) and the **rav1e** Rust encoder (**Context**, **EncoderConfig**, **crav1e** C **FFI**) are shown, alongside the encoder ecosystem (**SVT-AV1**, **dav1d**).
-- **VVC/H.266** — covers **affine motion compensation** (4-parameter and 6-parameter models), **Subblock Transform (SBT)**, **Geometric Partition Mode (GPM)** with 64 partition geometries, a compression efficiency comparison (**BD-rate** vs. **HEVC** and **AV1**), and the open-source **VVdeC** / **VVenC** implementations from Fraunhofer **HHI**.
+- **H.264/AVC** (**Advanced Video Coding**) — covers the **NAL (Network Abstraction Layer)** unit architecture, **Sequence Parameter Set (SPS)** and **Picture Parameter Set (PPS)** parsing, slice header fields, the in-loop **deblocking filter** with Boundary Strength (**Bs**) logic, and both **CAVLC (Context-Adaptive Variable-Length Coding)** and **CABAC (Context-Adaptive Binary Arithmetic Coding)** entropy coding. The **x264** encoder API (**x264_encoder_open()**, **x264_encoder_encode()**, **x264_nal_t**) and **Macroblock-Tree (MB-Tree)** lookahead rate control are demonstrated with working code.
+- **H.265/HEVC** (**High Efficiency Video Coding**) — introduces the **Coding Tree Unit (CTU)** / **Coding Unit (CU)** / **Prediction Unit (PU)** / **Transform Unit (TU)** quadtree hierarchy, 35 intra prediction modes, the extended 1,000-model **HEVC CABAC** context set, **Sample Adaptive Offset (SAO)** edge and band offset filtering, and the **x265** encoder API (**x265_encoder_open()**, **x265_encoder_encode()**) with **WPP (Wavefront Parallel Processing)**, frame-level threading, and **CU-Tree** (a **CU**-granularity extension of **MB-Tree** lookahead).
+- **AV1** — brings 128×128 **superblock** recursive partitioning, 71 intra prediction modes, compound inter prediction, **warped motion**, **OBMC (Overlapped Block Motion Compensation)**, **palette mode** for screen content, **ANS (Asymmetric Numeral Systems)** / **MSAC (Multi-Symbol Arithmetic Coder)** entropy coding, the **CDEF (Constrained Directional Enhancement Filter)** de-ringing filter, and the **Loop Restoration Filter** (**Wiener** and **self-guided** modes). The **libaom** encoder API (**aom_codec_enc_config_default()**, **aom_codec_enc_cfg_t**) and the **rav1e** Rust encoder (**Context**, **EncoderConfig**, **crav1e** C **FFI**, Foreign Function Interface) are shown, alongside the encoder ecosystem (**SVT-AV1**, **dav1d**).
+- **VVC/H.266** (**Versatile Video Coding**) — covers **affine motion compensation** (4-parameter and 6-parameter models), **Subblock Transform (SBT)**, **Geometric Partition Mode (GPM)** with 64 partition geometries, a compression efficiency comparison (**BD-rate** — Bjøntegaard Delta rate, a standard metric for average bitrate savings at equal quality — vs. **HEVC** and **AV1**), and the open-source **VVdeC** / **VVenC** implementations from Fraunhofer **HHI** (Heinrich Hertz Institute).
 
 The GPU acceleration section covers:
 
-- **Tile and WPP wavefront parallelism** — ties the theoretical models to the parallel decode paths exposed by **VA-API** and **Vulkan Video**, and tabulates hardware codec support across **VA-API**, **NVDEC**/**NVENC**, **VDPAU**, **AMF**, and **Vulkan Video**
+- **Tile and WPP wavefront parallelism** — ties the theoretical models to the parallel decode paths exposed by **VA-API (Video Acceleration API)** and **Vulkan Video**, and tabulates hardware codec support across **VA-API**, **NVDEC**/**NVENC** (NVIDIA's fixed-function decode/encode engines), **VDPAU (Video Decode and Presentation API for Unix)**, **AMF (Advanced Media Framework)**, and **Vulkan Video**
 - **NVIDIA Ada Lovelace (RTX 40xx)** — dual-**NVENC** **AV1** encoding with **Split Frame Encoding**
-- **AV1 film grain synthesis** — the auto-regressive (**AR**) model, **Dav1dFilmGrainData**, **dav1d**'s **AVX2**/**AVX-512**/**NEON** SIMD grain paths, and GPU-side synthesis via **VA-API**'s `VAFilmGrainStructAV1` and **Vulkan Video**'s `VkVideoDecodeAV1PictureInfoKHR`
+- **AV1 film grain synthesis** — the auto-regressive (**AR**) model, **Dav1dFilmGrainData**, **dav1d**'s **AVX2** (Advanced Vector Extensions 2)/**AVX-512** (512-bit Advanced Vector Extensions)/**NEON** (Arm's SIMD extension) **SIMD (Single Instruction, Multiple Data)** grain paths, and GPU-side synthesis via **VA-API**'s `VAFilmGrainStructAV1` and **Vulkan Video**'s `VkVideoDecodeAV1PictureInfoKHR`
 
 The rate control section covers:
 
-- **CBR** — constant bitrate with **VBV** buffer management
-- **VBR** — including **FFmpeg** two-pass and **libaom** **Temporal Dependency Modeling (TDM)**
-- **CRF** / **Capped CRF** — quality-based rate control
-- **Psychovisual optimisation** — **psy-rd** and **AQ mode**
-- **AMD AMF** hardware rate control modes — **CQP**, **CBR**, **PCVBR**, **LCVBR**, **QVBR**, **HQ-VBR**, **HQ-CBR** — accessible via **FFmpeg**'s `h264_amf`/`hevc_amf`/`av1_amf` encoders
-- **Intel Quick Sync** (**oneVPL** / **MSDK**) rate control — **CBR**, **VBR**, **ICQ**, **LA-VBR**, **LA-ICQ**, **CQP** — via the `iHD` **VA-API** driver and `h264_qsv`/`hevc_qsv`/`av1_qsv` **FFmpeg** encoders
+- **CBR (Constant Bitrate)** — constant bitrate with **VBV (Video Buffering Verifier)** buffer management
+- **VBR (Variable Bitrate)** — including **FFmpeg** two-pass and **libaom** **Temporal Dependency Modeling (TDM)**
+- **CRF (Constant Rate Factor)** / **Capped CRF** — quality-based rate control
+- **Psychovisual optimisation** — **psy-rd** (psychovisual rate-distortion tuning) and **AQ (Adaptive Quantization) mode**
+- **AMD AMF** hardware rate control modes — **CQP** (Constant Quantization Parameter), **CBR**, **PCVBR** (Peak-Constrained Variable Bitrate), **LCVBR** (Latency-Constrained Variable Bitrate), **QVBR** (Quality-defined Variable Bitrate), **HQ-VBR** (High-Quality Variable Bitrate), **HQ-CBR** (High-Quality Constant Bitrate) — accessible via **FFmpeg**'s `h264_amf`/`hevc_amf`/`av1_amf` encoders
+- **Intel Quick Sync** (**oneVPL**, oneAPI Video Processing Library / **MSDK**, the legacy Media SDK it superseded) rate control — **CBR**, **VBR**, **ICQ** (Intelligent Constant Quality), **LA-VBR** (Look-Ahead VBR), **LA-ICQ** (Look-Ahead ICQ), **CQP** — via the `iHD` **VA-API** driver and `h264_qsv`/`hevc_qsv`/`av1_qsv` **FFmpeg** encoders
 
 These sections ground the discussion in what **AMD AMF** and **Intel Quick Sync** actually implement in silicon, and connect to the **NVENC** and **AMF** deep-dives in Chapters 66 and 68.
 
@@ -80,8 +80,8 @@ Before reading the algorithmic detail, the table below answers the practical que
 | **HDR / 4K streaming (Netflix, YouTube)** | AV1 (preferred) or H.265 | Both support 10-bit, HDR10, Dolby Vision; YouTube uses VP9/AV1; Netflix uses H.265/AV1 |
 | **Screen content / UI recording** | AV1 | Palette mode and screen content tools give 2–4× better quality on flat UI regions than H.264/H.265 |
 | **Cutting-edge quality, decode hardware available** | VVC/H.266 | ~40% better than HEVC, ~20% better than AV1 at equal quality; hardware decode limited to Snapdragon 8 Gen 3+ as of 2026 |
-| **Royalty-free, no AV1 hardware, embedded/broadcast** | EVC Baseline | Only pre-2000 patents; ~10–15% better than H.264; software decode via `libxevd` / FFmpeg; no hardware decode on Linux yet |
-| **Upgrade resolution of existing streams, low decoder power** | LC-EVC | Enhancement layer over any base codec; base layer backward-compatible with existing decoders; open-source decoder (V-Nova LCEVC_DEC) |
+| **Royalty-free, no AV1 hardware, embedded/broadcast** | EVC Baseline (Essential Video Coding, MPEG-5 Part 1) | Only pre-2000 patents; ~10–15% better than H.264; software decode via `libxevd` / FFmpeg; no hardware decode on Linux yet |
+| **Upgrade resolution of existing streams, low decoder power** | LC-EVC (Low Complexity Enhancement Video Coding, MPEG-5 Part 2) | Enhancement layer over any base codec; base layer backward-compatible with existing decoders; open-source decoder (V-Nova LCEVC_DEC) |
 | **GPU pipeline, zero-copy encode** | AV1 or H.265 via Vulkan Video | Keep encode inside the same `VkDevice` as rendering; RTX 40xx has dual AV1 NVENC engines |
 | **Mobile / embedded, power-constrained** | H.264 Baseline or H.265 Main | Broadest SoC hardware decode acceleration; AV1 decode power-efficient on hardware (not software) |
 | **Software-only encode (no GPU)** | SVT-AV1 or x265 | SVT-AV1 is the fastest software AV1 encoder; x265 is faster than libaom at comparable quality |
@@ -89,7 +89,7 @@ Before reading the algorithmic detail, the table below answers the practical que
 **Key trade-offs in brief:**
 - **Compatibility vs. efficiency**: H.264 wins compatibility; AV1 wins efficiency. H.265 sits in the middle but carries patent licensing concerns for software encoders.
 - **Encoding speed**: H.264 >> H.265 > VP9 ≈ AV1 (hardware); software AV1 (libaom) is 5–10× slower than x265. SVT-AV1 narrows the gap significantly.
-- **Royalties**: AV1, VP9, and VVC (under the MFI pool) are royalty-free for most uses; H.264 and H.265 carry MPEG-LA patent pools that affect commercial software encoders.
+- **Royalties**: AV1, VP9, and VVC (under the MFI, Media Coding Industry Forum, pool) are royalty-free for most uses; H.264 and H.265 carry MPEG-LA patent pools that affect commercial software encoders.
 - **Hardware decode coverage** (desktop Linux, mid-2026): H.264 = universal; H.265 = near-universal (Mesa 23+, all NVIDIA, Intel); AV1 = RTX 30xx+/RDNA2+/Arc/Tiger Lake+; VVC = no desktop GPU support yet.
 
 ### 1.1 What is a Video Codec?
