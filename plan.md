@@ -71,6 +71,7 @@ Chapters signal which perspective is emphasised where they diverge.
   - [Chapter 209: OpenSLAM — Classical and Graph-Based SLAM on the Linux Stack](#chapter-209-openslam--classical-and-graph-based-slam-on-the-linux-stack)
   - [Chapter 210: SLAM Theory and State of the Art](#chapter-210-slam-theory-and-state-of-the-art)
   - [Chapter 211: ROS 2 Multimodal Sensor and Perception Pipeline](#chapter-211-ros-2-multimodal-sensor-and-perception-pipeline)
+  - [Chapter 211a: Robotics Simulation Engines — MuJoCo, Gazebo, and the Linux GPU Stack](#chapter-211a-robotics-simulation-engines--mujoco-gazebo-and-the-linux-gpu-stack)
   - [Chapter 206: SDL3 — Cross-Platform Multimedia Integration on Linux](#chapter-206-sdl3--cross-platform-multimedia-integration-on-linux)
 - **Part VII-C — Desktop Frameworks**
   - [Chapter 39a: Qt6 — The Application Framework, from QObject to QRhi](#chapter-39a-qt6--the-application-framework-from-qobject-to-qrhi)
@@ -884,6 +885,22 @@ This chapter covers the wave of staging protocols that reached compositor implem
 - Data recording: `rosbag2` + `rosbag2_storage_mcap` (`-s mcap --storage-preset-profile fastwrite`); MCAP indexed random access; `ros2 bag play --rate`; Foxglove Studio bridge (`ros-humble-foxglove-bridge`, WebSocket on port 8765)
 - System integration example: Ubuntu 22.04, RealSense D435i + Velodyne VLP-16 + u-blox F9P; full `ros2 launch` file; complete topic graph
 - **Integrations**: Ch96 (libcamera + V4L2 hardware pipeline — upstream of image_transport); Ch114 (YOLO/segmentation/monocular-depth model internals, CUDA inference, DROID-SLAM); Ch209 (G2O, RTAB-Map, Basalt VIO — classical SLAM consuming TF2 and odometry from this chapter); Ch210 (FAST-LIO2/LIO-SAM/Cartographer consuming PointCloud2 and IMU from sensor_msgs); Ch133 (Vulkan compute as CUDA alternative for non-NVIDIA GPU inference); Ch141 (Vulkan cooperative matrices for AMD/Intel GPU ML); Ch48 (ROCm/HIP for training YOLO models deployed via ultralytics_ros)
+
+### Chapter 211a: Robotics Simulation Engines — MuJoCo, Gazebo, and the Linux GPU Stack *(Part VII-B)*
+
+*(Note: outline only — chapter text not yet written. Verify all version numbers, dates, and API names against current upstream before drafting, per this book's accuracy standard.)*
+
+- Scope and boundary with Ch69/Ch240: NVIDIA Isaac Sim (PhysX + Omniverse/USD + RTX rendering) is documented in depth in Ch69 and Ch240 and is cross-referenced here, not re-derived; this chapter's original contribution is the two general-purpose, vendor-neutral simulators — MuJoCo and Gazebo — and how each maps physics and rendering onto the Linux graphics stack
+- MuJoCo: origin (Roboti LLC / Emo Todorov), acquisition and open-sourcing under Apache 2.0 by DeepMind/Google in 2021; MJCF XML model format vs. URDF; soft-constraint contact model as MuJoCo's defining departure from hard-constraint rigid-body solvers (contrast with Ch210 §50's sequential-impulse GPU solver)
+- MuJoCo rendering and GPU paths on Linux: the native `mjr_render` OpenGL visualizer and its offscreen/EGL headless rendering context (cross-reference Ch107 Headless Rendering); MJX, the JAX-based reimplementation enabling thousands of parallel environments on a single GPU via XLA compilation — architecturally distinct from CPU-bound classic MuJoCo, and the main reason MuJoCo appears in large-scale RL training pipelines
+- Gazebo: the Gazebo Classic → Gazebo Sim (formerly "Ignition Gazebo") transition and Gazebo Classic's end-of-life; library split (`gz-physics`, `gz-rendering`, `gz-sim`, `gz-transport`, `gz-sensors`) replacing the monolithic Classic codebase; SDFormat (`.sdf`) as Gazebo's model/world description language and its relationship to URDF (`gz sdf` conversion tooling)
+- Gazebo's pluggable physics backends via `gz-physics`: DART, Bullet, and the lightweight TPE (Trivial Physics Engine) — contrast with MuJoCo's and Isaac Sim's single fixed solver
+- Gazebo rendering: `gz-rendering`'s Ogre2 backend (OpenGL/Vulkan render paths through Ogre 2.x) as the GPU-facing layer, and its `sensors` plugin architecture for simulated camera/LiDAR/depth sensors feeding synthetic `sensor_msgs` — direct tie-in to Ch211's sensor pipeline
+- ROS 2 integration for both: `ros_gz` bridge (`ros_gz_bridge`, `ros_gz_sim`) mapping Gazebo Transport topics to ROS 2 `sensor_msgs`/`nav_msgs`; MuJoCo's community ROS 2 integrations (no first-party bridge, contrast with Gazebo's tighter ROS coupling) — both ultimately feed the same TF2/`sensor_msgs` consumers documented in Ch211
+- Headless and CI operation: `gz sim -s` (server-only, no GUI) vs. MuJoCo's EGL/OSMesa offscreen contexts (cross-reference Ch107) — both patterns mirror the headless-rendering techniques already covered for VTK/Open3D (Ch190, Ch212)
+- Sim-to-real relevance: domain randomization as a GPU-parallelism payoff specific to MJX-style batched simulation; contrast with Isaac Sim's Isaac Lab (Ch69/Ch240) as the equivalent large-scale training path in the NVIDIA stack
+- Comparison table: physics backend, contact model, native GPU parallelism, rendering backend, model format, ROS 2 coupling, license — across MuJoCo, Gazebo Sim, and Isaac Sim
+- **Integrations**: Ch69 (Omniverse/PhysX/USD — Isaac Sim contrast), Ch107 (Headless Rendering — EGL/OSMesa offscreen contexts used by both simulators), Ch210 (GPU rigid-body/contact solvers — algorithmic contrast with MuJoCo's soft-constraint and Gazebo's DART/Bullet/TPE backends), Ch211 (ROS 2 sensor pipeline — `ros_gz` bridge output lands on the same `sensor_msgs`/TF2 machinery), Ch240 (Isaac Lab/Isaac Sim at scale for simulation-data generation)
 
 ### Chapter 206: SDL3 — Cross-Platform Multimedia Integration on Linux *(Part VII-B)*
 
