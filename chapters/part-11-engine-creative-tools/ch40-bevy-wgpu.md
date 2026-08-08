@@ -934,7 +934,7 @@ The table at the top of this section is scoped to rendering-stack concerns — A
 - **Physics.** Godot ships two built-in 3D physics engines (Godot Physics and Jolt, selectable per-project) plus a built-in 2D physics engine. Unreal ships Chaos Physics natively. Bevy has no first-party physics engine — projects depend on the third-party `avian` or `bevy_rapier` crates (§8.1). [Source](https://www.youngju.dev/blog/culture/2026-05-15-game-engines-2026-godot-unity-bevy-unreal-defold-stride-comparison-deep-dive.en)
 - **Networking and replication.** Unreal has actor replication, RPCs, and relevancy/priority systems built into the engine core. Godot has a built-in high-level multiplayer API (`MultiplayerAPI`, RPC annotations). Bevy ships no netcode at all — the ecosystem standardised on the third-party `bevy_replicon` and `lightyear` crates (§8.2). [Source](https://github.com/simgine/bevy_replicon)
 - **Particles and VFX.** Unreal ships Niagara, a node-based GPU VFX graph. Godot ships `GPUParticles2D`/`GPUParticles3D` natively. Bevy has no first-party particle system; even a *low-level* particle framework for the engine core remains an open, unresolved tracking issue as of 2026, leaving `bevy_hanabi` (§8.3) as the community standard. [Source](https://github.com/bevyengine/bevy/issues/20569)
-- **Navigation and pathfinding.** Unreal ships a full NavMesh and Navigation System with crowd avoidance and dynamic obstacles. Godot ships `NavigationServer2D`/`3D` built in. Bevy has neither — `vleue_navigator` and `oxidized_navigation` (§8.4) fill the gap from outside the engine. [Source](https://github.com/vleue/vleue_navigator)
+- **Navigation and pathfinding.** Unreal ships a full NavMesh and Navigation System with crowd avoidance and dynamic obstacles. Godot ships `NavigationServer2D`/`3D` built in. Bevy has neither — `vleue_navigator` fills the gap from outside the engine for authored-mesh pathfinding; `oxidized_navigation` (§8.4) covered the runtime-baked case but is archived as of 2026, with its README pointing adopters at a successor project. [Source](https://github.com/vleue/vleue_navigator)
 - **Animation depth.** Godot's `AnimationTree` (blend trees, state machines) and Unreal's Animation Blueprints and Control Rig (state machines, blending, full IK) are mature first-party systems. Bevy's `bevy_animation` covers clip playback and basic blending but has no built-in IK solver and no visual state-machine or blend-tree equivalent.
 - **Audio.** Unreal ships MetaSounds, a node-based procedural audio and mixing system. Godot has a built-in audio bus architecture with built-in effects (reverb, EQ, compression). Bevy's `bevy_audio` is a thin wrapper over `rodio` — basic playback and spatial positioning, with no mixing-bus graph; projects that need one reach for `bevy_kira_audio` (§8.6).
 - **Visual scripting.** Unreal's Blueprints let non-programmers build substantial gameplay logic without touching C++. Bevy has no visual-scripting layer — everything is Rust. Godot is not actually an exception here: it removed its own VisualScript system in the Godot 4 rewrite, so this is an Unreal-specific advantage rather than a shared Godot/Unreal one.
@@ -946,46 +946,603 @@ None of this makes Bevy behaviourally incomplete for shipping a game — it mean
 
 ## 8. Popular Bevy Third-Party Crates
 
-Because Bevy's core excludes most of the gameplay-layer systems §7 compares against Godot and Unreal, a production Bevy project is assembled from a small set of independently maintained crates rather than configured from engine-provided modules. The crates below are the ones the Bevy Foundation itself curates as the go-to solution per category on the official Bevy Assets directory; all are third-party (not maintained by the Bevy Foundation) unless noted otherwise. [Source](https://bevy.org/assets/)
+Because Bevy's core excludes most of the gameplay-layer systems §7 compares against Godot and Unreal, a production Bevy project is assembled from a small set of independently maintained crates rather than configured from engine-provided modules. Most of the crates below are listed on the community-run Bevy Assets directory, [Source](https://bevy.org/assets/) but that listing is not curation by the Bevy Foundation and inclusion is not a maturity signal — the directory carries entries ranging from actively-tracked, widely-adopted crates to single-digit-download experiments and repositories that have gone dormant for years. Each subsection below cites the crate's own primary sources (crates.io, docs.rs, its repository) and states version, Bevy compatibility, and maintenance status explicitly so the two ends of that range are not presented as equivalent choices. All are third-party; none are maintained by the Bevy Foundation.
 
 ### 8.1 Physics
 
-- **avian** — an ECS-native 2D/3D physics engine that stores physics state directly as Bevy components and runs its solver as ordinary Bevy systems, rather than maintaining a separate physics-world representation. As of 2026 it is the de facto default for new Bevy projects, prized for tight ECS integration and solver performance. [Source](https://taintedcoders.com/bevy/physics/avian)
-- **bevy_rapier** — a plugin wrapping the Rapier physics engine (also used outside Bevy, in other Rust and non-Rust projects). Rapier keeps its own internal physics-world representation and projects results back onto Bevy's ECS each frame; it remains the more battle-tested option for projects that value maturity over native ECS integration. [Source](https://bevy.org/assets/)
-- **bevy-tnua** — a physics-engine-agnostic character-controller crate (works atop either avian or bevy_rapier) implementing "floating capsule" character movement, the common technique for responsive platformer/FPS controllers on top of a rigid-body physics engine. [Source](https://bevy.org/assets/)
+Bevy ships no physics engine. Two architecturally different full engines have emerged to fill the gap — one built natively on the ECS, one wrapping an existing standalone engine — plus a separate character-controller layer that sits on top of either.
+
+#### avian
+
+Version 0.7.0 (latest, published 2026-06-20, ~305k total downloads), pinning `bevy = "0.19.0"`. [Source](https://crates.io/crates/avian3d/0.7.0)
+
+Avian's own README states its design goal verbatim: "Made with Bevy, for Bevy. No wrappers around existing engines," aiming to "utilize the ECS as much as possible" so "the engine should feel like a part of Bevy, and it shouldn't need to maintain a separate physics world." This is backed by the type definitions, not just the pitch: `RigidBody` is a plain `Component` enum (`Dynamic | Static | Kinematic`), and Bevy's `#[require(...)]` attribute pulls in `Position`, `Rotation`, `LinearVelocity`, `AngularVelocity`, and `ComputedMass` as ordinary sibling components rather than an opaque handle into an external world struct. `Collider` is likewise a plain component, backed by the [Parry](https://parry.rs) library for narrow-phase math but exposed as ECS data. [Source: rigid_body/mod.rs](https://crates.io/crates/avian3d/0.7.0/source/src/dynamics/rigid_body/mod.rs) (lines 263–304), [Source: collider/parry/mod.rs](https://crates.io/crates/avian3d/0.7.0/source/src/collision/collider/parry/mod.rs) (line 366)
+
+Avian's own FAQ (in `src/lib.rs`) draws the contrast with `bevy_rapier` directly, and is worth quoting since it is the primary source for that comparison:
+
+> "`bevy_rapier` is a great physics integration for Bevy, but it does have several problems: It has to maintain a separate physics world and synchronize a ton of data with Bevy each frame [...] Avian on the other hand is built *for* Bevy *with* Bevy, and it uses the ECS for both the internals and the public API. This removes the need for a separate physics world [...] One disadvantage of Avian is that it is still relatively young, so it can have more bugs, some missing features, and fewer community resources and third party crates [...] If you are looking for a more mature and tested physics integration, `bevy_rapier` is the better choice."
+
+[Source](https://crates.io/crates/avian3d/0.7.0)
+
+```rust
+use avian3d::prelude::*;
+use bevy::prelude::*;
+
+fn setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    // Static physics object with a collision shape
+    commands.spawn((
+        RigidBody::Static,
+        Collider::cylinder(4.0, 0.1),
+        Mesh3d(meshes.add(Cylinder::new(4.0, 0.1))),
+        MeshMaterial3d(materials.add(Color::WHITE)),
+    ));
+
+    // Dynamic physics object with a collision shape and initial angular velocity
+    commands.spawn((
+        RigidBody::Dynamic,
+        Collider::cuboid(1.0, 1.0, 1.0),
+        AngularVelocity(Vec3::new(2.5, 3.5, 1.5)),
+        Mesh3d(meshes.add(Cuboid::from_length(1.0))),
+        MeshMaterial3d(materials.add(Color::srgb_u8(124, 144, 255))),
+        Transform::from_xyz(0.0, 4.0, 0.0),
+    ));
+}
+```
+[Source](https://crates.io/crates/avian3d/0.7.0) (README usage example)
+
+Avian ships no built-in character controller — its FAQ says so directly, offering instead a `MoveAndSlide` system parameter as a utility for building one, and names `bevy_tnua` (below) as a third-party controller that works with it. Despite its "native ECS" pitch, avian is the less-downloaded of the two engines (see the bevy_rapier comparison below), so "ECS-native" and "more adopted" are not the same claim here.
+
+#### bevy_rapier
+
+Version 0.35.0 (latest, published 2026-07-12, ~554k total downloads — roughly 1.8× avian's), pinning `bevy = "0.19.0"`. Notably, it pins its underlying engine to an exact prerelease: `rapier3d = "=0.33.0-alpha"`, not a stable version — worth stating plainly, since "battle-tested" claims about Rapier should not be read as implying the specific release bevy_rapier3d 0.35.0 depends on is itself past alpha. [Source](https://crates.io/crates/bevy_rapier3d/0.35.0/dependencies)
+
+Where avian keeps physics state as ECS components, bevy_rapier wraps the external `rapier3d` crate directly — confirmed in source, not inferred: `lib.rs` re-exports the whole underlying crate (`pub extern crate rapier3d as rapier;`), and each Bevy-side `RigidBody` component carries a separate `RapierRigidBodyHandle` pointing into rapier's own internal handle-based storage. [Source: lib.rs](https://docs.rs/bevy_rapier3d/0.35.0/src/bevy_rapier3d/lib.rs.html#19-21), [Source: dynamics/rigid_body.rs](https://docs.rs/bevy_rapier3d/0.35.0/src/bevy_rapier3d/dynamics/rigid_body.rs.html#12) The simulation state itself — `IslandManager`, `DefaultBroadPhase`, `NarrowPhase`, `CCDSolver`, `PhysicsPipeline` — is bundled into a component called `RapierContextSimulation`, documented as "the main driver for a rapier context." That is exactly the "separate physics world, synchronized each frame" pattern avian's FAQ describes; the state inside it is rapier's own native data structures rather than decomposed per-entity ECS components. [Source](https://docs.rs/bevy_rapier3d/0.35.0/src/bevy_rapier3d/plugin/context/mod.rs.html#631-692)
+
+In exchange, bevy_rapier inherits a more mature feature set from the wrapped engine: fixed, revolute, spherical, prismatic, rope, spring, and multibody joints; a dedicated CCD solver; and — per rapier3d's own crate documentation — physics-state snapshotting and an `enhanced-determinism` feature for cross-platform-reproducible simulation under IEEE 754-2008 floating point. [Source](https://docs.rs/rapier3d/0.33.0-alpha/rapier3d/)
+
+#### bevy-tnua
+
+Version 0.32.0 (latest, published 2026-06-22, ~108k total downloads), pinning `bevy = "^0.19"`. Companion backend crate `bevy-tnua-avian3d` 0.12.1 (~47.7k downloads) pins `avian3d = "^0.7"`. [Source](https://crates.io/crates/bevy-tnua/0.32.0), [Source](https://crates.io/crates/bevy-tnua-avian3d/0.12.1)
+
+Tnua is not a physics engine — it is a character-controller layer that needs one underneath it. Its README states this up front: it can use "Rapier or Avian," via separate integration crates (`bevy-tnua-rapier3d`, `bevy-tnua-avian3d`, and 2D equivalents; a deprecated `bevy-tnua-xpbd2d`/`xpbd3d` pair predates avian's rebrand and receives no further updates). Both the chosen backend crate *and* Tnua's own `TnuaControllerPlugin` are required together. [Source](https://crates.io/crates/bevy-tnua/0.32.0)
+
+"Floating character controller" is Tnua's own term for its mechanism, and it is literal: by default Tnua casts a ray from the character down to the ground and holds the character a configured `float_height` above it, rather than resting the character directly on a collision manifold — "this makes many aspects of the motion control simpler." A `Tnua<Backend>SensorShape` component (e.g. `TnuaAvian3dSensorShape`) can replace the single ray with a shapecast to avoid falling through ledges. [Source](https://docs.rs/bevy-tnua/0.32.0/bevy_tnua/)
+
+```rust
+use avian3d::prelude::*;
+use bevy_tnua::builtins::{TnuaBuiltinJump, TnuaBuiltinJumpConfig, TnuaBuiltinWalk, TnuaBuiltinWalkConfig};
+use bevy_tnua::prelude::*;
+use bevy_tnua_avian3d::prelude::*;
+
+fn main() {
+    App::new()
+        .add_plugins((
+            DefaultPlugins,
+            PhysicsPlugins::default(),
+            // We need both Tnua's main controller plugin, and the plugin to connect to the physics
+            // backend (in this case Avian 3D)
+            TnuaControllerPlugin::<ControlScheme>::new(FixedUpdate),
+            TnuaAvian3dPlugin::new(FixedUpdate),
+        ))
+        .add_systems(Startup, (setup_camera_and_lights, setup_level, setup_player))
+        .add_systems(Update, apply_controls.in_set(TnuaUserControlsSystems))
+        .run();
+}
+
+#[derive(TnuaScheme)]
+#[scheme(basis = TnuaBuiltinWalk)]
+enum ControlScheme {
+    Jump(TnuaBuiltinJump),
+}
+
+fn setup_player(
+    mut commands: Commands,
+    mut control_scheme_configs: ResMut<Assets<ControlSchemeConfig>>,
+    // ...mesh/material args omitted...
+) {
+    commands.spawn((
+        Transform::from_xyz(0.0, 2.0, 0.0),
+        // The player character needs to be a dynamic rigid body of the physics engine.
+        RigidBody::Dynamic,
+        Collider::capsule(0.5, 1.0),
+        // Tnua's interface component.
+        TnuaController::<ControlScheme>::default(),
+        TnuaConfig::<ControlScheme>(control_scheme_configs.add(ControlSchemeConfig {
+            basis: TnuaBuiltinWalkConfig {
+                // Must be greater than the distance from the character's center to the
+                // lowest point of its collider, or the character will not float.
+                float_height: 1.5,
+                ..Default::default()
+            },
+            jump: TnuaBuiltinJumpConfig {
+                height: 4.0,
+                ..Default::default()
+            },
+        })),
+        // Without a sensor shape we'd get weird results at ledges.
+        TnuaAvian3dSensorShape(Collider::cylinder(0.49, 0.0)),
+        // Tnua can fix rotation itself, but locking prevents transient tilting.
+        LockedAxes::ROTATION_LOCKED,
+    ));
+}
+```
+(Abridged from the crate's own multi-file example — mesh/material setup and camera/light spawning omitted; plugin wiring, scheme derivation, and player-entity composition are verbatim.) [Source](https://crates.io/crates/bevy-tnua/0.32.0/source/examples/example.rs)
+
+avian3d and bevy_rapier3d are not composable with each other — they occupy the same architectural slot as alternative full engines. bevy-tnua composes with either one via its backend crates, but supplies no simulation of its own.
 
 ### 8.2 Networking and Replication
 
-- **bevy_replicon** — a server-authoritative state-replication crate: it synchronises ECS world state from server to clients and provides bidirectional event messaging, but deliberately ships no network I/O of its own — transport (UDP, QUIC, WebRTC) is a pluggable backend. [Source](https://github.com/simgine/bevy_replicon)
-- **lightyear** — a more complete client-server networking solution (transport, input handling, prediction/rollback) that as of 2026 builds its replication layer on top of `bevy_replicon` rather than duplicating it, reflecting the ecosystem consolidating around `bevy_replicon` as the shared replication core. [Source](https://github.com/cBournhonesque/lightyear)
-- **bevy_quinnet** — a lower-level QUIC-based client/server transport crate, often used as the transport backend underneath `bevy_replicon`. [Source](https://bevy.org/assets/)
+Bevy ships no netcode. The ecosystem splits the problem into a replication layer (what state moves, and when) and a transport layer (how bytes move) — and, as of 2026, one of the two full-stack solutions below has consolidated onto the other's replication core rather than duplicating it.
+
+#### bevy_replicon
+
+Version 0.41.1 (published 2026-06-24). The canonical repository moved to `simgine/bevy_replicon` (previously under `projectharmonia`). Bevy compatibility: 0.19→0.41, 0.18→0.38–0.40, 0.17→0.36–0.37. [Source](https://github.com/simgine/bevy_replicon)
+
+Replicon is replication-only: it ships no network I/O of its own, by design — a separate family of backend crates supplies the transport. It is server-authoritative and one-directional (server→client entity/component replication plus remote events/triggers in both directions), so the same game logic runs unchanged across singleplayer, client, dedicated-server, and listen-server builds. Key API: the `RepliconPlugins` plugin group; a `Replicated` marker component; `AppRuleExt::replicate::<C>()` and its filtered/priority variants for declaring what replicates; `ClientEventAppExt`/`ServerEventAppExt` for remote events; and an observer-based path via `ClientTriggerExt`/`ServerTriggerExt`, where server-side handlers receive `On<FromClient<E>>` carrying the originating `ClientId`. [Source](https://github.com/simgine/bevy_replicon/blob/master/README.md)
+
+```rust
+fn main() {
+    App::new()
+        .init_resource::<Cli>()
+        .add_plugins((
+            DefaultPlugins,
+            RepliconPlugins,
+            RepliconExampleBackendPlugins,
+        ))
+        .replicate::<UiRoot>()
+        .replicate::<ToggleButton>()
+        .replicate_filtered::<ChildOf, With<ToggleButton>>()
+        .add_mapped_client_event::<RemoteToggle>(Channel::Unordered)
+        .add_observer(init_toggle_button)
+        .add_observer(trigger_remote_toggle)
+        .add_observer(apply_remote_toggle)
+        .add_systems(Startup, setup)
+        .add_systems(Update, (update_button_background, update_toggle_text))
+        .run();
+}
+
+fn apply_remote_toggle(
+    toggle: On<FromClient<RemoteToggle>>,
+    mut buttons: Query<&mut ToggleButton>,
+) {
+    if let Ok(mut toggle) = buttons.get_mut(toggle.entity) {
+        **toggle = !**toggle
+    }
+}
+```
+[Source](https://github.com/simgine/bevy_replicon) (`example_backend/examples/simple_button.rs`, identical at the v0.41.1 tag and HEAD)
+
+Transport backends plug in underneath: `bevy_replicon_renet`, `bevy_replicon_renet2`, `bevy_replicon_quinnet` (§8.2 below), `aeronet_replicon`, `bevy_replicon_matchbox`. The project's own README lists several older companion crates (`bevy_replicon_snap`, `bevy_timewarp`, `bevy_replicon_attributes`, and others) under an explicit "Unmaintained" heading — a useful reminder that a crate's presence in an ecosystem README does not by itself mean it is current.
+
+#### lightyear
+
+Version 0.28.0 (published 2026-06-26), targeting Bevy 0.19. [Source](https://github.com/cBournhonesque/lightyear)
+
+Lightyear is the more complete of the two: a 37-member Cargo workspace covering transport (UDP, WebTransport via `aeronet`, Steam), connection management, serialization, client-side prediction and rollback, and snapshot interpolation. As of 2026 it is **not** a competing reimplementation of replication — since lightyear 0.27.0 (2026-06-22), its replication, prediction, and interpolation crates depend directly on `bevy_replicon` rather than duplicating its machinery. `lightyear_replication`'s own crate documentation states this plainly: "Entity replication layer for lightyear, built on top of bevy_replicon [...] It wraps bevy_replicon's low-level replication machinery and adds lightyear-specific features: prediction/interpolation targets, network visibility, authority, hierarchy propagation, and pre-spawning." The dependency bisects cleanly across releases — absent in `lightyear_replication` 0.26.4, pinned exactly to `bevy_replicon =0.40.3` in 0.27.0, and tracking `^0.41` in 0.28.0. [Source](https://crates.io/crates/lightyear_replication) [Source](https://crates.io/crates/lightyear/0.28.0/dependencies)
+
+Lightyear's most architecturally distinctive choice is that connections are entities, not resources: a `Link` component enables send/receive on a connection entity, `LinkOf` marks a server-spawned per-connection entity, and `Client`/`Server` assign topology role. Replication targets (`Replicate`, `PredictionTarget`, `InterpolationTarget`) each take a `NetworkTarget` recipient set. For deterministic client-predicted spawns (bullets, hit effects) without waiting on a server round-trip, `PreSpawned` matches client- and server-spawned entities by a deterministic hash rather than by network handshake.
+
+```rust
+use bevy_app::App;
+use core::time::Duration;
+use lightyear::prelude::*;
+
+pub const FIXED_TIMESTEP_HZ: f64 = 60.0;
+
+fn main() {
+    let mut app = App::new();
+    app.add_plugins(client::ClientPlugins {
+        tick_duration: Duration::from_secs_f64(1.0 / FIXED_TIMESTEP_HZ),
+    });
+    app.add_plugins(server::ServerPlugins {
+        tick_duration: Duration::from_secs_f64(1.0 / FIXED_TIMESTEP_HZ),
+    });
+}
+```
+[Source](https://docs.rs/lightyear/0.28.0/lightyear/) (crate-level documentation, 0.28.0)
+
+One current limitation, stated by the crate itself: "Authority is currently not working since replicon only supports server to client replication" — lightyear's client-authority feature is blocked by replicon's strict server-authoritative design, an example of the coupling now running both ways. [Source](https://crates.io/crates/lightyear_replication)
+
+#### bevy_quinnet
+
+Version 0.21.0 (published 2026-07-04), targeting Bevy 0.19. [Source](https://github.com/Henauxg/bevy_quinnet)
+
+Quinnet is a pure transport crate — no ECS replication of its own — built on the `quinn` QUIC implementation. Although its internals are async (`quinn`/`tokio`), the client/server APIs it exposes to a Bevy app are synchronous, communicating with background tokio tasks over channels so ordinary systems don't need async plumbing. It surfaces QUIC's stream multiplexing as three channel modes — `OrderedReliable`, `UnorderedReliable`, `Unreliable` — with head-of-line blocking scoped per channel, and mandatory TLS with a choice of certificate verification/retrieval modes. It has no browser/WebTransport support, unlike lightyear.
+
+```rust
+fn start_connection(mut client: ResMut<QuinnetClient>) {
+    client
+        .open_connection(ClientConnectionConfiguration {
+            addr_config: ClientAddrConfiguration::from_ips(
+                SERVER_HOST,
+                SERVER_PORT,
+                LOCAL_BIND_IP,
+                0,
+            ),
+            cert_mode: CertificateVerificationMode::SkipVerification,
+            defaultables: Default::default(),
+        })
+        .unwrap();
+}
+```
+[Source](https://github.com/Henauxg/bevy_quinnet/blob/main/README.md)
+
+Quinnet does not talk to `bevy_replicon` directly — a bridge crate, `bevy_replicon_quinnet` 0.20.0, exposes `RepliconQuinnetPlugins` and maps replicon's channel configuration onto quinnet's. lightyear, by contrast, has no relationship to quinnet at all; its QUIC-adjacent transport is WebTransport via `aeronet`. The three crates form a chain, not a triangle: `bevy_quinnet` → (via the bridge crate) → `bevy_replicon` ← (direct dependency) ← `lightyear`.
 
 ### 8.3 Particles and VFX
 
-- **bevy_hanabi** — a GPU-driven particle system plugin; particle simulation and rendering run as compute and render-graph passes rather than being updated per-particle on the CPU, following the same GPU-driven design philosophy as Bevy's own render graph (§1). [Source](https://bevy.org/assets/)
-- **bevy-vfx-bag** — a smaller GPU visual-effects plugin providing common post-processing effects (chromatic aberration, wave distortion, tinting) as drop-in render-graph nodes. [Source](https://bevy.org/assets/)
+Bevy has no first-party particle system — a low-level particle framework for the engine core remains an open tracking issue as of 2026 (§7). One community crate fills the role actively; a second, older one is effectively dormant and is documented here for completeness, not as a live recommendation.
+
+#### bevy_hanabi
+
+Version 0.19.0 (published 2026-06-27), tracking Bevy releases 1:1. [Source](https://github.com/djeedai/bevy_hanabi)
+
+Hanabi is GPU-driven: its README states it is "a modern GPU-based particle system [...] offloading most of the work to the GPU, with minimal CPU intervention," using compute shaders — which means it cannot run under WebGL2 (no compute shader support) though it does work under WebGPU/WASM. Its render-graph integration follows Bevy's own render-graph shape (§1): `HanabiRenderPlugin` installs a `simulate` system into the `RenderGraph` schedule, ordered before the camera driver, with the per-frame pipeline running indirect-dispatch → an init compute pass → an update compute pass → an indexed indirect draw, with per-effect pipeline specialization keyed by a shader-permutation hash. [Source](https://github.com/djeedai/bevy_hanabi/blob/main/src/render/mod.rs)
+
+```rust
+fn setup(mut effects: ResMut<Assets<EffectAsset>>) {
+    let mut gradient = bevy_hanabi::Gradient::new();
+    gradient.add_key(0.0, Vec4::new(1., 0., 0., 1.));
+    gradient.add_key(1.0, Vec4::ZERO);
+
+    let mut module = Module::default();
+
+    let init_pos = SetPositionSphereModifier {
+        center: module.lit(Vec3::ZERO),
+        radius: module.lit(2.),
+        dimension: ShapeDimension::Surface,
+    };
+    let init_vel = SetVelocitySphereModifier {
+        center: module.lit(Vec3::ZERO),
+        speed: module.lit(6.),
+    };
+    let lifetime = module.lit(10.);
+    let init_lifetime = SetAttributeModifier::new(Attribute::LIFETIME, lifetime);
+    let accel = module.lit(Vec3::new(0., -3., 0.));
+    let update_accel = AccelModifier::new(accel);
+
+    let effect = EffectAsset::new(1024, SpawnerSettings::rate(5.0.into()), module)
+        .with_name("MyEffect")
+        .init(init_pos)
+        .init(init_vel)
+        .init(init_lifetime)
+        .update(update_accel)
+        .render(ColorOverLifetimeModifier {
+            gradient,
+            blend: ColorBlendMode::Overwrite,
+            mask: ColorBlendMask::RGBA,
+        });
+
+    let effect_asset = effects.add(effect);
+}
+```
+(`SpawnerSettings` is the 0.19 spawner type — older examples showing a bare `Spawner` predate this rename. First `EffectAsset::new` argument is the maximum particle capacity.) [Source](https://docs.rs/bevy_hanabi/0.19.0/src/bevy_hanabi/lib.rs.html)
+
+#### bevy-vfx-bag
+
+Latest release 0.2.0, published 2023-03-08, targeting Bevy 0.10 — nine Bevy releases behind current (0.19) as of this writing, and it will not compile against a modern Bevy without porting. Last commit to the repository was 2023-08-01. It is documented here because it remains listed on the Bevy Assets directory, not as a working option. [Source](https://github.com/torsteingrindvik/bevy-vfx-bag)
+
+Architecturally it predates the current post-process API entirely: fragment-shader full-screen passes per camera, built on Bevy 0.10's render graph, rather than compute-driven simulation. Effects included: Blur, Chromatic Aberration, Flip, LUT (colour grading), Pixelate, Raindrops, Vignette, Wave, and composites of these. Its own README example — reproduced here as a snapshot of its API generation, not as code to copy — uses the pre-0.11 `add_plugin`/`add_startup_system` methods that Bevy removed in the 0.11 API cleanup, itself a marker of the crate's age:
+
+```rust
+fn main(){
+  App::new()
+    .add_plugins(DefaultPlugins)
+    .add_plugin(BevyVfxBagPlugin::default())
+    .add_startup_system(setup)
+    .add_system(update)
+    .run();
+}
+
+fn setup(mut commands: Commands) {
+    commands.spawn((
+        Camera3dBundle { ... },
+        Blur::default()
+    ));
+}
+```
+[Source](https://github.com/torsteingrindvik/bevy-vfx-bag/blob/main/README.md)
 
 ### 8.4 Navigation and Pathfinding
 
-- **vleue_navigator** — navmesh generation and pathfinding for 2D and 3D scenes using the Polyanya algorithm, with support for live navmesh updates as obstacles move — relevant to the dynamic-obstacle case Unreal's Navigation System handles natively (§7). [Source](https://github.com/vleue/vleue_navigator)
-- **oxidized_navigation** — runtime navmesh generation and pathfinding for 3D worlds, a Rust implementation in the spirit of the industry-standard Recast/Detour navmesh toolkit that Unreal and Unity both build on. [Source](https://bevy.org/assets/)
+Bevy has neither a NavMesh system nor pathfinding built in (§7). Two crates address different halves of the problem — one searches an authored mesh, the other bakes a mesh from world geometry at runtime — and they are complementary rather than competing. As of 2026 one of them is archived.
+
+#### vleue_navigator
+
+Version 0.15.0, requiring Bevy `^0.18`. [Source](https://github.com/vleue/vleue_navigator)
+
+Navmesh pathfinding using the Polyanya algorithm — "Navigation mesh for Bevy using Polyanya," citing the paper *Compromise-free Pathfinding on a Navigation Mesh*. Polyanya is an any-angle, optimality-guaranteed search directly over the polygonal mesh (search nodes are an interval on a polygon edge plus a root point), returning a true shortest path in one pass with no separate funnel post-process step. Unlike Recast-style tools, it does not bake a navmesh from world geometry — it consumes a mesh supplied by the application. Search itself is strictly planar (2D); 3D support comes from an affine `NavMesh::transform` that projects a `Vec3` into the 2D mesh's space, searches, and transforms results back. Live updates as obstacles move are handled by `NavmeshUpdaterPlugin<T>`, generic over the obstacle marker component. [Source](https://github.com/vleue/vleue_navigator/blob/main/src/lib.rs)
+
+```rust
+NavMeshSettings {
+    fixed: Triangulation::from_outer_edges(&[
+        vec2(0.0, 0.0),
+        vec2(MESH_WIDTH as f32, 0.0),
+        vec2(MESH_WIDTH as f32, MESH_HEIGHT as f32),
+        vec2(0.0, MESH_HEIGHT as f32),
+    ]),
+    simplify: 0.05,
+    ..default()
+},
+NavMeshUpdateMode::Direct,
+```
+[Source](https://github.com/vleue/vleue_navigator/blob/main/examples/auto_navmesh_primitive.rs)
+
+#### oxidized_navigation
+
+The upstream repository is archived (last push 2025-11-14). Its README carries an explicit deprecation notice: "Depricated! See [Rerecast](https://github.com/janhohenheim/rerecast/) for a more accurate Recast port in Rust & support for never Bevy versions" [sic]. Adopters should look at the linked successor project, `janhohenheim/rerecast`, rather than this crate. [Source](https://github.com/TheGrimsey/oxidized_navigation)
+
+Where vleue_navigator consumes an authored mesh, oxidized_navigation bakes one at runtime from physics-engine colliders — "based on Recast's Nav-mesh generation but in Rust," voxelizing colliders and running the standard Recast pipeline (heightfield → compact heightfield → regions → contours → polygon mesh) asynchronously per tile, with tiles regenerating as colliders or transforms change. It supports Parry3d directly, or Bevy Rapier3D and Avian3D via separate companion crates. Its version history is unresolved upstream: the final crates.io-published release is 0.12.0 (targeting Bevy 0.15), while an unpublished 0.13.0 targeting Bevy 0.16 exists in the archived repository's Cargo.toml — the two sides disagree and neither has been reconciled. [Source](https://github.com/TheGrimsey/oxidized_navigation/blob/master/README.md)
+
+```rust
+app.add_plugins(OxidizedNavigationPlugin::<AvianCollider>::new(NavMeshSettings::from_agent_and_bounds(
+    0.5, 1.9, 250.0, -1.0,
+)));
+
+commands.spawn((
+    NavMeshAffector,
+    Collider::cuboid(25.0, 0.1, 25.0),
+));
+```
+[Source](https://github.com/TheGrimsey/oxidized_navigation/blob/master/README.md)
 
 ### 8.5 UI and Input
 
-- **bevy_egui** — integrates the immediate-mode `egui` GUI library into Bevy, and is the most common choice for debug UI and tooling (including some `bevy_editor_prototypes` surfaces referenced in the Roadmap) while Bevy's own retained-mode UI stack (Bevy UI, Bevy Feathers) matures. [Source](https://bevy.org/assets/)
-- **leafwing_input_manager** — maps raw input (keyboard, mouse, gamepad) to semantic game actions with configurable cross-device bindings, the same input-abstraction problem Unreal's Enhanced Input system and Godot's Input Map solve natively. [Source](https://bevy.org/assets/)
-- **bevy_enhanced_input** — a newer input-mapping crate explicitly modelled on Unreal Engine's Enhanced Input system (contextual input mapping, modifiers, triggers). [Source](https://bevy.org/assets/)
+Bevy's own retained-mode UI (Bevy UI, and the newer Bevy Feathers widget set referenced in the Roadmap) is still maturing, and Bevy's raw input events leave the action-mapping problem — translating a keypress or gamepad axis into a semantic game action — to the application. Three crates cover different corners of this space.
+
+#### bevy_egui
+
+Version 0.41.1, bundling egui 0.35, targeting Bevy 0.19. [Source](https://github.com/vladbat00/bevy_egui)
+
+`bevy_egui` integrates the immediate-mode `egui` library as a fully independent overlay with its own pipeline — it does not go through `bevy_ui`. As of 0.41 it is **not** implemented as a render-graph node (some rendered documentation still describes it that way, but that page has drifted; the crate's `node::EGUI_PASS` string constant is vestigial and has zero usages in current source). Instead it registers ordinary systems into the `Core2d`/`Core3d` schedules, ordered relative to the main pass and upscaling:
+
+```rust
+let egui_pass_2d = render::egui_pass
+    .after(bevy_core_pipeline::Core2dSystems::MainPass)
+    .before(bevy_core_pipeline::upscaling::upscaling);
+let egui_pass_3d = render::egui_pass
+    .after(bevy_core_pipeline::Core3dSystems::PostProcess)
+    .before(bevy_core_pipeline::upscaling::upscaling);
+```
+[Source](https://raw.githubusercontent.com/vladbat00/bevy_egui/v0.41.1/src/lib.rs) (lines 1306–1333)
+
+The 0.41 line's defining design point is its multi-pass schedule model: egui 0.31+ supports running the UI closure more than once per frame so layout can settle, and bevy_egui expresses this by giving each context its own `ScheduleLabel` (`EguiPrimaryContextPass`) rather than putting UI systems in `Update`. In practice this means UI systems must be side-effect-tolerant, since they may run multiple times in one frame.
+
+```rust
+fn main() {
+    App::new()
+        .add_plugins(DefaultPlugins)
+        .add_plugins(EguiPlugin::default())
+        .add_systems(Startup, setup_camera_system)
+        .add_systems(EguiPrimaryContextPass, ui_example_system)
+        .run();
+}
+
+fn ui_example_system(mut contexts: EguiContexts) -> Result {
+    egui::Window::new("Hello").show(contexts.ctx_mut()?, |ui| {
+        ui.label("world");
+    });
+    Ok(())
+}
+```
+[Source](https://raw.githubusercontent.com/vladbat00/bevy_egui/v0.41.1/src/lib.rs) (lines 31–54)
+
+#### leafwing_input_manager
+
+Version 0.21.0 (git tag `v0.21`), targeting Bevy 0.19 per its `Cargo.toml` (the tagged README's own compatibility table is stale and tops out at Bevy 0.18 — the 0.19 row exists only on the main branch). [Source](https://raw.githubusercontent.com/Leafwing-Studios/leafwing-input-manager/v0.21/Cargo.toml)
+
+An action is a variant of a user-defined enum implementing the `Actionlike` derive trait, each variant declaring its arity via `InputControlKind` (`Button`, `Axis`, `DualAxis`, `TripleAxis`). Two components drive an entity's input: `InputMap<A>` (its binding table) and `ActionState<A>` (its per-frame resolved state) — both are per-entity components rather than global resources, so split-screen or per-character rebinding falls out naturally. Resolution is a pull model that runs in `PreUpdate` through a fixed pipeline of system sets — `Tick`, `Accumulate`, `Filter`, `Unify`, `Update`, `ManualControl` — where `Unify` normalizes keyboard, mouse, gamepad, and virtual-axis sources into a common `CentralInputStore` resource before `ActionState` is computed from it. [Source](https://raw.githubusercontent.com/Leafwing-Studios/leafwing-input-manager/v0.21/src/plugin.rs)
+
+```rust
+#[derive(Actionlike, PartialEq, Eq, Hash, Clone, Copy, Debug, Reflect)]
+enum Action { Run, Jump }
+
+fn spawn_player(mut commands: Commands) {
+    let input_map = InputMap::new([(Action::Jump, KeyCode::Space)]);
+    commands.spawn(input_map).insert(Player);
+}
+
+fn jump(query: Query<&ActionState<Action>, With<Player>>) {
+    let action_state = query.single();
+    if let Ok(action_state) = action_state {
+        if action_state.just_pressed(&Action::Jump) {
+            println!("I'm jumping!");
+        }
+    }
+}
+```
+[Source](https://raw.githubusercontent.com/Leafwing-Studios/leafwing-input-manager/v0.21/README.md)
+
+#### bevy_enhanced_input
+
+Version 0.26.0, targeting Bevy 0.19.0. [Source](https://github.com/projectharmonia/bevy_enhanced_input)
+
+Explicitly modelled on Unreal Engine's Enhanced Input system, and structured differently from leafwing: instead of one enum with many action variants, each action is its own type (`#[derive(InputAction)] #[action_output(bool)] struct Jump;`), and actions are entities wired to a context entity through Bevy relationships (`ActionOf<C>`, `BindingOf`). Bindings are shaped by modifiers (value transforms — `DeadZone`, `Scale`, `SwizzleAxis`, and others) and conditions (state machines deciding when an action fires — `Hold`, `Tap`, `Chord`, `Toggle`, and others). Multiple contexts can be layered on one entity with priorities, and a `ConsumedInputs` resource lets a higher-priority context (e.g. a vehicle) block a lower one (on-foot) from seeing the same input — layering that leafwing leaves to the application. [Source](https://raw.githubusercontent.com/projectharmonia/bevy_enhanced_input/v0.26.0/src/lib.rs)
+
+```rust
+#[derive(Component)]
+struct Player;
+
+#[derive(InputAction)]
+#[action_output(bool)]
+struct Jump;
+
+let mut app = App::new();
+app.add_plugins(EnhancedInputPlugin)
+    .add_input_context::<Player>()
+    .finish();
+
+app.world_mut().spawn((
+    Player,
+    actions!(Player[
+        (
+            Action::<Jump>::new(),
+            bindings![KeyCode::Space, GamepadButton::South],
+        ),
+    ])
+));
+```
+[Source](https://raw.githubusercontent.com/projectharmonia/bevy_enhanced_input/v0.26.0/src/lib.rs) (lines 95–127)
+
+The trailing `.finish()` call is mandatory, not cosmetic: `Plugin::finish()` is where per-context systems are actually installed (it consumes the registries built during `build()`), and skipping it produces a silently non-functioning input setup rather than a compile error.
 
 ### 8.6 Audio
 
-- **bevy_kira_audio** — replaces Bevy's built-in `bevy_audio` (a thin `rodio` wrapper) with the Kira audio library, adding a mixing/bus model, dynamic parameter automation, and more precise playback control — closer in spirit to Godot's built-in audio bus system than Bevy's own default audio crate. [Source](https://bevy.org/assets/)
-- **bevy_sonus** — adds spatial audio with occlusion and material-based sound transmission, modelling how geometry between a listener and a sound source attenuates or filters it. [Source](https://bevy.org/assets/)
+Bevy's built-in `bevy_audio` is a thin wrapper over `rodio`: basic playback and simple spatial positioning, no mixing-bus graph. Two crates address that gap from different directions and are not interchangeable — one replaces Bevy's audio stack outright, the other builds on top of it.
+
+#### bevy_kira_audio
+
+Version 0.26.0 (published 2026-06-21), targeting Bevy 0.19. [Source](https://github.com/NiklasEi/bevy_kira_audio)
+
+This crate **replaces** `bevy_audio` rather than extending it — its own README states the Bevy `bevy_audio` feature "is enabled by default and not compatible with this plugin," and its dependency manifest confirms it pulls only `["std", "bevy_asset", "bevy_log"]` from Bevy, none of Bevy's own audio stack. [Source](https://crates.io/crates/bevy_kira_audio/0.26.0/dependencies) The backend is the independent Kira 0.12.1 engine (via `cpal`), which contributes a mixer with named sub-tracks, tweened/eased parameter transitions, a sample-accurate clock for beat-synchronised event scheduling, and mixer-track effects (low-pass, distortion, EQ) — closer in spirit to Godot's built-in audio bus architecture than to Bevy's default audio crate. Spatial audio is deliberately limited: the README states plainly that "only the volume of audio and it's panning can be automatically changed based on emitter and receiver positions" [sic] — a useful contrast against bevy_sonus below, which targets occlusion specifically.
+
+```rust
+fn main() {
+    App::new()
+        .add_plugins((DefaultPlugins, AudioPlugin))
+        .add_audio_channel::<Background>()
+        .add_systems(Startup, play)
+        .run();
+}
+
+fn play(background: Res<AudioChannel<Background>>, asset_server: Res<AssetServer>) {
+    background
+        .play(asset_server.load("sounds/loop.ogg"))
+        .looped();
+}
+
+#[derive(Resource)]
+struct Background;
+```
+[Source](https://github.com/NiklasEi/bevy_kira_audio/blob/main/examples/custom_channel.rs)
+
+#### bevy_sonus
+
+Version 0.1.0, published 2026-08-03 — five days before this chapter section was researched, with 18 downloads and 5 GitHub stars at the time. It is included here as a worked, source-verified illustration of occlusion DSP layered on Bevy's own audio path, not as an established ecosystem pillar. [Source](https://crates.io/crates/bevy_sonus/0.1.0)
+
+Unlike bevy_kira_audio, sonus **layers on top of** Bevy's own `rodio`-backed audio: it implements `Decodable` for a custom `SonusSource` and inserts it as an ordinary `AudioPlayer` on emitter entities, so it requires the `bevy_audio` feature the two crates otherwise disagree about. Its occlusion model casts a 5-ray cross from each emitter (sized to its bounding box), tests each ray for AABB intersection against obstacle entities carrying an `AcousticMaterial` component, and derives band-gain attenuation from the resulting hit ratio: `obstruction_ratio = wall_hits as f32 / 5.0`, then each of the low/mid/high target gains is linearly interpolated toward the material's per-band transmission value by that ratio. (This is a correction worth stating precisely against the crate's own README phrasing, which describes "multi-ray, 3-band" occlusion in a way that could be read as per-band-weighted rays — the three band gains in fact derive from one scalar hit ratio; a *separate* per-ray calculation, weighted only by the material's mid-band transmission, feeds an independent "perceived direction" diffraction estimate.) The DSP chain itself is four biquads forming low/mid/high bands split at 500 Hz and 4 kHz, each scaled by an atomically-stored target gain interpolated per audio block — the crate's "lock-free" parameter updates are plain atomics, not a ring-buffer message queue. [Source](https://docs.rs/bevy_sonus/0.1.0/bevy_sonus/)
+
+```rust
+commands.spawn((
+    SonusEmitter::new("audio/siren.wav")
+        .with_occlusion()
+        .with_attenuation(AttenuationModel::Linear { min_dist: 2.0, max_dist: 20.0 }),
+    Transform::from_xyz(0.0, 1.0, 0.0),
+));
+```
+[Source](https://github.com/zem-invictus/sonus) (README)
 
 ### 8.7 Tweening and Asset Loading
 
-- **bevy_tweening** and **bevy_tween** — animate component and asset field values (position, colour, opacity) over time using configurable easing curves, filling the simple-value-animation role that a scripting-language `tween()` call provides natively in Godot and Unity. [Source](https://bevy.org/assets/)
-- **bevy_asset_loader** — declaratively loads collections of assets during a configurable Bevy `State` (for example, a loading screen), removing manual asset-handle bookkeeping. [Source](https://bevy.org/assets/)
-- **bevy_common_assets** — adds `AssetLoader` implementations for common non-binary formats (JSON, YAML, RON, TOML, MessagePack) that Bevy's core asset system does not parse out of the box. [Source](https://bevy.org/assets/)
+Two unrelated gaps share a subsection here because both are small, focused crates rather than full subsystems: animating a field value over time (the role a scripting-language `tween()` call fills natively in Godot and Unity), and loading a batch of assets without hand-written handle bookkeeping.
+
+#### bevy_tweening
+
+Version 0.16.0 (published 2026-06-28, ~170k total downloads), targeting Bevy 0.19. [Source](https://github.com/djeedai/bevy_tweening)
+
+0.16 rewrote the crate's core model: earlier versions used an `Animator<T>` component coupling a tween directly to its target, but 0.16 separates the two. A `TweenAnim` component (holding the boxed tweenable plus playback state, speed, and a destroy-on-completion flag) is spawned on its own entity; an optional sibling `AnimTarget` component says what it drives (a component, resource, or asset), or if omitted, targets a component of the lens's type on the same entity. Interpolation is lens-based: a `Lens<T>` mutates a field in place given an interpolation ratio, and built-in lenses (`TransformPositionLens`, `SpriteColorLens`, `TextColorLens`, and others) cover common animatable fields. [Source](https://raw.githubusercontent.com/djeedai/bevy_tweening/v0.16.0/src/lib.rs)
+
+```rust
+let tween = Tween::new(
+    EaseFunction::QuadraticInOut,
+    Duration::from_secs(1),
+    TransformPositionLens {
+        start: Vec3::ZERO,
+        end: Vec3::new(1., 2., -4.),
+    },
+);
+
+commands.spawn((
+    Transform::default(),
+    TweenAnim::new(tween),
+));
+```
+(This is the crate's own doctested example, not its README's headline snippet — that snippet calls a `.tween()` method that does not exist anywhere in 0.16's public API, evidently unrewritten after the 0.16 redesign.) [Source](https://raw.githubusercontent.com/djeedai/bevy_tweening/v0.16.0/src/lib.rs) (lines 53–80)
+
+#### bevy_tween
+
+Version 0.13.0 (published 2026-07-03, ~43k total downloads — roughly a quarter of bevy_tweening's), targeting Bevy 0.19. Its own README describes it candidly as "a young plugin" whose "APIs are to be fleshed out. Breaking changes are to be expected!" [Source](https://github.com/Multirious/bevy_tween)
+
+Where bevy_tweening treats an animation as data attached to an entity, bevy_tween treats it as an entity tree plus a combinator DSL: a `TimeRunner` (built on the separate `bevy_time_runner` crate) owns timing and progress on a parent entity, and children hold any mix of tweened components, timed events, or user-defined behavior. Animations compose as ordinary function values — `parallel()`, `sequence()`, `tween()` — rather than as a fixed set of tweenable types, and the same machinery drives an event plugin that can fire arbitrary events at any point in an animation, which bevy_tweening has no equivalent of.
+
+```rust
+let sprite_id = commands.spawn(Sprite { /* ... */ }).id();
+let sprite = sprite_id.into_target();
+commands.animation()
+    .insert(tween(
+        Duration::from_secs(1),
+        EaseKind::Linear,
+        sprite.with(translation(pos0, pos1))
+    ));
+```
+(Excerpted from the README; elides the Sprite's field values and the `.add_plugins(DefaultTweenPlugins)` setup call. Note `EaseKind`, not bevy_tweening's `EaseFunction` — the two crates' easing-curve types are unrelated despite the similar name.) [Source](https://github.com/Multirious/bevy_tween/blob/main/README.md)
+
+#### bevy_asset_loader
+
+Version 0.27.0 (published 2026-06-21, ~617k total downloads — the most-downloaded crate in this section), targeting Bevy 0.19. [Source](https://github.com/NiklasEi/bevy_asset_loader)
+
+Binds asset loading to one variant of an application's `States` enum: `LoadingState::new(S).continue_to_state(next).load_collection::<T>()` drives loading while in state `S`, and only transitions to `next` once every handle in every registered collection is fully loaded. The practical payoff, stated directly in the crate's own documentation, is that systems in the next state can take `Res<MyAssets>` unconditionally — no `Option`, no polling for readiness. Assets can be declared at compile time (`#[asset(path = "...")]`) or resolved at runtime through a `.ron` manifest (`#[asset(key = "...")]`), and a `finally_init_resource` variant defers `FromWorld` construction until after collections are loaded, so a derived resource can read already-loaded asset data while building itself.
+
+```rust
+fn main() {
+    App::new()
+        .add_plugins(DefaultPlugins)
+        .init_state::<MyStates>()
+        .add_loading_state(
+            LoadingState::new(MyStates::AssetLoading)
+                .continue_to_state(MyStates::Next)
+                .load_collection::<AudioAssets>(),
+        )
+        .add_systems(OnEnter(MyStates::Next), start_background_audio)
+        .run();
+}
+
+#[derive(AssetCollection, Resource)]
+struct AudioAssets {
+    #[asset(path = "audio/background.ogg")]
+    background: Handle<AudioSource>,
+}
+
+fn start_background_audio(mut commands: Commands, audio_assets: Res<AudioAssets>) {
+    commands.spawn((AudioPlayer(audio_assets.background.clone()), PlaybackSettings::LOOP));
+}
+```
+[Source](https://github.com/NiklasEi/bevy_asset_loader/blob/main/README.md)
+
+#### bevy_common_assets
+
+Version 0.17.0 (published 2026-06-21, ~299k total downloads), targeting Bevy 0.19 — confirmed from the tagged `Cargo.toml` rather than the README's compatibility table, which is stale by two releases and stops at 0.15/Bevy 0.18. [Source](https://raw.githubusercontent.com/NiklasEi/bevy_common_assets/v0.17.0/Cargo.toml)
+
+Adds `AssetLoader` (and `AssetSaver`) implementations for nine non-binary formats Bevy's own asset system does not parse — JSON, RON, TOML, YAML, MessagePack, XML, CSV, Postcard, and CBOR — each gated behind its own Cargo feature and each, per the crate's own description, "a thin wrapper plugin around" the corresponding `serde` backend crate. A loader's `load` implementation is uniform across all nine formats: read the reader to a byte buffer, deserialize with the format's `serde` crate, return the typed asset. None of the nine pass the `LoadContext` through to support nested/labeled sub-assets, so a data file that references other assets by path is outside what any of these loaders handle on their own.
+
+```rust
+fn main() {
+    App::new()
+        .add_plugins((DefaultPlugins, JsonAssetPlugin::<Level>::new(&["level.json"])))
+        .add_systems(Startup, load_level)
+        .run();
+}
+
+fn load_level(mut commands: Commands, asset_server: Res<AssetServer>) {
+    let handle = LevelAsset(asset_server.load("trees.level.json"));
+    commands.insert_resource(handle);
+}
+
+#[derive(serde::Deserialize, Asset, TypePath)]
+struct Level {
+    positions: Vec<[f32; 3]>,
+}
+
+#[derive(Resource)]
+struct LevelAsset(Handle<Level>);
+```
+[Source](https://raw.githubusercontent.com/NiklasEi/bevy_common_assets/v0.17.0/src/lib.rs) (doctest, compiler-checked at the 0.17.0 tag)
+
+`bevy_asset_loader`'s `standard_dynamic_assets` Cargo feature depends directly on `bevy_common_assets` to parse `.ron` dynamic-asset manifests — the two crates in this subsection compose by direct dependency, not just by convention.
 
 ---
 
