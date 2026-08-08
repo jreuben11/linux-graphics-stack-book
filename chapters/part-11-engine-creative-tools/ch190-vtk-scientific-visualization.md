@@ -20,6 +20,7 @@
 8. [ParaView — The Flagship VTK Application](#8-paraview--the-flagship-vtk-application)
 9. [VTK on Headless Linux Servers and Containers](#9-vtk-on-headless-linux-servers-and-containers)
    - [9.1 vtk.js — Browser-Based VTK](#vtkjs--browser-based-vtk)
+   - [9.2 vtk-wasm — C++ VTK Compiled to WebAssembly](#vtk-wasm--c-vtk-compiled-to-webassembly)
 10. [Integration with the Scientific Ecosystem](#10-integration-with-the-scientific-ecosystem)
 11. [Integrations](#11-integrations)
 
@@ -716,13 +717,43 @@ ParaView separates computation from display:
 - **Remote rendering**: the server renders a full-resolution image, compresses it (JPEG or LZ4), and sends the encoded image to the client GUI. The client GPU is not involved in rendering; it only decompresses and displays the image. This allows a researcher on a laptop to explore a 100 TB simulation dataset running on thousands of cluster cores.
 - **Threshold switching**: for small datasets, the server sends geometry to the client, which renders locally for interactive frame rates. For large datasets beyond a geometry threshold, server-side rendering is used.
 
+**Connecting from a Python client.** `pvpython` (or any Python interpreter with the `paraview` package on its path) can drive a `pvserver` that is already running on a cluster's login or visualization node:
+
+```python
+from paraview.simple import *
+
+# pvserver -sp=11111  (started separately on the remote host)
+Connect("viz03.cluster.example.org", 11111)
+
+reader = OpenDataFile("/scratch/simulation/output.pvtu")
+Show(reader)
+Render()
+```
+
+`Connect()` establishes the client-server socket connection that all subsequent `paraview.simple` calls are routed through — data stays server-side, and only render results or explicitly-fetched arrays cross the network. The threshold-switching behaviour above is exposed as the `RemoteRenderThreshold` property on the active render view, in megabytes of geometry: ParaView remote-renders once geometry exceeds this size, and local-renders (streams geometry to the client GPU) below it. Setting it to `0` forces remote rendering unconditionally — useful when scripting a batch job where the client machine has no GPU at all. [Source](https://docs.paraview.org/en/latest/ReferenceManual/parallelDataVisualization.html)
+
+```python
+view = GetActiveViewOrCreate("RenderView")
+view.RemoteRenderThreshold = 0  # always render server-side, ignore local geometry size
+```
+
 ### IceT — Sort-Last Compositing
 
 For parallel rendering across many MPI ranks, ParaView uses **IceT** (Image Compositing Engine for Tiles), developed at Sandia National Laboratories: [gitlab.kitware.com/icet/icet](https://gitlab.kitware.com/icet/icet).
 
 In **sort-last** compositing, each MPI rank renders its partition of the data to a local image with depth. IceT then performs a **binary-swap** depth compositing algorithm: ranks exchange and merge image fragments, halving the number of active participants at each round. The final composited image (with correct depth ordering) is available on rank 0 for transmission to the client. IceT has been demonstrated at 64,000 cores on IBM BlueGene systems. [Source](https://www.kennethmoreland.com/scalable-rendering/)
 
-For display wall tiling, IceT assigns each tile of the wall display to a subset of render nodes, compositing only the required region on each node.
+For display wall tiling, IceT assigns each tile of the wall display to a subset of render nodes, compositing only the required region on each node. A tile display is built by calling `icetAddTile` once per physical tile, where the first four arguments give the tile's viewport `⟨x, y, width, height⟩` within the overall wall and the last argument names the MPI rank responsible for displaying it:
+
+```c
+/* IceT: describe a 2x2 CAVE/power-wall of 1920x1080 tiles, one rank per tile */
+icetAddTile(0,    0, 1920, 1080, /* display_rank = */ 0);
+icetAddTile(1920, 0, 1920, 1080, /* display_rank = */ 1);
+icetAddTile(0, 1080, 1920, 1080, /* display_rank = */ 2);
+icetAddTile(1920, 1080, 1920, 1080, /* display_rank = */ 3);
+```
+
+Each process can query `ICET_NUM_TILES`, `ICET_TILE_VIEWPORTS`, and `ICET_DISPLAY_NODES` to inspect the resulting layout at runtime, and a process reads its own `ICET_TILE_DISPLAYED` state variable (`-1` if it displays nothing) to know whether it owns a tile. [Source: IceT Users' Guide](https://www.sandia.gov/app/uploads/sites/150/2021/10/IceTUsersGuide-2-0.pdf) ParaView applications do not call these functions directly — `pvserver` derives the same tile layout from its own command-line flags when launched against a physical display wall (`--tdx`/`--tile-dimensions-x` and `--tdy`/`--tile-dimensions-y` for the tile counts, `--tmx`/`--tmy` for the pixel gap between adjacent tiles), translating them into the equivalent `icetAddTile` calls internally. [Source](https://docs.paraview.org/en/latest/UsersGuide/commandLineArguments.html)
 
 ### pvpython and pvbatch
 
@@ -776,6 +807,35 @@ renderView.CameraPosition = [0, 0, 10]
 SaveScreenshot("isosurface.png", renderView, ImageResolution=[2048, 1536])
 ```
 
+**Generating scripts instead of hand-writing them.** ParaView's GUI has a **Trace Recorder** (Tools → Start Trace / Stop Trace) that records every action taken interactively — loading a file, adding a filter, clicking Apply — and emits the equivalent `paraview.simple` calls, including the lower-level rendering and view-update calls the GUI performs implicitly that a hand-written script would otherwise omit. This is normally the fastest way to bootstrap a batch script: build the pipeline once in the GUI against a small representative dataset, trace it, then generalise the traced script (parameterise the filename, wrap the render loop) for `pvbatch` on the full dataset. A companion, non-recording route is **File → Save State**, saved as a `.py` state file rather than the binary `.pvsm` format, which reconstructs the pipeline as it exists at save time without a full action trace. Both a traced script and a saved state script can be replayed headlessly:
+
+```python
+# Reload a previously saved/traced pipeline and re-render at a new resolution
+from paraview.simple import *
+
+LoadState("/scratch/state/iso_pipeline.py")
+view = GetActiveViewOrCreate("RenderView")
+SaveScreenshot("/scratch/images/iso_hires.png", view, ImageResolution=[3840, 2160])
+```
+
+[Source: ParaView Documentation — Python & Batch Tutorial](https://docs.paraview.org/en/latest/Tutorials/ClassroomTutorials/pythonAndBatchParaViewAndPython.html)
+
+**Animating a time series.** `paraview.simple` exposes one process-wide `GetAnimationScene()`, which is driven over the reader's available timesteps and rendered frame-by-frame with `SaveAnimation` (writing directly to a movie container) or a manual `SaveScreenshot` loop for per-frame PNGs:
+
+```python
+scene = GetAnimationScene()
+scene.UpdateAnimationUsingDataTimeSteps()  # step through every timestep in the reader
+
+SaveAnimation(
+    "/scratch/images/run.avi",
+    GetActiveViewOrCreate("RenderView"),
+    ImageResolution=[1920, 1080],
+    FrameRate=24,
+)
+```
+
+[Source: ParaView/Python `simple.animation` module documentation](https://www.paraview.org/paraview-docs/latest/python/paraview.simple.animation.html)
+
 ### Catalyst 2.0 — In-Situ Visualization
 
 **Catalyst 2.0** is a lightweight C API that simulation codes link against to perform in-situ visualization — processing data as it is generated, without writing full datasets to disk. [Source](https://catalyst-in-situ.readthedocs.io/en/latest/introduction.html)
@@ -807,6 +867,36 @@ catalyst_finalize(NULL);
 [Source: ParaView Catalyst Blueprint](https://docs.paraview.org/en/latest/Catalyst/blueprints.html)
 
 Catalyst 2.0 separates the API from the implementation, allowing simulations to link a tiny stub library and swap visualization backends at deployment time without recompilation — switching between ParaView, ADIOS2 in-transit, or a custom implementation. [Source](https://warpx.readthedocs.io/en/latest/dataanalysis/catalyst.html)
+
+**The `pipeline.py` script itself.** The file named in `catalyst/scripts/script0/filename` above is an ordinary Python module using the `paraview.simple` API, with three optional lifecycle hooks that the ParaView Catalyst implementation calls at the points their names suggest — module-level code (including any `paraview.simple` pipeline construction) runs once, on first import at `catalyst_initialize` time, and is *not* re-run on subsequent timesteps:
+
+```python
+from paraview.simple import *
+from paraview import print_info
+
+# Runs once, at import: build the pipeline against the registered producer.
+# "input" must match the channel name the simulation registers via Conduit
+# (i.e. the node at catalyst/channels/input in the per-timestep data tree).
+producer = TrivialProducer(registrationName="input")
+
+def catalyst_initialize():
+    print_info("catalyst_initialize: pipeline ready")
+
+def catalyst_execute(info):
+    # info.cycle / info.time / info.timestep describe the current step
+    contour = Contour(Input=producer)
+    contour.ContourBy = ["POINTS", "Pressure"]
+    contour.Isosurfaces = [101325.0]
+
+    view = GetActiveViewOrCreate("RenderView")
+    Show(contour, view)
+    SaveScreenshot(f"catalyst_output_{info.timestep:04d}.png", view)
+
+def catalyst_finalize():
+    print_info("catalyst_finalize: simulation run complete")
+```
+
+[Source: ParaView — Anatomy of a Catalyst Python Module (Version 2.0)](https://www.paraview.org/paraview-docs/latest/cxx/CatalystPythonScriptsV2.html) The `TrivialProducer` stands in for the live simulation data VTK receives that timestep — it is bound to the Conduit channel by `registrationName`, not by reading a file, which is what makes the same pipeline script usable both for interactive prototyping against a saved dataset and for genuine in-situ execution against live simulation memory. In practice this script is rarely hand-written from scratch: building the pipeline in the ParaView GUI against a representative dataset, adding one or more **Extractors** (Extractors menu) to define what gets written out each step, and then using **File → Save Catalyst State** exports exactly this module structure automatically. [Source](https://docs.paraview.org/en/latest/Catalyst/getting_started.html)
 
 ---
 
@@ -878,7 +968,7 @@ docker run --rm --gpus all \
 
 ### vtk.js — Browser-Based VTK
 
-For scenarios where server-side rendering is impractical, [vtk.js](https://kitware.github.io/vtk-js/) provides a JavaScript implementation of VTK's core algorithms running entirely in the browser, with no server required. Unlike vtk-wasm (Section 2's `vtkObjectManager` discussion), which compiles the actual C++ VTK to WebAssembly, vtk.js is a **ground-up rewrite in ES6 JavaScript** — it does not share a code base with the C++ library, though it deliberately mirrors its object model and naming conventions so that a developer familiar with C++ VTK or ParaView can transfer that knowledge directly. The project is maintained at [github.com/Kitware/vtk-js](https://github.com/Kitware/vtk-js) and published to npm as `@kitware/vtk.js`. [Source](https://github.com/Kitware/vtk-js)
+For scenarios where server-side rendering is impractical, [vtk.js](https://kitware.github.io/vtk-js/) provides a JavaScript implementation of VTK's core algorithms running entirely in the browser, with no server required. Unlike vtk-wasm (below), which compiles the actual C++ VTK to WebAssembly, vtk.js is a **ground-up rewrite in ES6 JavaScript** — it does not share a code base with the C++ library, though it deliberately mirrors its object model and naming conventions so that a developer familiar with C++ VTK or ParaView can transfer that knowledge directly. The project is maintained at [github.com/Kitware/vtk-js](https://github.com/Kitware/vtk-js) and published to npm as `@kitware/vtk.js`. [Source](https://github.com/Kitware/vtk-js)
 
 **Object model.** vtk.js reproduces the source → filter → mapper → actor → renderer → render-window pipeline from C++ VTK, but objects are created through `newInstance()` factory functions rather than constructors (a consequence of the mixin-based class system used throughout the codebase), and properties are accessed through generated `get`/`set` methods rather than public fields:
 
@@ -924,7 +1014,45 @@ renderWindow.render();
 
 **Interop with three.js.** vtk.js and three.js are independent scene-graph libraries that each expect to own the WebGL/WebGPU context and render loop, so there is no supported way to embed one inside the other's canvas, and Kitware does not offer a first-party bridge. Two narrower interop paths exist instead. First, at the *file* level: three.js ships its own `VTKLoader`, which parses legacy `.vtk` files directly into a `THREE.BufferGeometry` — but only the `POLYDATA` dataset type in ASCII or binary, with no support for the VTK XML formats (`.vtp`/`.vtu`, Section 7), structured/rectilinear/unstructured grids, or appended data; it has no dependency on the vtk.js library itself. [Source](https://threejs.org/docs/pages/VTKLoader.html) Second, at the *object* level, for applications that want vtk.js's readers and filter pipeline but three.js doing the drawing: run vtk.js headless, skipping its `Rendering` module, and pull the typed arrays off the mapper's input directly — `mapper.getInputData().getPoints().getData()` for vertex positions and the equivalent calls on `getPolys()`/`getPointData().getNormals()` — to populate a `THREE.BufferGeometry`'s `position`/`index`/`normal` attributes by hand. Polygon-to-triangle conversion and any scale or coordinate-frame bookkeeping are the caller's responsibility; no library automates this hand-off. [Source: VTK Discourse — Integrating vtk.js into a Babylon.js GUI](https://discourse.vtk.org/t/integrating-vtk-js-capabilities-into-a-babylon-js-centric-gui/2670)
 
-For the WebGL and WebGPU implementations vtk.js runs against, see Chapter 34 (ANGLE) and Chapter 35 (Dawn and WebGPU); for the underlying immersive API, see Chapter 203 (WebXR); for compiling C++ VTK itself to WebAssembly (`VTK_WRAP_JAVASCRIPT`, Section 1 and the Long-term roadmap below), see Chapter 98.
+For the WebGL and WebGPU implementations vtk.js runs against, see Chapter 34 (ANGLE) and Chapter 35 (Dawn and WebGPU); for the underlying immersive API, see Chapter 203 (WebXR); for compiling C++ VTK itself to WebAssembly (`VTK_WRAP_JAVASCRIPT`), see the next subsection.
+
+### vtk-wasm — C++ VTK Compiled to WebAssembly
+
+Where vtk.js is a ground-up ES6 rewrite, **vtk-wasm** (also called VTK.wasm) takes the opposite approach: it compiles the *actual* C++ VTK source tree — the same filters, mappers, and readers used by desktop VTK and ParaView — to WebAssembly with Emscripten, and generates JavaScript bindings that mirror the C++ class hierarchy directly. Any C++ pipeline, including custom filters that only exist as compiled code, runs unmodified in the browser; nothing has to be reimplemented in JavaScript the way it does for vtk.js. [Source](https://www.kitware.com/introducing-webassembly-support-in-vtk/) [Source: vtk-wasm architecture overview](https://kitware.github.io/vtk-wasm/)
+
+**Build: `VTK_WRAP_JAVASCRIPT`.** JavaScript wrapping is a CMake-time opt-in, parallel to `VTK_WRAP_PYTHON`: `VTK_WRAP_JAVASCRIPT` is `OFF` by default and requires `VTK_ENABLE_WRAPPING` (`ON` by default), and its help text reads simply "Whether JavaScript support will be available or not." [Source](https://docs.vtk.org/en/latest/build_instructions/build_settings.html) A minimal build, run under the Emscripten SDK's `emcmake` wrapper:
+
+```bash
+emcmake cmake -S ${VTK_SOURCE_DIR} -B ${VTK_BUILD_DIR} \
+  -G "Ninja" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_SHARED_LIBS=OFF \
+  -DVTK_WRAP_JAVASCRIPT=ON \
+  -DVTK_ENABLE_WEBGPU=ON
+ninja -C ${VTK_BUILD_DIR}
+```
+
+VTK also ships CMake presets that wrap the same invocation — `cmake --workflow --preset wasm32` or `--preset wasm64`. Relevant flags beyond the basics: `VTK_WEBASSEMBLY_64_BIT` adds Emscripten's `-sMEMORY64`, widening the addressable heap from 4 GiB to 16 GiB for large datasets; `VTK_WEBASSEMBLY_THREADS` adds `-pthread`, enabling Web Worker-backed multithreading; `VTK_WASM_DEBUGINFO` selects `NONE`/`READABLE_JS`/`PROFILE`/`DEBUG_NATIVE` symbol levels for debugging a build; and `VTK_ENABLE_WEBGPU` builds the WebGPU rendering backend from Section 5 into the WASM binary alongside WebGL. Static linking (`BUILD_SHARED_LIBS=OFF`) is required, since Emscripten needs a single self-contained module. The build produces a `.wasm` binary plus `.js`/`.mjs` loader glue. [Source](https://docs.vtk.org/en/latest/advanced/build_wasm_emscripten.html)
+
+**Runtime: sessions over a loaded bundle.** The npm package `@kitware/vtk-wasm` wraps the compiled bundle for use without a local Emscripten toolchain:
+
+```javascript
+import { loadAsync } from "@kitware/vtk-wasm";
+
+const BUNDLE = "https://raw.githack.com/Kitware/vtk-wasm/dist/latest/vtk-wasm32-emscripten.tar.gz";
+const runtime = await loadAsync({ url: BUNDLE });
+const session = runtime.createStandaloneSession();
+const vtk = session.vtk;
+
+const cone = vtk.vtkConeSource();
+// ...build and render the scene using the same class names as C++ VTK
+```
+
+A plain `<script src="https://unpkg.com/@kitware/vtk-wasm/vtk-umd.js"></script>` tag works too, with no bundler required. [Source: Kitware/vtk-wasm README](https://github.com/Kitware/vtk-wasm) Note the API shape contrast with vtk.js's `newInstance()`/`get`/`set` factory pattern (above): vtk-wasm's `vtk.vtkConeSource()` mirrors C++ construction directly, because it *is* the C++ class, reached through Emscripten's generated bindings rather than a parallel JavaScript implementation. [Source](https://kitware.github.io/vtk-wasm/)
+
+vtk-wasm's runtime distinguishes two session types. A **`vtkStandaloneSession`** lets the page create and manipulate VTK objects entirely client-side, as in the snippet above — there is no server. A **`vtkRemoteSession`** instead mirrors a server-owned pipeline: the server builds and holds the real `vtkRenderWindow` object graph, and the WASM client deserializes streamed state to reconstruct the equivalent objects locally, rather than constructing anything of its own. [Source](https://kitware.github.io/vtk-wasm/) The state that crosses the network is produced by **`vtkWasmSceneManager`**, which lets an application register any serializable `vtkObject` (a `vtkRenderWindow`, for instance) and extract a serializable object-tree for transfer — the same `vtkObjectManager` machinery, formalized in VTK 9.4, discussed in Section 2. This is a third point on the remote/local rendering spectrum introduced in the trame subsection below: trame's "remote rendering" streams a compressed image, its "local rendering" streams geometry into a *reimplemented* vtk.js pipeline, and vtk-wasm mirroring streams serialized VTK object state into the *same* compiled C++ pipeline running client-side — the closest of the three to bit-for-bit parity with the server. The Kitware trame widget **`trame-vtklocal`** packages this mode: a server-side Python process owns a normal VTK pipeline, and `trame-vtklocal` synchronizes it to a `vtkRemoteSession` in the browser so the identical compiled filters execute on the client GPU, which matters for applications with custom C++ filters that vtk.js has no JavaScript equivalent for. [Source: Kitware — VTK.wasm and its trame integration](https://www.kitware.com/vtk-wasm-and-its-trame-integration/)
+
+Kitware's vtk-wasm demo gallery gives a sense of the ceiling this approach reaches: a Porsche CAD assembly with interactive picking, a procedurally generated terrain of 351k triangles, a "Starfighter" scene exercising glyphs and 3D widgets, volume rendering of a 531k-voxel dataset, and a stress test rendering a thousand independent actors — all running the genuine VTK pipeline inside a browser tab via WebGL or WebGPU. [Source](https://kitware.github.io/vtk-wasm/) The trade-off against vtk.js is the one implied by shipping a compiled C++ runtime rather than hand-picked ES modules: the WASM binary carries the weight of whichever VTK modules were linked in, against which vtk.js's per-widget JavaScript imports are lighter but reimplemented and therefore incomplete relative to the C++ filter library.
 
 ### trame — Python Web Application Framework
 
@@ -1005,11 +1133,57 @@ velocity = wrapped.PointData["Velocity"]   # shape (N, 3)
 speed = np.linalg.norm(velocity, axis=1)
 ```
 
-### Jupyter Notebooks and itkwidgets
+### PyVista — Pythonic VTK Wrapper
 
-VTK renders in Jupyter notebooks through:
-- **`ipyvtk-simple`** / **`panel`**: embed VTK render windows as interactive widgets.
-- **itkwidgets** ([github.com/InsightSoftwareConsortium/itkwidgets](https://github.com/InsightSoftwareConsortium/itkwidgets)): purpose-built Jupyter widget for 3D and 2D viewing of VTK datasets, ITK images, and NumPy arrays with interactive volume rendering in the browser.
+[PyVista](https://pyvista.org/) is a 3D plotting and mesh-analysis library that wraps VTK in a "streamlined interface" — the project most widely reached for when a script needs VTK's data model and filters without VTK's C++-mirroring verbosity. [Source](https://docs.pyvista.org/getting-started/why) The wrapping is by direct **subclassing**, not composition: `pyvista.PolyData` *is* a `vtkPolyData` (and likewise `UnstructuredGrid`, `ImageData`, `MultiBlock`, …), so a PyVista mesh can be passed anywhere a raw VTK filter expects one, and any VTK object can be lifted into PyVista's friendlier API with `pyvista.wrap()`:
+
+```python
+import vtk
+import pyvista as pv
+
+polygon_source = vtk.vtkRegularPolygonSource()
+polygon_source.GeneratePolygonOff()
+polygon_source.SetNumberOfSides(50)
+polygon_source.SetRadius(5.0)
+polygon_source.Update()
+
+mesh = pv.wrap(polygon_source.GetOutput())   # same object, PyVista's PolyData subclass
+mesh.plot(line_width=3, cpos="xy", color="k")
+```
+
+[Source](https://tutorial.pyvista.org/tutorial/06_vtk/a_1_transition_vtk.html) Common filters (smoothing, clipping, decimation, slicing) are exposed as chainable methods directly on the mesh object rather than as separately instantiated `vtkAlgorithm` objects wired to sources and mappers:
+
+```python
+import pyvista as pv
+
+mesh = pv.Sphere()
+mesh.smooth(n_iter=25).plot()          # equivalent to a vtkSmoothPolyDataFilter pipeline stage
+```
+
+[Source](https://docs.pyvista.org/user-guide/simple.html) For Jupyter, PyVista's `trame` backend (superseding the deprecated `ipyvtklink`) reuses the same VTK-Python/`wslink` machinery documented in the trame subsection above (Section 8), offering the identical `'server'` (image streaming), `'client'` (geometry streamed to a browser-side renderer), and hybrid `'trame'` modes as a Jupyter cell widget rather than a standalone web app. [Source](https://docs.pyvista.org/user-guide/jupyter/trame.html)
+
+### Mayavi — Pythonic Scientific 3D Plotting
+
+[Mayavi](https://github.com/enthought/mayavi) (Enthought) is the older of the two general-purpose Python/VTK wrapper projects, built around **TVTK** (Traited VTK) — a layer that wraps essentially every VTK class with [Traits](https://docs.enthought.com/traits/), giving each one a Pythonic feel, transparent NumPy array handling, and elementary pickling support, without altering the underlying VTK object model the way PyVista's subclassing does. [Source](https://tvtk.readthedocs.io/en/latest/README.html) On top of TVTK, the **`mlab`** module offers matplotlib-style one-line plotting for quick exploratory visualization:
+
+```python
+from numpy import pi, sin, cos, mgrid
+dphi, dtheta = pi / 250.0, pi / 250.0
+phi, theta = mgrid[0:pi + dphi * 1.5:dphi, 0:2 * pi + dtheta * 1.5:dtheta]
+m0, m1, m2, m3, m4, m5, m6, m7 = 4, 3, 2, 3, 6, 2, 6, 4
+r = sin(m0 * phi) ** m1 + cos(m2 * phi) ** m3 + sin(m4 * theta) ** m5 + cos(m6 * theta) ** m7
+x, y, z = r * sin(phi) * cos(theta), r * cos(phi), r * sin(phi) * sin(theta)
+
+from mayavi import mlab
+mlab.mesh(x, y, z)
+mlab.show()
+```
+
+[Source](https://docs.enthought.com/mayavi/mayavi/mlab.html) For explicit pipeline construction rather than the `mlab`-generated one, `mlab.pipeline` mirrors VTK's source-filter-mapper graph directly (e.g. `mlab.pipeline.array2d_source` → `warp_scalar` → `poly_data_normals` → `surface`), and the standalone `tvtk` package can be used independently of Mayavi's GUI wherever only the Traits-wrapped VTK classes are wanted. [Source](https://docs.enthought.com/mayavi/mayavi/mlab_pipeline.html) Mayavi requires VTK ≥ 9.0 and ships current wheels for Linux, but its community and release cadence are smaller than PyVista's, which has become the more commonly recommended default for new VTK-adjacent Python code; Mayavi remains relevant chiefly where its Traits-based UI framework (Qt panels, dialogs bound to Traited VTK properties) is itself the point.
+
+### itkwidgets — Jupyter Widget for ITK and VTK Data
+
+[itkwidgets](https://github.com/InsightSoftwareConsortium/itkwidgets) is a purpose-built Jupyter widget, maintained by the Insight Software Consortium (the ITK project), for interactive 2D/3D viewing of images, point sets, and geometry directly from a notebook cell — distinct from PyVista and Mayavi in that it targets *browser-based* rendering rather than wrapping the desktop VTK object model. Its viewer is "built on itk.js and vtk.js," [Source](https://github.com/InsightSoftwareConsortium/itkwidgets) i.e. the same ES6 vtk.js runtime documented in Section 9.1, reached from Python via the itk-wasm bridge covered in that section — a notebook cell effectively runs a small vtk.js/itk-wasm application, communicating with the Python kernel through the standard Jupyter widget protocol rather than streaming a rendered image or raw VTK render-window state:
 
 ```python
 from itkwidgets import view
@@ -1021,6 +1195,8 @@ reader.Update()
 
 view(reader.GetOutput())   # interactive 3D volume rendering in Jupyter cell
 ```
+
+itkwidgets correctly loads and displays every file type ITK supports, including anisotropic images, and accepts VTK datasets, ITK images, and plain NumPy arrays interchangeably as its `view()` argument. [Source](https://github.com/InsightSoftwareConsortium/itkwidgets/blob/main/README.md) Where PyVista's `trame` backend (above) and the older `ipyvtk-simple`/`panel` widgets embed a genuine VTK render window (server- or client-rendered) inside a notebook cell, itkwidgets instead embeds vtk.js — the two approaches trade the same server/client rendering choice described throughout this chapter's headless and browser sections, just entered from the Jupyter side rather than a standalone web app.
 
 ### 3D Slicer
 
@@ -1069,6 +1245,18 @@ VTK's volume rendering and Blender Cycles address different ends of the visualiz
 
 A common workflow in scientific publication: visualize in ParaView to understand data structure and tune transfer functions, then export a surface mesh (`.ply` or `.obj`) from VTK and import into Blender for final publication-quality rendering with Cycles. VTK can write `.ply` and `.obj` via `vtkPLYWriter` and `vtkOBJWriter`.
 
+### VTK versus FOSS Alternatives — VisIt, Ascent/Alpine, and yt
+
+VTK has few genuine open-source peers at its own layer — a general-purpose, GPU-accelerated dataset model plus rendering pipeline. Most tools that look like alternatives are built *on* VTK rather than competing with it; the closest independent competitors sit one layer up (the application) or address a narrower problem than VTK's full generality.
+
+**VisIt (LLNL)** is the direct open-source competitor to *ParaView*, not to VTK — it uses "the Visualization Toolkit (VTK) library for its data model and many of its visualization algorithms," with VisIt's own engineering focused on parallelization for very large datasets, non-standard data models (AMR meshes, mixed-material zones), and a plugin architecture with well over a hundred database readers. It is BSD-licensed and developed at [github.com/visit-dav/visit](https://github.com/visit-dav/visit). [Source](https://visit-dav.github.io/visit-website/about/) Choosing between ParaView and VisIt is therefore mostly a choice between two mature, VTK-based *applications* with different plugin ecosystems and DOE-lab lineages (Kitware/DOE for ParaView, LLNL for VisIt), not a choice about the underlying visualization engine.
+
+**Ascent / Alpine (LLNL, part of the Exascale Computing Project)** is a genuine architectural alternative for the in-situ use case Catalyst 2.0 covers (Section 8): rather than embedding VTK's full C++ class hierarchy, Ascent is built on **VTK-m** (Section 6) — the header-only, GPU-portable filter library already covered earlier in this chapter — deliberately avoiding an OpenGL dependency and minimizing the runtime footprint linked into a simulation binary. It has been demonstrated performing in-situ filtering and ray tracing across 16,384 GPUs on LLNL's Sierra cluster. [Source](https://www.ascent-dav.org/tutorial/2023_08_22_ascent_intro.pdf) Because Catalyst 2.0's Conduit Mesh Blueprint is the same in-memory description Ascent consumes, a simulation instrumented for Catalyst can typically swap in Ascent as the implementation loaded at runtime rather than needing two separate integrations — Ascent is a genuine competitor to *how* in-situ rendering gets done, but a complementary one at the API level. [Source](https://www.exascaleproject.org/highlight/alpine-zfp-addresses-analysis-visualization-and-data-reduction-needs-for-exascale-science-applications/)
+
+**yt** is the one tool here with no VTK dependency at all: a pure Python/NumPy analysis and visualization toolkit built for astrophysical simulation data (originally) and now a broader set of volumetric, multi-resolution, and particle datasets. It trades VTK's general-purpose C++ dataset/filter architecture for a domain-specific, scriptable Python stack — well suited to analysis-heavy astrophysics workflows where the visualization is one step in a larger NumPy/Matplotlib-based pipeline, but without VTK's breadth of dataset types (Section 2), GPU volume rendering path (Section 4), or WebGPU/ANARI backends (Section 5). [Source](https://yt-project.org/about.html)
+
+None of the three displaces VTK's role as the shared data-model-and-filter substrate underneath the Python scientific-visualization ecosystem: `PyVista` and `Mayavi` (above) — the two most widely used "friendlier front door" Python wrappers around VTK, offering Pythonic object APIs over the same `vtkPolyData`/`vtkImageData`/mapper classes documented in Section 2 — are themselves built on top of VTK rather than being alternatives to it, the same relationship `itkwidgets` (above) and 3D Slicer (above) have to VTK (and, for itkwidgets, to vtk.js — Section 9.1 — one level further down).
+
 ---
 
 ## 11. Integrations
@@ -1095,7 +1283,7 @@ This chapter connects to the following chapters across the book:
 
 **Ch34 — ANGLE and Ch35 — Dawn and WebGPU**: vtk.js's two browser rendering backends (Section 9) run on top of these layers — `vtkOpenGLRenderWindow` through the browser's WebGL implementation (Ch34) and `vtkWebGPURenderWindow` through the browser's WebGPU implementation (Ch35, and Dawn specifically on Linux desktop Chromium, mirroring VTK's own C++ WebGPU backend in Section 5).
 
-**Ch98 — WebAssembly and WebGPU as a Deployment Target**: itk-wasm, the WebAssembly-compiled ITK library that vtk.js relies on for DICOM and NIfTI decoding (Section 9), and VTK's own `VTK_WRAP_JAVASCRIPT` Emscripten build (Section 1) are both instances of the WASM deployment patterns covered in Ch98.
+**Ch98 — WebAssembly and WebGPU as a Deployment Target**: itk-wasm, the WebAssembly-compiled ITK library that vtk.js relies on for DICOM and NIfTI decoding (Section 9.1), and vtk-wasm, VTK's own `VTK_WRAP_JAVASCRIPT` Emscripten build of the full C++ library (Section 9.2), are both instances of the WASM deployment patterns covered in Ch98.
 
 **Ch203 — WebXR**: vtk.js's `RenderingWebXR` module (Section 9) exposes the WebXR Device API described in Ch203, letting browser-rendered volumes and isosurfaces be viewed in a VR or AR headset without a native SDK.
 
@@ -1107,6 +1295,33 @@ This chapter connects to the following chapters across the book:
 - [The Architecture of Open Source Applications — VTK](https://aosabook.org/en/v1/vtk.html)
 - [VTK Coding Conventions](https://docs.vtk.org/en/latest/developers_guide/coding_conventions.html)
 - [vtkusers mailing list — VTK C++ Exception handling?](https://vtk.org/pipermail/vtkusers/2011-July/068927.html)
+- [VTK Build Settings — VTK_WRAP_JAVASCRIPT and wrapping options](https://docs.vtk.org/en/latest/build_instructions/build_settings.html)
+- [Building VTK for WebAssembly with Emscripten](https://docs.vtk.org/en/latest/advanced/build_wasm_emscripten.html)
+- [vtk-wasm architecture and demo gallery](https://kitware.github.io/vtk-wasm/)
+- [Kitware/vtk-wasm Repository](https://github.com/Kitware/vtk-wasm)
+- [Kitware — Introducing WebAssembly Support in VTK](https://www.kitware.com/introducing-webassembly-support-in-vtk/)
+- [Kitware — VTK.wasm and its trame integration](https://www.kitware.com/vtk-wasm-and-its-trame-integration/)
+- [ParaView Documentation — Remote and Parallel Visualization](https://docs.paraview.org/en/latest/ReferenceManual/parallelDataVisualization.html)
+- [ParaView Documentation — Command Line Arguments](https://docs.paraview.org/en/latest/UsersGuide/commandLineArguments.html)
+- [IceT Users' Guide and Reference](https://www.sandia.gov/app/uploads/sites/150/2021/10/IceTUsersGuide-2-0.pdf)
+- [ParaView Documentation — Python & Batch Tutorial](https://docs.paraview.org/en/latest/Tutorials/ClassroomTutorials/pythonAndBatchParaViewAndPython.html)
+- [ParaView/Python `simple.animation` module](https://www.paraview.org/paraview-docs/latest/python/paraview.simple.animation.html)
+- [ParaView — Anatomy of a Catalyst Python Module (Version 2.0)](https://www.paraview.org/paraview-docs/latest/cxx/CatalystPythonScriptsV2.html)
+- [ParaView Documentation — Catalyst Getting Started](https://docs.paraview.org/en/latest/Catalyst/getting_started.html)
+- [About VisIt (visit-dav)](https://visit-dav.github.io/visit-website/about/)
+- [visit-dav/visit Repository](https://github.com/visit-dav/visit)
+- [Ascent Introduction Tutorial (2023)](https://www.ascent-dav.org/tutorial/2023_08_22_ascent_intro.pdf)
+- [Alpine/ZFP — Exascale Computing Project Highlight](https://www.exascaleproject.org/highlight/alpine-zfp-addresses-analysis-visualization-and-data-reduction-needs-for-exascale-science-applications/)
+- [The yt Project — About](https://yt-project.org/about.html)
+- [PyVista — Why PyVista?](https://docs.pyvista.org/getting-started/why)
+- [PyVista — Transitioning from VTK to PyVista](https://tutorial.pyvista.org/tutorial/06_vtk/a_1_transition_vtk.html)
+- [PyVista — Basic API Usage](https://docs.pyvista.org/user-guide/simple.html)
+- [PyVista — Trame Jupyter Backend](https://docs.pyvista.org/user-guide/jupyter/trame.html)
+- [tvtk — An Introduction to Traited VTK](https://tvtk.readthedocs.io/en/latest/README.html)
+- [Mayavi — mlab: Python Scripting for 3D Plotting](https://docs.enthought.com/mayavi/mayavi/mlab.html)
+- [Mayavi — Assembling Pipelines with mlab](https://docs.enthought.com/mayavi/mayavi/mlab_pipeline.html)
+- [enthought/mayavi Repository](https://github.com/enthought/mayavi)
+- [InsightSoftwareConsortium/itkwidgets Repository and README](https://github.com/InsightSoftwareConsortium/itkwidgets/blob/main/README.md)
 - [VTK 9.6 Release Notes](https://docs.vtk.org/en/latest/release_details/9.6.html)
 - [VTK 9.4 Release Notes](https://docs.vtk.org/en/latest/release_details/9.4.html)
 - [VTK 9.3 Release Notes](https://docs.vtk.org/en/latest/release_details/9.3.html)
@@ -1146,7 +1361,7 @@ This chapter connects to the following chapters across the book:
 - ANARI integration within ParaView is planned to expose path-traced rendering (via VisRTX or OSPRay) as a first-class render mode selectable in the GUI, not just via the Python API.
 
 ### Long-term
-- As WebAssembly and WebGPU mature, a full server-free VTK pipeline running in the browser (built via Emscripten with `VTK_WRAP_JAVASCRIPT`) is a plausible trajectory, enabling scientific visualization applications to run entirely client-side with no HPC backend required for moderate dataset sizes.
+- A full server-free VTK pipeline running in the browser is no longer just a trajectory: vtk-wasm (Section 9.2) already compiles the C++ library itself via Emscripten with `VTK_WRAP_JAVASCRIPT`, demonstrated on datasets up to several hundred thousand triangles/voxels. What remains open is the ceiling for genuinely HPC-scale datasets — WASM linear-memory limits (mitigated but not eliminated by `VTK_WEBASSEMBLY_64_BIT`), single-tab GPU memory budgets, and the download cost of a compiled binary carrying the full linked module set — versus the smaller, hand-picked footprint of a vtk.js-only deployment.
 - Deep learning-based upsampling and reconstruction filters (leveraging ONNX inference, added experimentally in VTK 9.6) may become first-class VTK pipeline stages, enabling AI-assisted volume rendering and super-resolution for clinical and simulation datasets.
 - Convergence of the Catalyst in-situ API with streaming HPC data fabrics (ADIOS2, RDMA-based) and cloud-native object stores (S3-compatible) is a stated direction for post-Exascale workflows, where VTK acts as the on-node serialization and analysis layer rather than a batch post-processor.
 
