@@ -10,6 +10,7 @@
    - [1.1 What is Scientific Visualization?](#11-what-is-scientific-visualization)
    - [1.2 What is VTK?](#12-what-is-vtk)
    - [1.3 What is ParaView?](#13-what-is-paraview)
+   - [Design Note: Is VTK's Architecture Showing Its Age?](#design-note-is-vtks-architecture-showing-its-age)
 2. [VTK Data Model](#2-vtk-data-model)
 3. [VTK Rendering Backends on Linux](#3-vtk-rendering-backends-on-linux)
 4. [GPU Volume Rendering](#4-gpu-volume-rendering)
@@ -18,6 +19,7 @@
 7. [VTK I/O — Scientific Data Formats](#7-vtk-io--scientific-data-formats)
 8. [ParaView — The Flagship VTK Application](#8-paraview--the-flagship-vtk-application)
 9. [VTK on Headless Linux Servers and Containers](#9-vtk-on-headless-linux-servers-and-containers)
+   - [9.1 vtk.js — Browser-Based VTK](#vtkjs--browser-based-vtk)
 10. [Integration with the Scientific Ecosystem](#10-integration-with-the-scientific-ecosystem)
 11. [Integrations](#11-integrations)
 
@@ -128,6 +130,20 @@ VTK's pipeline model is demand-driven: sources, filters, and sinks are connected
 ParaView is an open-source, parallel scientific visualization application built on top of VTK. Its distinguishing design is a client-server architecture suited to large-scale HPC datasets: the ParaView server (`pvserver`) executes VTK filters in parallel across MPI ranks on the compute cluster, composites the rendered tile images using the IceT parallel image compositing library, and streams a compressed frame to a thin GUI client running on the user's workstation. This separation allows datasets that exceed the memory capacity of any single node — hundreds of gigabytes or more — to be explored interactively without transferring raw simulation data across the network.
 
 Beyond the parallel rendering architecture, ParaView extends VTK with its own reader and filter plugin system, the Catalyst in-situ analysis framework for embedding visualization directly inside a running simulation without writing full checkpoint files, and the trame web framework for deploying VTK-backed visualization as a browser application. On Linux, `pvserver` typically executes under a job scheduler alongside MPI-parallel simulation codes and uses VTK's EGL render window backend for headless GPU rendering on compute nodes equipped with NVIDIA or AMD GPUs. ParaView and VTK share a CMake-based build system and are co-developed on overlapping release schedules; the required VTK version is pinned in ParaView's `CMakeLists.txt`. [Source](https://www.paraview.org/paraview-guide/)
+
+### Design Note: Is VTK's Architecture Showing Its Age?
+
+VTK's core object model dates to 1993, and several of its defining mechanisms predate the C++ standard library features that would now be the default choice. This is not a matter of opinion — the toolkit's own architects have written candidly about which decisions they still endorse and which they consider regrets.
+
+**Intrusive reference counting instead of RAII/GC.** Every `vtkObject` subclass carries its own `Register()`/`UnRegister()` count rather than relying on garbage collection or exclusively on `std::shared_ptr`. The rationale, per the toolkit's own architecture writeup, is that visualization datasets can be enormous — "a volume of byte data 1000×1000×1000 in size is a gigabyte in size, and it is not a good idea to leave such data lying around while the garbage collector decides whether or not it is time to release it" — and reference counting also makes the pipeline's routine shallow-copying of arrays between filters cheap. `vtkSmartPointer<T>` was added later as an RAII wrapper around the same underlying mechanism, but plenty of APIs still hand back raw pointers, and correct lifetime management still depends on conventions (protected constructors/destructors, deleted copy/assignment) rather than the type system. [Source: The Architecture of Open Source Applications — VTK](https://aosabook.org/en/v1/vtk.html) [Source: VTK Coding Conventions](https://docs.vtk.org/en/latest/developers_guide/coding_conventions.html)
+
+**Macro-generated boilerplate.** `vtkTypeMacro`, `vtkSetMacro`/`vtkGetMacro`, and `vtkStandardNewMacro` generate RTTI, accessors, and factory construction via the preprocessor rather than templates. This is not purely cosmetic: the Set/Get macros also update the object's modified-time (`MTime`) stamp that drives the demand-driven pipeline's dirty-checking, so bypassing them for a hand-written setter is, in the architects' own words, "a particularly pernicious bug" — the pipeline silently fails to re-execute because it never observed the change.
+
+**A pipeline the authors call too complex.** The three-request (`RequestInformation`/`RequestUpdateExtent`/`RequestData`) demand-driven executive that Section 2 and Section 3 build on was not part of VTK's original design — an explicit `vtkExecutive` object was added only after the implicit version proved unworkable. VTK's own architecture chapter states plainly: "the data processing pipeline in VTK is still too complex. Methods are under way to simplify and refactor this subsystem." [Source: AOSA — VTK](https://aosabook.org/en/v1/vtk.html)
+
+**No C++ exceptions.** VTK reports errors through `vtkErrorMacro`/`vtkWarningMacro` plus manual return-code checks rather than throwing. The practical failure mode this creates — flagged repeatedly on the VTK mailing lists — is that an error early in a pipeline does not stop downstream filters from executing on bad data unless every intermediate stage explicitly checks `GetErrorCode()` or `vtkAlgorithm::GetErrorOccurred()`. [Source: vtkusers mailing list, "VTK C++ Exception handling?"](https://vtk.org/pipermail/vtkusers/2011-July/068927.html)
+
+None of this makes VTK unfit for its job — it makes it a large, load-bearing codebase from an era with different C++ idioms, still under active renovation rather than left to rot. The modernization efforts described elsewhere in this chapter are direct responses to these exact pain points: `vtkArrayDispatch` (Section 6) replaces per-element virtual-call dispatch with compile-time type resolution; `vtkImplicitArray` (Section 2) avoids materializing memory for constant or affine fields; the `>>` pipeline-connection operator (Section 1) is a small but real ergonomics fix over chained `SetInputConnection()` calls; and the VTK-m device-adapter split (Section 6) moves the performance-critical filter code onto a modern, GPU-portable execution model entirely separate from the legacy `vtkAlgorithm` dispatch path. The pattern across all four is the same: keep the 30-year-old object model and pipeline contract stable for the enormous body of dependent code (ParaView, 3D Slicer, and downstream HPC applications), and modernize underneath it incrementally rather than through a rewrite.
 
 ---
 
@@ -862,7 +878,53 @@ docker run --rm --gpus all \
 
 ### vtk.js — Browser-Based VTK
 
-For scenarios where server-side rendering is impractical, [vtk.js](https://kitware.github.io/vtk-js/) provides a JavaScript/TypeScript implementation of VTK's core algorithms running entirely in the browser via WebGL or WebGPU, with no server required. vtk.js supports volume rendering (GPU ray casting via WebGL `OES_texture_3D`), surface rendering, and point clouds. [Source](https://github.com/Kitware/vtk-js)
+For scenarios where server-side rendering is impractical, [vtk.js](https://kitware.github.io/vtk-js/) provides a JavaScript implementation of VTK's core algorithms running entirely in the browser, with no server required. Unlike vtk-wasm (Section 2's `vtkObjectManager` discussion), which compiles the actual C++ VTK to WebAssembly, vtk.js is a **ground-up rewrite in ES6 JavaScript** — it does not share a code base with the C++ library, though it deliberately mirrors its object model and naming conventions so that a developer familiar with C++ VTK or ParaView can transfer that knowledge directly. The project is maintained at [github.com/Kitware/vtk-js](https://github.com/Kitware/vtk-js) and published to npm as `@kitware/vtk.js`. [Source](https://github.com/Kitware/vtk-js)
+
+**Object model.** vtk.js reproduces the source → filter → mapper → actor → renderer → render-window pipeline from C++ VTK, but objects are created through `newInstance()` factory functions rather than constructors (a consequence of the mixin-based class system used throughout the codebase), and properties are accessed through generated `get`/`set` methods rather than public fields:
+
+```javascript
+import '@kitware/vtk.js/Rendering/Profiles/Geometry';
+
+import vtkFullScreenRenderWindow from '@kitware/vtk.js/Rendering/Misc/FullScreenRenderWindow';
+import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor';
+import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper';
+import vtkConeSource from '@kitware/vtk.js/Filters/Sources/ConeSource';
+
+// vtkFullScreenRenderWindow bundles a RenderWindow + Renderer + Interactor
+// into the full browser viewport — the JS analogue of the C++ Hello World
+// in Section 1 (vtkRenderWindow + vtkRenderWindowInteractor)
+const fullScreenRenderer = vtkFullScreenRenderWindow.newInstance();
+const renderer = fullScreenRenderer.getRenderer();
+const renderWindow = fullScreenRenderer.getRenderWindow();
+
+const coneSource = vtkConeSource.newInstance({ height: 1.0 });
+
+const mapper = vtkMapper.newInstance();
+mapper.setInputConnection(coneSource.getOutputPort());
+
+const actor = vtkActor.newInstance();
+actor.setMapper(mapper);
+
+renderer.addActor(actor);
+renderer.resetCamera();
+renderWindow.render();
+```
+
+[Source: VTK.js Vanilla Getting-Started Guide](https://kitware.github.io/vtk-js/docs/vtk_vanilla.html)
+
+**Rendering backends.** vtk.js ships two render-window implementations selected at runtime rather than build time: `vtkOpenGLRenderWindow`, the default WebGL 2 backend, and `vtkWebGPURenderWindow`. `vtkFullScreenRenderWindow` picks between them based on a `defaultViewAPI: 'WebGPU'` constructor option or a `?viewAPI=WebGPU` URL query parameter, registering each backend's view constructor under a string key (`'WebGL'` / `'WebGPU'`) via `registerViewConstructor()`. This mirrors the C++ side's shift to runtime `glad` loading (Section 3) in spirit — the same object graph can be rendered through either API without recompilation, here without a build step at all. The WebGPU backend is also where vtk.js does its newest rendering work: it was the first vtk.js backend to implement physically based rendering (metallic/roughness PBR materials), which became its default lighting model. [Source](https://www.kitware.com/introducing-physically-based-rendering-to-vtk-js-webgpu/) [Source: WebGPU RenderWindow API](https://kitware.github.io/vtk-js/api/Rendering_WebGPU_RenderWindow.html)
+
+**Data I/O and the ITK-Wasm bridge.** vtk.js includes native readers for `.vtp`/`.vti` (VTK XML), `.obj`, `.stl`, and — as of v35 — `.ply`, `.gltf`, `.tiff`, and IFC, plus a GCode reader and OBJ export. It does not include a native DICOM reader; DICOM, NIfTI, and other medical formats are instead decoded by [itk-wasm](https://github.com/InsightSoftwareConsortium/ITK-Wasm) (ITK's algorithms compiled to WebAssembly) and handed to vtk.js through `ITKHelper`, which converts an itk-wasm image object into a `vtkImageData` without a data copy. This division of labour — itk-wasm for format decoding and image processing, vtk.js for the scene graph and GPU upload — is the same pattern 3D Slicer uses on the desktop (Section 10's VTK-ITK bridge), relocated to the browser. [Source](https://github.com/Kitware/itk-vtk-viewer) [Source](https://discourse.vtk.org/t/showing-dicoms-using-vtk-js-and-itk-wasm/14461)
+
+**Volume rendering and widgets.** vtk.js performs GPU ray-cast volume rendering through `vtkVolumeMapper` / `vtkOpenGLVolumeMapper`, the WebGL analogue of `vtkGPUVolumeRayCastMapper` (Section 4), driven by the same `vtkColorTransferFunction`/`vtkPiecewiseFunction` pair used in C++ VTK. As of v35, multi-image volume rendering renders a background image and a segmentation label image as independent GPU textures composited in a single pass — a common requirement for radiotherapy contouring and tumour-segmentation review tools. The `Widgets` module provides interaction primitives — handle widgets, a reslice-cursor widget for multi-planar reformatting (MPR) of medical volumes, and (new in v35) a `TransformControlsWidget` for interactively translating, rotating, and scaling actors. [Source: VTK.js v35 Release](https://www.kitware.com/vtk-js-v35-release/)
+
+**WebXR.** vtk.js v35 (March 2026) added `RenderingWebXR`, letting a render window request an immersive VR or AR session through the browser's [WebXR Device API](https://www.w3.org/TR/webxr/) — the same standard covered in Chapter 203 — so that volume renderings of medical images or CFD isosurfaces can be viewed head-mounted directly from a vtk.js page, with no native VR SDK involved. [Source](https://www.kitware.com/vtk-js-transforms-web-based-visualization-with-immersive-virtual-and-augmented-reality/)
+
+**Applications built on vtk.js.** [itk-vtk-viewer](https://github.com/Kitware/itk-vtk-viewer) is Kitware's reference 2D/3D viewer for images, meshes, and point sets, combining itk-wasm I/O with vtk.js rendering behind a thin web UI; it is commonly launched from Python (`itkwidgets`, Section 10) or as a standalone drag-and-drop page. **VolView** is Kitware's fuller browser-based DICOM viewer built the same way, adding cinematic volume rendering and segmentation tools with no server-side component required. **Glance**, by contrast, is a vtk.js/ParaViewWeb client that *does* talk to a server — it drives a remote `pvserver` or `trame` backend, occupying the "local rendering" role described in the trame subsection above: geometry streamed from the server is rendered by the client's own GPU via vtk.js instead of the server rendering and streaming a compressed image.
+
+**Interop with three.js.** vtk.js and three.js are independent scene-graph libraries that each expect to own the WebGL/WebGPU context and render loop, so there is no supported way to embed one inside the other's canvas, and Kitware does not offer a first-party bridge. Two narrower interop paths exist instead. First, at the *file* level: three.js ships its own `VTKLoader`, which parses legacy `.vtk` files directly into a `THREE.BufferGeometry` — but only the `POLYDATA` dataset type in ASCII or binary, with no support for the VTK XML formats (`.vtp`/`.vtu`, Section 7), structured/rectilinear/unstructured grids, or appended data; it has no dependency on the vtk.js library itself. [Source](https://threejs.org/docs/pages/VTKLoader.html) Second, at the *object* level, for applications that want vtk.js's readers and filter pipeline but three.js doing the drawing: run vtk.js headless, skipping its `Rendering` module, and pull the typed arrays off the mapper's input directly — `mapper.getInputData().getPoints().getData()` for vertex positions and the equivalent calls on `getPolys()`/`getPointData().getNormals()` — to populate a `THREE.BufferGeometry`'s `position`/`index`/`normal` attributes by hand. Polygon-to-triangle conversion and any scale or coordinate-frame bookkeeping are the caller's responsibility; no library automates this hand-off. [Source: VTK Discourse — Integrating vtk.js into a Babylon.js GUI](https://discourse.vtk.org/t/integrating-vtk-js-capabilities-into-a-babylon-js-centric-gui/2670)
+
+For the WebGL and WebGPU implementations vtk.js runs against, see Chapter 34 (ANGLE) and Chapter 35 (Dawn and WebGPU); for the underlying immersive API, see Chapter 203 (WebXR); for compiling C++ VTK itself to WebAssembly (`VTK_WRAP_JAVASCRIPT`, Section 1 and the Long-term roadmap below), see Chapter 98.
 
 ### trame — Python Web Application Framework
 
@@ -1031,11 +1093,20 @@ This chapter connects to the following chapters across the book:
 
 **Ch176 — OpenCASCADE**: VTK and OCCT serve complementary roles in the Linux scientific application ecosystem. Section 10 of this chapter compares their data models, use cases, and geometry representations. FreeCAD bridges both toolkits.
 
+**Ch34 — ANGLE and Ch35 — Dawn and WebGPU**: vtk.js's two browser rendering backends (Section 9) run on top of these layers — `vtkOpenGLRenderWindow` through the browser's WebGL implementation (Ch34) and `vtkWebGPURenderWindow` through the browser's WebGPU implementation (Ch35, and Dawn specifically on Linux desktop Chromium, mirroring VTK's own C++ WebGPU backend in Section 5).
+
+**Ch98 — WebAssembly and WebGPU as a Deployment Target**: itk-wasm, the WebAssembly-compiled ITK library that vtk.js relies on for DICOM and NIfTI decoding (Section 9), and VTK's own `VTK_WRAP_JAVASCRIPT` Emscripten build (Section 1) are both instances of the WASM deployment patterns covered in Ch98.
+
+**Ch203 — WebXR**: vtk.js's `RenderingWebXR` module (Section 9) exposes the WebXR Device API described in Ch203, letting browser-rendered volumes and isosurfaces be viewed in a VR or AR headset without a native SDK.
+
 ---
 
 *References consulted for this chapter:*
 
 - [VTK Repository](https://gitlab.kitware.com/vtk/vtk) — primary source
+- [The Architecture of Open Source Applications — VTK](https://aosabook.org/en/v1/vtk.html)
+- [VTK Coding Conventions](https://docs.vtk.org/en/latest/developers_guide/coding_conventions.html)
+- [vtkusers mailing list — VTK C++ Exception handling?](https://vtk.org/pipermail/vtkusers/2011-July/068927.html)
 - [VTK 9.6 Release Notes](https://docs.vtk.org/en/latest/release_details/9.6.html)
 - [VTK 9.4 Release Notes](https://docs.vtk.org/en/latest/release_details/9.4.html)
 - [VTK 9.3 Release Notes](https://docs.vtk.org/en/latest/release_details/9.3.html)
@@ -1048,6 +1119,12 @@ This chapter connects to the following chapters across the book:
 - [VTK ANARI Module](https://docs.vtk.org/en/latest/release_details/9.4/add-anari-rendering-capability.html)
 - [ANARI Standard — Khronos](https://www.khronos.org/anari/)
 - [vtk.js Repository](https://github.com/Kitware/vtk-js)
+- [VTK.js Vanilla Getting-Started Guide](https://kitware.github.io/vtk-js/docs/vtk_vanilla.html)
+- [VTK.js v35 Release Notes](https://www.kitware.com/vtk-js-v35-release/)
+- [Introducing Physically Based Rendering to VTK.js WebGPU](https://www.kitware.com/introducing-physically-based-rendering-to-vtk-js-webgpu/)
+- [itk-vtk-viewer Repository](https://github.com/Kitware/itk-vtk-viewer)
+- [three.js VTKLoader Documentation](https://threejs.org/docs/pages/VTKLoader.html)
+- [VTK Discourse — Integrating vtk.js into a Babylon.js GUI](https://discourse.vtk.org/t/integrating-vtk-js-capabilities-into-a-babylon-js-centric-gui/2670)
 - [trame Documentation](https://trame.readthedocs.io/en/latest/)
 - [vtkmodules.util.numpy_support](https://docs.vtk.org/en/latest/api/python/vtkmodules/vtkmodules.util.numpy_support.html)
 - [3D Slicer as Imaging Platform](https://pmc.ncbi.nlm.nih.gov/articles/PMC3466397/)
