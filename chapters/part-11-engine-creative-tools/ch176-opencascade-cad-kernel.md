@@ -38,9 +38,12 @@
 7. [OCAF: The Application Framework](#7-ocaf-the-application-framework)
 8. [FreeCAD: OCCT as a CAD Kernel](#8-freecad-occt-as-a-cad-kernel)
 9. [OCCT Alternatives and Higher-Level Abstractions](#9-occt-alternatives-and-higher-level-abstractions)
-   - 9.1 [Rust-Native and Constraint-Solver Alternatives](#91-rust-native-and-constraint-solver-alternatives)
-   - 9.2 [SolveSpace](#92-solvespace)
-   - 9.3 [Higher-Level Abstractions and Web Frameworks Built on OCCT](#93-higher-level-abstractions-and-web-frameworks-built-on-occt)
+   - 9.1 [CodeCAD: Code-First Solid Modeling as a Paradigm](#91-codecad-code-first-solid-modeling-as-a-paradigm)
+   - 9.2 [Rust-Native and Constraint-Solver Alternatives](#92-rust-native-and-constraint-solver-alternatives)
+   - 9.3 [SolveSpace](#93-solvespace)
+   - 9.4 [Python Bindings and Frameworks Built on OCCT](#94-python-bindings-and-frameworks-built-on-occt)
+   - 9.5 [Web and WebAssembly Frameworks Built on OCCT](#95-web-and-webassembly-frameworks-built-on-occt)
+   - 9.6 [AI-Assisted and Generative CAD](#96-ai-assisted-and-generative-cad)
 10. [Building and Packaging on Linux](#10-building-and-packaging-on-linux)
     - 10.1 [CMake Build](#101-cmake-build)
     - 10.2 [Distribution Packages](#102-distribution-packages)
@@ -326,6 +329,16 @@ BRepPrimAPI_MakeCone cone(15.0, 5.0, 30.0);
 For sweeps: `BRepPrimAPI_MakePrism(profile, direction)` extrudes a wire/face linearly; `BRepPrimAPI_MakeRevol(profile, axis, angle)` revolves it.
 
 ### 4.3 Fillets, Chamfers, and Offsets
+
+Before the API: what these operations actually construct, geometrically, is worth spelling out, because the hard part of implementing them is never the easy case shown in a tutorial — it's the corner where three filleted edges meet.
+
+**Fillets as rolling-ball/rolling-circle blends.** A constant-radius edge fillet is the surface swept by a circle of radius *R* rolling along the edge while staying tangent to both adjacent faces — equivalently, every point on the fillet surface is at distance *R* from an implicit "spine" curve offset inward from the edge. This is why fillets are computed, not merely drawn: the blend surface's cross-section is only literally circular when both adjacent faces are planar; against a curved face (a fillet on the edge where a cylinder meets a plane, say) the rolling-ball construction still holds, but the resulting blend surface is a general swept surface, not a torus patch. The critical difficulty is **vertex blending** — where three or more filleted edges converge at a corner, the individual rolling-ball surfaces do not simply meet at a shared boundary; OCCT's fillet algorithm has to solve for a corner "cap" surface that blends all the incoming fillet surfaces together with tangent (G1) continuity. Practitioners on the OCCT forum repeatedly trace `BRepFilletAPI_MakeFillet::Build()` failures on real-world models back to exactly this corner-solving step rather than to the per-edge sweep itself [Source](https://dev.opencascade.org/content/brepfilletapimakefillet-fillet-failed); a robust CAD kernel spends a correspondingly large share of its fillet code on these corner cases rather than on the single-edge case the name describes. **Variable-radius fillets** replace the constant *R* with a radius that varies along the spine (typically as a linear or Hermite-interpolated function of arc length), which turns even a single filleted edge from a swept-circle problem into a swept-varying-conic problem, compounding the corner-blending problem further.
+
+**Chamfers as flat bevels, not curved blends.** A chamfer replaces a sharp edge with a single flat (usually planar) face at a specified offset from each adjacent face, rather than a rounded transition — geometrically simpler than a fillet in the two-face case (the chamfer face is just a ruled surface between two offset curves), but it inherits the same vertex-blending difficulty at corners where multiple chamfered edges converge, since OCCT still has to construct a consistent corner cap. Chamfers are parameterized either symmetrically (equal offset distance from both faces) or asymmetrically (two independent distances, or one distance plus an angle) — real machined parts nearly always specify chamfers by distance-and-angle because that maps directly to a chamfering tool's geometry, not by two distances.
+
+**Continuity, not just contact.** CAD surfaces are usually described by how smoothly they join a neighbor: **G0** (positional continuity — surfaces touch, tangents can be discontinuous, producing a visible crease), **G1** (tangent-plane continuity — no crease, but curvature can jump, visible as a highlight-line kink under specular lighting), and **G2** (curvature continuity — used for Class-A surfacing where reflections must flow smoothly, e.g. automotive body panels). OCCT encodes exactly this ladder as the `GeomAbs_Shape` enum (`GeomAbs_C0`, `GeomAbs_G1`, `GeomAbs_C1`, `GeomAbs_G2`, `GeomAbs_C2`, ... up to `GeomAbs_CN`), distinguishing geometric continuity (G*n* — a reparametrization exists that makes the join C*n*) from the stricter parametric continuity (C*n* — the derivatives already agree without reparametrization). [Source: `src/FoundationClasses/TKMath/GeomAbs/GeomAbs_Shape.hxx`] A fillet is normally constructed to be G1 with both adjacent faces (tangent, no crease); a chamfer's flat face is deliberately only G0 with its neighbors, since a chamfer is meant to look like a flat cut, not a smoothed transition. This G0/G1/G2 vocabulary recurs throughout NURBS surface modeling (§1.3) — a fillet is, in effect, a purpose-built G1-continuous blend surface generator, and understanding it that way explains both why it's harder than a chamfer and why "just increase the radius slightly" sometimes turns a failing fillet into a succeeding one: a larger radius gives the corner-blend solver more room to find a valid G1 cap.
+
+**Offsets: uniform distance, not scaling.** An offset surface or shape moves every point of the input a constant distance along its local normal — distinct from a scale transform, which moves points proportionally to their distance from a center. Offsetting is straightforward for a single convex face but becomes ill-posed wherever the offset distance exceeds the local radius of curvature: offsetting a concave region inward by more than its radius causes the offset surface to self-intersect — self-intersection is a well-documented hazard of NURBS offset and sweep operations generally, not an OCCT-specific quirk [Source](https://dl.acm.org/doi/full/10.1145/3727620) — and detecting/trimming it is exactly what `BRepOffsetAPI_MakeThickSolid` (below) has to do when hollowing out a shape with tight internal fillets. OCCT's own modeling-algorithms guide documents `BRepOffsetAPI_MakeThickSolid`'s shelling operator as rounding or intersecting adjacent faces along their edges depending on local convexity for precisely this reason. [Source](https://dev.opencascade.org/doc/overview/html/occt_user_guides__modeling_algos.html)
 
 Toolkit `TKFillet`, `BRepFilletAPI_MakeFillet` rounds sharp edges with a constant or variable radius. [Source: `src/ModelingAlgorithms/TKFillet/BRepFilletAPI/BRepFilletAPI_MakeFillet.hxx`]
 
@@ -628,9 +641,43 @@ Handle<XCAFDoc_ColorTool> colorTool = XCAFDoc_DocumentTool::ColorTool(doc->Main(
 
 OCCT 8.0.0 delivers a **75% improvement** in STEP read throughput compared to 7.7.x, achieved by parallelising the entity-mapping pass.
 
+**What a STEP file actually looks like.** STEP (formally ISO 10303-21, "Clear Text Encoding of the Exchange Structure") is plain ASCII: a `HEADER` section describing the file and which EXPRESS schema (the application protocol — `AUTOMOTIVE_DESIGN` for AP214, or the newer combined `AP242MANAGEDMODELBASED3DENGINEERINGMIMLF` schema) governs the entities that follow, then a `DATA` section that is a flat list of numbered entity instances (`#10`, `#11`, ...) referencing each other by number rather than by nesting — a `PRODUCT_DEFINITION` points at a `PRODUCT_DEFINITION_FORMATION` which points at a `PRODUCT`, and so on:
+
+```step
+ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION(
+/* description */ ('A minimal AP214 example with a single part'),
+/* implementation_level */ '2;1');
+FILE_NAME(
+/* name */ 'demo',
+/* time_stamp */ '2003-12-27T11:57:53',
+/* author */ ('CAD Vendor Example Author'),
+/* organization */ ('Example CAD Software Vendor'),
+/* preprocessor_version */ ' ',
+/* originating_system */ 'IDA-STEP',
+/* authorization */ ' ');
+FILE_SCHEMA (('AUTOMOTIVE_DESIGN { 1 0 10303 214 2 1 1}'));
+ENDSEC;
+DATA;
+#10=ORGANIZATION('O0001','Example CAD Software Vendor','company');
+#11=PRODUCT_DEFINITION_CONTEXT('part definition',#12,'manufacturing');
+#12=APPLICATION_CONTEXT('mechanical design');
+#13=APPLICATION_PROTOCOL_DEFINITION('','automotive_design',2003,#12);
+#14=PRODUCT_DEFINITION('0',$,#15,#11);
+#15=PRODUCT_DEFINITION_FORMATION('1',$,#16);
+#16=PRODUCT('A0001','Test Part 1','',(#18));
+ENDSEC;
+END-ISO-10303-21;
+```
+
+[Source](https://en.wikipedia.org/wiki/ISO_10303-21) A file exported by `STEPControl_Writer` follows exactly this shape but with thousands of entity lines — every `TopoDS_Face` becomes a chain of `ADVANCED_FACE` → `FACE_OUTER_BOUND` → `EDGE_LOOP` → `ORIENTED_EDGE` → `EDGE_CURVE` entities pointing down to `CARTESIAN_POINT`, `DIRECTION`, and `B_SPLINE_SURFACE_WITH_KNOTS` entities — which is why `reader.TransferRoots()` (above) has real interpretive work to do: it is walking exactly this reference graph and reconstructing a `TopoDS_Shape` from it, not merely deserializing a blob.
+
 ### 6.2 IGES and STL
 
 `IGESControl_Reader` / `IGESControl_Writer` (toolkit `TKDEIGES`) mirror the STEP API exactly. IGES (ANSI Y14.26) is an older format with weaker tolerance semantics; imported IGES geometry almost always requires healing via `ShapeFix_Shape`.
+
+**IGES's fixed-column layout.** Unlike STEP's free-form entity list, IGES is a strict 80-column-per-line format split into five sections identified by a letter in column 73: Start (`S`, free-text comments), Global (`G`, sending application, units, drafting standard), Directory Entry (`D`, two 80-column lines per entity — 20 right-justified 8-character fields recording entity type, form, line-font, and pointers into Parameter Data), Parameter Data (`P`, the entity's actual numeric parameters, comma-separated with a trailing semicolon), and Terminate (`T`, record counts for the other four sections). Columns 74–80 of every line hold a monotonically increasing sequence number *within that section* — so a directory-entry error is reported as, e.g., "bad value at D0000042" rather than a byte offset. [Source](https://docs.fileformat.com/cad/iges/) [Source](https://paulbourke.net/dataformats/iges/IGES.pdf) Real IGES files rarely need to be read by eye — `IGESControl_Reader` handles the column parsing — but the fixed layout explains why IGES tooling is comparatively unforgiving of hand-edited files, and why the format has no equivalent of STEP's readable header comments outside the free-form Start section.
 
 ```cpp
 #include <StlAPI_Writer.hxx>
@@ -645,7 +692,28 @@ TopoDS_Shape stlShape;
 StlAPI_Reader().Read(stlShape, "input.stl");
 ```
 
-STL export always triangulates; a tolerance of 0.01–0.1mm is typical for 3D printing workflows.
+STL export always triangulates; a tolerance of 0.01–0.1mm is typical for 3D printing workflows. STL carries no topology and no units — just a flat, unindexed list of triangles, each restated with its own three vertices and outward normal, which is why the format compresses so poorly and why adjacent triangles duplicate every shared-edge vertex:
+
+```text
+solid output
+  facet normal 0.0 0.0 1.0
+    outer loop
+      vertex 0.0 0.0 10.0
+      vertex 10.0 0.0 10.0
+      vertex 10.0 10.0 10.0
+    endloop
+  endfacet
+  facet normal 0.0 0.0 1.0
+    outer loop
+      vertex 0.0 0.0 10.0
+      vertex 10.0 10.0 10.0
+      vertex 0.0 10.0 10.0
+    endloop
+  endfacet
+endsolid output
+```
+
+The binary STL variant replaces this ASCII text with an 80-byte header, a 4-byte triangle count, and 50 bytes per triangle (12 floats for normal + 3 vertices, plus a 2-byte "attribute byte count" most tools leave zero) — an order of magnitude smaller for the same mesh. `StlAPI_Writer::ASCIIMode()` defaults to `true` (ASCII output as shown above); call `stlWriter.ASCIIMode() = false` before `Write()` to get the compact binary form instead. [Source: `src/StlAPI/StlAPI_Writer.hxx`]
 
 ### 6.3 glTF 2.0
 
@@ -682,9 +750,69 @@ reader.Perform("scene.glb", Message_ProgressRange());
 
 Note: glTF stores triangles only — there is no BRep. The read result is a `TopoDS_Compound` of faces with only `Poly_Triangulation` attached (no `Geom_Surface`). Boolean operations on imported glTF geometry require re-fitting surfaces, which OCCT does not do automatically.
 
+**What the .gltf JSON looks like.** Unlike STEP/IGES, glTF is not CAD-native — it's a scene-graph interchange format built around a small JSON document plus binary buffers, and `RWGltf_CafWriter` maps OCCT's XDE assembly tree onto glTF's `nodes`/`meshes`/`accessors` structure rather than onto any B-rep concept:
+
+```json
+{
+  "asset": { "version": "2.0", "generator": "Open CASCADE Technology 7.8.0 [dev.opencascade.org]" },
+  "scene": 0,
+  "scenes": [ { "nodes": [0] } ],
+  "nodes": [ { "mesh": 0, "name": "Part1" } ],
+  "meshes": [ {
+    "primitives": [ {
+      "attributes": { "POSITION": 0, "NORMAL": 1 },
+      "indices": 2,
+      "mode": 4
+    } ]
+  } ],
+  "accessors": [
+    { "bufferView": 0, "componentType": 5126, "count": 24, "type": "VEC3" },
+    { "bufferView": 1, "componentType": 5126, "count": 24, "type": "VEC3" },
+    { "bufferView": 2, "componentType": 5123, "count": 36, "type": "SCALAR" }
+  ],
+  "buffers": [ { "uri": "model.bin", "byteLength": 1152 } ]
+}
+```
+
+[Source](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html) [Source: `src/DataExchange/TKDEGLTF/RWGltf/RWGltf_CafWriter.cxx`] The triangle vertex/normal/index data itself never appears in this JSON — it lives in the referenced binary buffer (`model.bin`, or embedded directly in a `.glb`), which is why glTF round-trips triangulated meshes so efficiently but, as the paragraph above notes, cannot carry the exact surfaces `RWGltf_CafWriter`'s BRep input started from.
+
 ### 6.4 OBJ and PLY
 
 `RWObj_CafReader` (toolkit `TKDEOBJ`, since OCCT 7.4.0) and `RWPly_CafWriter`/`RWPly_CafReader` (toolkit `TKDEPLY`) follow the same `RWMesh_CafReader` pattern. They produce triangulated `TopoDS_Compound` shapes in an XDE document, similar to glTF import.
+
+Both formats are plain text and, unlike glTF, human-editable without tooling — one reason they remain common as a lowest-common-denominator mesh interchange despite predating glTF by decades. OBJ lists vertices, texture coordinates, and normals as top-level records, then faces as 1-indexed references into those lists:
+
+```text
+v 0.0 0.0 10.0
+v 10.0 0.0 10.0
+v 10.0 10.0 10.0
+v 0.0 10.0 10.0
+vn 0.0 0.0 1.0
+f 1//1 2//1 3//1
+f 1//1 3//1 4//1
+```
+
+PLY instead states its element counts and per-vertex property layout explicitly in a header before any data, which lets a reader allocate buffers up front rather than growing them as it parses — the tradeoff OBJ's simpler, count-free syntax does not offer:
+
+```text
+ply
+format ascii 1.0
+element vertex 4
+property float x
+property float y
+property float z
+element face 2
+property list uchar int vertex_indices
+end_header
+0.0 0.0 10.0
+10.0 0.0 10.0
+10.0 10.0 10.0
+0.0 10.0 10.0
+3 0 1 2
+3 0 2 3
+```
+
+Neither format has any concept of an assembly hierarchy on its own — `RWObj_CafReader`/`RWPly_CafReader` synthesize a single flat XDE document node per imported file, which is why multi-part OBJ/PLY assemblies typically arrive in OCCT as one large compound rather than the labeled component tree a STEP or glTF assembly import produces.
 
 ### 6.5 XDE: Extended Data Framework
 
@@ -790,9 +918,15 @@ Part.export([fuse], "/tmp/result.step")  # calls STEPControl_Writer
 
 ## 9. OCCT Alternatives and Higher-Level Abstractions
 
-OCCT is not the only open-source geometric kernel on Linux, and it is rarely consumed directly by end users — most people who touch B-rep CAD do so through a scripting layer, a browser tab, or an application (like SolveSpace) that solves a problem OCCT itself does not address. This section surveys three adjacent parts of the ecosystem: kernels written to compete with or wrap OCCT from Rust, a standalone constraint-based CAD tool that uses no OCCT code at all, and the scripting/web layers that make OCCT itself easier to drive.
+OCCT is not the only open-source geometric kernel on Linux, and it is rarely consumed directly by end users — most people who touch B-rep CAD do so through a scripting layer, a browser tab, or an application (like SolveSpace) that solves a problem OCCT itself does not address. This section surveys four adjacent parts of the ecosystem: the code-first paradigm that CadQuery, build123d, and OpenSCAD all belong to; kernels written to compete with or wrap OCCT from Rust; a standalone constraint-based CAD tool that uses no OCCT code at all; and the scripting/web layers that make OCCT itself easier to drive.
 
-### 9.1 Rust-Native and Constraint-Solver Alternatives
+### 9.1 CodeCAD: Code-First Solid Modeling as a Paradigm
+
+Before surveying individual tools, it's worth naming the pattern several of them share: "Code-CAD" (also written CodeCAD) describes software that lets a user define a 3D CAD model *entirely* as source code — the model's shape is a program's output, not a sequence of mouse-driven sketch-and-extrude operations recorded behind the scenes — with a viewport that re-renders whenever the code changes. A community-curated survey of the space defines it plainly: "software that allows you to define 3D CAD models with code," explicitly distinguishing Code-CAD tools from general-purpose 3D geometry libraries by their "opinionated abstractions for quickly developing mechanical parts." [Source](https://github.com/Irev-Dev/curated-code-cad) **OpenSCAD** ([Source](https://openscad.org/)) is the paradigm's acknowledged originator and is still referred to as "the OG" in that same survey — first released in February 2010 [Source](https://en.wikipedia.org/wiki/OpenSCAD), built on CGAL for exact Boolean operations on its own CSG/mesh representation (not a B-rep kernel), with a small declarative language (`difference() { cube(10); translate([5,5,5]) sphere(6); }`) that predates CadQuery, build123d, and every other tool this chapter covers by roughly a decade.
+
+Code-CAD splits along the same kernel-representation axis this chapter has already covered for OCCT itself: **B-rep tools** — CadQuery, build123d, CascadeStudio, pythonocc-core (§9.4–9.5, below) — get exact NURBS surfaces and reliable STEP export by wrapping OCCT or an equivalent kernel; **mesh/CSG tools** — OpenSCAD, and the more recent **Manifold** ([Source](https://github.com/elalish/manifold), a fast, geometrically robust mesh-Boolean library increasingly used as an OpenSCAD backend) — trade exact surfaces for simpler, more predictable Boolean robustness on triangulated geometry; and a third, less common category represents shapes **implicitly** as signed-distance functions evaluated at query points rather than as an explicit boundary at all — **libfive** ([Source](https://libfive.com/), a solid-modeling library with its own Lisp-based scripting language), the unrelated **Curv** ([Source](https://github.com/curv3d/curv), a separate language for mathematical art that also compiles down to SDFs), and **sdfx** (Go) are examples — which sidesteps B-rep/mesh Boolean robustness problems entirely at the cost of needing a final meshing (marching-cubes-family) pass before the result can be exported to STL or 3D-printed. [Source](https://github.com/Irev-Dev/curated-code-cad) The appeal cutting across all three representations is the same: parametric models fall out "almost by default" from writing a program rather than a click history, and the resulting scripts version-control, diff, and code-review like any other source file — a property no mouse-driven sketch-and-extrude history in a conventional CAD GUI can match as cleanly. [Source](https://learn.cadhub.xyz/blog/curated-code-cad/)
+
+### 9.2 Rust-Native and Constraint-Solver Alternatives
 
 None of the Rust-ecosystem projects below are "a Rust OpenCascade" in the same sense — they split into bindings around the real OCCT and kernels that reimplement B-rep/NURBS from scratch, with materially different maturity trade-offs.
 
@@ -806,21 +940,39 @@ None of the Rust-ecosystem projects below are "a Rust OpenCascade" in the same s
 
 None of the four projects above ship a constraint solver — the kind that drives sketch-based parametric design in SolidWorks or FreeCAD's Sketcher. That gap is architectural, not incidental: as this chapter's Roadmap notes, OCCT itself "has never shipped a constraint solver," leaving history-based parametric modeling to be built at the application layer (FreeCAD bundles its own `PlaneGCS`-family solver for exactly this reason). The most prominent open-source project built around a constraint solver as its core, rather than as an add-on, is covered next.
 
-### 9.2 SolveSpace
+### 9.3 SolveSpace
 
 **SolveSpace** ([Source](https://github.com/solvespace/solvespace), GPLv3, latest release v3.2, 2026-03-27) inverts OCCT's architecture: where OCCT is an exact B-rep/NURBS kernel that has never had a constraint solver, SolveSpace is a constraint solver first, with just enough surrounding modeling capability (extrudes, revolves, helixes, and Boolean union/difference/intersection) to produce real 3D solids from constrained 2D sketches. It uses no OCCT code.
 
 Its solver — isolable as a standalone library, `libslvs`, decoupled from the GUI — takes a sketch's entities (points, lines, arcs, circles, and the constraints between them: tangent, perpendicular, parallel, equal-length, symmetric, dimensional) and treats satisfying all constraints simultaneously as a system of nonlinear equations, solved by Newton-Raphson iteration; a later optimization pass moved the linear-algebra step onto the Eigen library and raised the maximum solvable unknowns from 1024 to 2048. [Source](https://github.com/solvespace/solvespace/blob/master/CHANGELOG.md) This is precisely the constraint-solving layer FreeCAD's Sketcher workbench implements independently of OCCT/OCAF — SolveSpace demonstrates the same capability as a complete, standalone application rather than a library embedded inside a larger OCCT-based tool. Solid modeling output — including STEP and STL export for CAM — is a comparatively thin layer on top of the solved sketch geometry, not the architectural center of the program the way `TopoDS_Shape` is for OCCT.
 
-### 9.3 Higher-Level Abstractions and Web Frameworks Built on OCCT
+### 9.4 Python Bindings and Frameworks Built on OCCT
 
-A large share of real-world OCCT usage happens through a scripting or web layer rather than direct C++ `BRepBuilderAPI` calls — the same abstraction pattern (a fluent, code-first API wrapping the kernel) recurs independently in both the Python and JavaScript ecosystems.
+A large share of real-world OCCT usage happens through a scripting layer rather than direct C++ `BRepBuilderAPI` calls, and Python is where that layer is most mature. `pythonocc-core` ([Source](https://github.com/tpaviot/pythonocc-core)) is the older, direct binding, exposing nearly all of OCCT's C++ classes to Python 1:1 — FreeCAD's own `TopoShape` already interoperates with it via a `__toPythonOCC__()`/`__fromPythonOCC__()` bridge (§8).
 
-**Python:** `pythonocc-core` ([Source](https://github.com/tpaviot/pythonocc-core)) is the older, direct binding, exposing nearly all of OCCT's C++ classes to Python 1:1 — FreeCAD's own `TopoShape` already interoperates with it via a `__toPythonOCC__()`/`__fromPythonOCC__()` bridge (§8). More recent tooling centers on **OCP** ([Source](https://github.com/CadQuery/OCP)), a narrower Python wrapper maintained by the CadQuery project specifically to back CadQuery and its sibling, rather than exposing the entire OCCT surface. **CadQuery** ([Source](https://cadquery.readthedocs.io/en/latest/intro.html)) builds on OCP a fluent, jQuery-style method-chaining API for parametric solid modeling in plain Python — GUI-less by design, with STEP/STL/AMF/3MF export, and separate tools (`CQ-editor`, `jupyter-cadquery`) for visualization. **build123d** ([Source](https://build123d.readthedocs.io/en/stable/tips.html)) is CadQuery's more recent sibling on the same OCP foundation, trading CadQuery's method-chaining for Python context managers (`with BuildPart() as p:`); because both wrap the same underlying OCP objects, models can be passed between the two. build123d also has an experimental `OCP.wasm` build that runs the same Python-authored models in a browser — the bridge into the web layer below. [Source](https://github.com/CadQuery/cadquery/discussions/1876)
+More recent tooling centers on **OCP** ([Source](https://github.com/CadQuery/OCP)), a narrower Python wrapper maintained by the CadQuery project specifically to back CadQuery and its sibling, rather than exposing the entire OCCT surface. **CadQuery** ([Source](https://cadquery.readthedocs.io/en/latest/intro.html)) builds on OCP a fluent, jQuery-style method-chaining API for parametric solid modeling in plain Python — GUI-less by design, with STEP/STL/AMF/3MF export, and separate tools (`CQ-editor`, `jupyter-cadquery`) for visualization. **build123d** ([Source](https://build123d.readthedocs.io/en/stable/tips.html)) is CadQuery's more recent sibling on the same OCP foundation, trading CadQuery's method-chaining for Python context managers (`with BuildPart() as p:`); because both wrap the same underlying OCP objects, models can be passed between the two. build123d also has an experimental `OCP.wasm` build that runs the same Python-authored models in a browser — the bridge into the web layer below. [Source](https://github.com/CadQuery/cadquery/discussions/1876) Both CadQuery and build123d are, in the terms §9.1 lays out, B-rep-representation Code-CAD tools — the same paradigm OpenSCAD pioneered, but with OCCT's exact NURBS kernel underneath instead of OpenSCAD's CGAL-based mesh CSG.
 
-**Web/WASM:** `opencascade.js` ([Source](https://ocjs.org/)) takes a different route to the browser than build123d's OCP.wasm — it compiles the actual C++ OCCT toolkit to WebAssembly via Emscripten, exposing OCCT's own classes (a selectable subset, since binding all of OCCT would bloat the WASM payload) directly to JavaScript, runnable "in browsers, on your server, or on pretty much any device that supports WebAssembly." It is the foundation for a small cluster of browser-native CAD tools: **CascadeStudio** ([Source](https://github.com/zalo/CascadeStudio)), a live-scripted CAD kernel and IDE running entirely client-side, with primitives, CSG, revolves, sweeps, fillets, STEP/IGES/STL import-export, and even an OpenSCAD-to-JavaScript transpiler; and **replicad** ([Source](https://github.com/sgenoud/replicad), MIT), a JS/TS library — "the library to build browser based 3D models with code" — whose own documentation states it took its fluent API design directly from "cadquery and cascade studio." replicad is, in effect, CadQuery's abstraction pattern reimplemented for the JavaScript/WASM stack rather than Python. Other `opencascade.js`-based projects in the same niche include ArchiYou, BitByBit, and Polygonjs. [Source](https://ocjs.org/docs/about)
+### 9.5 Web and WebAssembly Frameworks Built on OCCT
+
+The same fluent, code-first abstraction pattern §9.4 covers for Python recurs independently in the JavaScript/WASM ecosystem, by a different technical route. `opencascade.js` ([Source](https://ocjs.org/)) takes a different route to the browser than build123d's OCP.wasm — it compiles the actual C++ OCCT toolkit to WebAssembly via Emscripten, exposing OCCT's own classes (a selectable subset, since binding all of OCCT would bloat the WASM payload) directly to JavaScript, runnable "in browsers, on your server, or on pretty much any device that supports WebAssembly."
+
+It is the foundation for a small cluster of browser-native CAD tools: **CascadeStudio** ([Source](https://github.com/zalo/CascadeStudio)), a live-scripted CAD kernel and IDE running entirely client-side, with primitives, CSG, revolves, sweeps, fillets, STEP/IGES/STL import-export, and even an OpenSCAD-to-JavaScript transpiler; and **replicad** ([Source](https://github.com/sgenoud/replicad), MIT), a JS/TS library — "the library to build browser based 3D models with code" — whose own documentation states it took its fluent API design directly from "cadquery and cascade studio." replicad is, in effect, CadQuery's abstraction pattern reimplemented for the JavaScript/WASM stack rather than Python. Other `opencascade.js`-based projects in the same niche include ArchiYou, BitByBit, and Polygonjs. [Source](https://ocjs.org/docs/about)
 
 This Emscripten-to-WASM pattern — compiling a native C++ geometry or graphics library so it runs client-side — is architecturally the same technique Ch98 covers for Vulkan/WebGPU deployment targets, applied here to a CAD kernel instead of a rendering API.
+
+### 9.6 AI-Assisted and Generative CAD
+
+Two distinct AI-integration patterns exist for OCCT-based tooling, and they're worth keeping apart: LLMs that write code against the same CadQuery/build123d/OCP stack §9.4 describes, and Model Context Protocol (MCP) servers that expose an existing OCCT-based application's own scripting API as agent-callable tools.
+
+**Text-to-CAD as code generation.** Because CadQuery and build123d (§9.4, above) already express solid modeling as declarative Python rather than a sequence of mouse clicks, the natural way to point an LLM at parametric CAD is to have it write CadQuery/build123d source directly, then execute that code against the real OCP/OCCT kernel to get an exact, editable B-rep result rather than a mesh. Text-to-CadQuery demonstrated this by fine-tuning LLMs on a corpus of 170K paired (text description, CadQuery script) examples, with accuracy improving consistently with model scale. [Source](https://ar5iv.labs.arxiv.org/html/2505.06507) The approach is now benchmarked directly: CADGenBench scores submissions on geometric accuracy, topology correctness, and CAD validity, and requires the emitted model to be well-formed, watertight, and manifold — an automatic zero otherwise — accepting any backend (build123d, Fusion, Onshape, SolidWorks) so long as it produces a real solid. [Source](https://github.com/huggingface/cadgenbench) Text2CAD-Bench narrows the same evaluation to parametric CAD specifically, with 600 human-curated examples spanning four complexity levels from primitive geometry to real-world part topology. [Source](https://arxiv.org/abs/2605.18430) Ch176a surveys this Text-to-CAD research landscape in much greater depth, beyond the OCCT-specific tooling this section covers.
+
+**MCP servers as the agent-facing layer.** MCP servers wrap an OCCT-based tool's existing scripting API as tool calls an LLM agent can invoke directly, closing the loop between "write code" and "see the result." `build123d-mcp` (Apache-2.0) exposes build123d as a persistent session an agent can drive — creating models, rendering PNG/SVG/DXF previews, measuring volume/area/bounding box, detecting features like holes and countersinks, and validating printability — and reports a concrete effect on benchmark performance: adding it to an existing model on the CADGenBench leaderboard raised that model's score from 0.360 to 0.457 and CAD validity from 88% to 100%, because tool-verified geometry catches the non-manifold and non-watertight failures a blind code-generation pass cannot. [Source](https://github.com/pzfreo/build123d-mcp) `cadquery-mcp-server` provides the equivalent generation-and-verification loop for CadQuery. [Source](https://github.com/rishigundakaram/cadquery-mcp-server) For FreeCAD (§8, above) rather than the bare CadQuery/build123d libraries, several independent MCP servers (`neka-nat/freecad-mcp`, MIT, among others) expose FreeCAD's own document/object API directly — letting an assistant create and edit `TopoShape`-backed objects, run Boolean operations, execute arbitrary Python inside FreeCAD, and capture a viewport screenshot to visually check its own work before proceeding. That last step marks a design pattern distinct from Text-to-CAD's one-shot code generation: the agent iterates against a live document rather than generating a script once. [Source](https://github.com/neka-nat/freecad-mcp)
+
+**OCCT itself as an LLM tool target.** `opencascade.js` (§9.5, above) is now explicitly positioned this way by at least one community WASM binding, which advertises TypeScript bindings across OCCT's class surface running "in a browser tab, a Node CLI, or an LLM tool call" — the same WASM deployment already covered in §9.5 doubling as the sandboxed execution environment an agent's generated OCCT calls run inside, with no separate native build step. [Source](https://opencascade-js.vercel.app/)
+
+**What is not built on OCCT.** Zoo (formerly KittyCAD)'s Text-to-CAD and Zoo Design Studio are worth naming here precisely because they are easy to mistake for part of this ecosystem, and are not: Zoo's Design API runs on its own from-scratch, GPU-native geometry engine (built for Vulkan, not OpenGL/OCCT), with the open-source Zoo Design Studio / `modeling-app` client (MIT license) streaming rendered frames from that remote engine over WebSockets rather than embedding OCCT or any OCCT-derived kernel. [Source](https://github.com/kittycad/modeling-app) Every other tool in this subsection — Text-to-CadQuery, build123d-mcp, the FreeCAD MCP servers, opencascade.js — ultimately bottoms out in OCCT's own B-rep kernel; Zoo's stack is a parallel, independent one.
+
+This section's LLM/MCP pattern is the CAD-kernel analog of Ch205's coverage of Blender MCP and Claude Code integration — both wrap an existing, mature scripting API (`bpy` there, CadQuery/build123d/FreeCAD's Python API here) behind agent-callable tools rather than training a model to emit raw geometry.
 
 ---
 
@@ -1051,7 +1203,7 @@ These GPU analysis stages complement OCCT's CPU-side `BRepGProp` and `ShapeAnaly
 
 - **Ch26 (Hardware Video):** Applications combining OCCT visualization with video overlays (e.g., a CAD tool displaying a camera feed on a design surface) must manage EGL context sharing between OCCT's `OpenGl_GraphicDriver` and VA-API decode paths.
 
-- **Ch40 (Bevy and wgpu):** §9.1's `opencascade-rs` and `truck` are the two Rust CAD kernels most likely to appear alongside Bevy in a Rust application — both `opencascade-rs`'s experimental viewer and `truck-platform`/`truck-rendimpl` render through `wgpu`, the same abstraction layer Ch40 covers, making a Bevy scene a plausible visualization front end for either kernel's output.
+- **Ch40 (Bevy and wgpu):** §9.2's `opencascade-rs` and `truck` are the two Rust CAD kernels most likely to appear alongside Bevy in a Rust application — both `opencascade-rs`'s experimental viewer and `truck-platform`/`truck-rendimpl` render through `wgpu`, the same abstraction layer Ch40 covers, making a Bevy scene a plausible visualization front end for either kernel's output.
 
 - **Ch42 (Blender GPU):** Blender's geometry kernel and OCCT share conceptual architecture — both separate exact geometry from mesh representation — but Blender uses its own BMesh + Depsgraph stack rather than OCCT. FreeCAD can import Blender meshes as STL for OCCT post-processing.
 
@@ -1065,7 +1217,11 @@ These GPU analysis stages complement OCCT's CPU-side `BRepGProp` and `ShapeAnaly
 
 - **Ch150 (EGL Architecture and DMA-BUF):** OCCT's EGL integration uses `EGLSurface` backed by a `wl_egl_window` or a pbuffer. DMA-BUF texture import (`EGL_EXT_image_dma_buf_import`) is not directly used by OCCT's own rendering, but an application compositing OCCT output with VA-API decoded frames or camera captures will use the DMA-BUF paths described in Ch150.
 
-- **Ch98 (WebAssembly and WebGPU as a Deployment Target):** §9.3's `opencascade.js` applies the same Emscripten-to-WASM compilation pattern Ch98 covers for rendering APIs to a geometry kernel instead — the actual C++ OCCT toolkit runs client-side, with CascadeStudio and replicad as application-layer consumers of the resulting WASM module.
+- **Ch98 (WebAssembly and WebGPU as a Deployment Target):** §9.5's `opencascade.js` applies the same Emscripten-to-WASM compilation pattern Ch98 covers for rendering APIs to a geometry kernel instead — the actual C++ OCCT toolkit runs client-side, with CascadeStudio and replicad as application-layer consumers of the resulting WASM module.
+
+- **Ch124 (Local LLM Inference on Linux):** §9.6's Text-to-CAD code-generation approach and the MCP servers driving CadQuery/build123d/FreeCAD are model-agnostic — they call whatever LLM the MCP client is configured with, including a locally served model along the lines Ch124 describes, rather than requiring a specific cloud provider.
+
+- **Ch205 (AI-Driven 3D Creation — Blender MCP, Claude Code, and Generative Tools):** §9.6's OCCT-ecosystem MCP servers (`build123d-mcp`, `cadquery-mcp-server`, the FreeCAD MCP servers) are the CAD-kernel counterpart to Ch205's Blender MCP integration — both patterns wrap a mature, pre-existing Python scripting API (`bpy` vs. CadQuery/build123d/FreeCAD's own API) behind agent-callable tools rather than training a model to emit geometry directly.
 
 ---
 
