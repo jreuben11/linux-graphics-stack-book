@@ -11,7 +11,7 @@
 2. [BitTorrent Protocol Fundamentals](#2-bittorrent-protocol-fundamentals)
    - 2.1 [Bencoding and the .torrent Metainfo File (BEP 3)](#21-bencoding-and-the-torrent-metainfo-file-bep-3)
    - 2.2 [The Peer Wire Protocol (BEP 3)](#22-the-peer-wire-protocol-bep-3)
-   - 2.3 [Tit-for-Tat Choking Algorithm](#23-tit-for-tat-choking-algorithm)
+   - 2.3 [Swarm Roles, Piece Selection, and Tit-for-Tat Choking](#23-swarm-roles-piece-selection-and-tit-for-tat-choking)
    - 2.4 [Extension Protocol, PEX, and DHT Bootstrapping](#24-extension-protocol-pex-and-dht-bootstrapping)
    - 2.5 [uTP — Micro Transport Protocol (BEP 29)](#25-utp--micro-transport-protocol-bep-29)
    - 2.6 [BitTorrent v2 (BEP 52)](#26-bittorrent-v2-bep-52)
@@ -167,9 +167,19 @@ The standard block size in `request` messages is **16,384 bytes (2^14, 16 KiB)**
 
 **Endgame mode:** once all sub-pieces of outstanding pieces are requested, the client sends requests for remaining blocks to all connected peers simultaneously and cancels on first receipt, minimizing tail latency. [Source: BEP 3](https://www.bittorrent.org/beps/bep_0003.html)
 
-### 2.3 Tit-for-Tat Choking Algorithm
+### 2.3 Swarm Roles, Piece Selection, and Tit-for-Tat Choking
 
-The choking algorithm enforces reciprocal upload:
+**Seeders and leechers** are the two roles a peer can occupy in a torrent's **swarm** — the complete set of peers currently connected for a given `info_hash`. A **seeder** holds a complete copy of every piece and only uploads; a **leecher** (the spec's term is "downloader") is still missing at least one piece and both uploads pieces it already has and downloads pieces it lacks. A peer transitions from leecher to seeder the moment its `bitfield` (message ID 5, §2.2) is entirely set — libtorrent surfaces this as the `seed_mode` flag and the `seeding` torrent state (§6.4). A swarm with zero seeders and only leechers holding non-overlapping pieces cannot complete without a web seed (BEP 19) or a peer who later reconnects with the missing pieces — the reason release groups and private trackers place heavy emphasis on seed ratio and swarm health.
+
+**Piece selection** determines which of the many pieces a leecher requests next, and is layered on top of the `request`/`piece` messages (§2.2):
+
+- **Rarest-first**: each peer tracks, from the `bitfield` and `have` messages of its connected peers, how many of them hold each piece. It preferentially requests pieces held by the fewest peers. This spreads scarce pieces across the swarm before they are lost (e.g., if the sole holder of a rare piece disconnects), maximising overall swarm resilience and download availability rather than any single peer's completion speed. [Source: Cohen, "Incentives Build Robustness in BitTorrent"](https://bittorrent.org/bittorrentecon.pdf)
+- **Random first piece**: a new leecher with no complete pieces to trade deviates from rarest-first for its very first piece, picking one at random instead. This gets the client something tradeable as fast as possible rather than waiting to identify and win a race for the (likely more contested) rarest piece.
+- **Strict priority (endgame aside)**: once a block from a piece has been requested, all remaining blocks of that same piece are requested before moving on to a different piece. Because only a complete piece can be verified against its SHA-1 hash and traded to other peers, partially-downloaded pieces are worthless for reciprocation — strict priority gets pieces to completion, and therefore to tradeable state, as quickly as possible.
+
+Sequential download and `set_piece_deadline` (§7) override rarest-first entirely for media streaming, trading swarm-optimal distribution for playback-order delivery — see §7.2 for how libtorrent's streaming API repurposes the underlying piece-request machinery.
+
+The choking algorithm enforces reciprocal upload between whichever peers are currently exchanging pieces:
 
 - **Regular unchoke** (every 10 seconds): unchoke the 4 interested peers with the highest measured download rates to the local node.
 - **Optimistic unchoke** (rotates every 30 seconds): one randomly selected interested peer is unchoked regardless of upload contribution, allowing discovery of better peers.

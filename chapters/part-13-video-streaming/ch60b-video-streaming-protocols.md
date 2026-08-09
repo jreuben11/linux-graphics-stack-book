@@ -156,7 +156,21 @@ graph TD
 
 ### Protocol Selection Guide
 
-Before reading the protocol-by-protocol detail, the table below answers the practical question: **which protocol should I choose for a given delivery scenario, and what latency/throughput trade-off does it imply?**
+Before reading the protocol-by-protocol detail, the table below answers the practical question: **which protocol should I choose for a given delivery scenario?**
+
+| Use case | Recommended protocol | Rationale |
+|---|---|---|
+| **Live ingest** from an encoder/camera to an origin server or CDN | RTMP, or SRT on lossy/high-RTT links | Universal encoder support (OBS, hardware encoders, `ffmpeg -f flv`); SRT's ARQ recovers from loss that would stall RTMP's TCP stream |
+| **IP camera / NVR / surveillance feed** | RTSP + RTP | ONVIF-mandated; 100–500 ms LAN latency; no ABR machinery needed on a fixed local link |
+| **Broad-reach live or VOD delivery to a mass audience** | HLS or MPEG-DASH | Pull-based HTTP delivery scales via ordinary CDN caching; universal device and player support |
+| **Low-latency broadcast to a large audience** (sports, auctions, game shows) | LL-HLS or LL-DASH | 1–4 s latency while keeping the CDN-cacheable segment/manifest model — no per-viewer server state |
+| **Interactive / conversational video** (video calls, cloud gaming, remote control) | WebRTC | Sub-second latency; browser-native; built-in NAT traversal via ICE/STUN/TURN |
+| **One-to-many low-latency streaming at scale** (live auctions, watch parties, betting) | WebRTC via an SFU; MOQT where mature enough for production | An SFU avoids full mesh signaling; MOQT's CDN-relay model targets this case natively but is still pre-production as of mid-2026 |
+| **Remote production / contribution over the public internet** | SRT | ARQ recovers from WAN packet loss; latency budget is explicitly tunable to the measured path RTT |
+| **Browser-native low-latency push, without WebRTC's signaling complexity** | WebTransport | QUIC streams/datagrams exposed directly to JavaScript; a much simpler stack than full WebRTC for one-directional server→client push |
+| **CDN-scale live streaming that needs both low latency and massive fan-out** | MOQT (track when production-ready) | Purpose-built to close the gap between WebRTC's per-viewer cost and HLS/DASH's multi-second latency; not yet production-ready — use LL-HLS/LL-DASH or WebRTC+SFU today |
+
+**Protocol comparison — latency, transport, and delivery model:**
 
 | Protocol | Typical glass-to-glass latency | Transport / reliability | Delivery model | Best for | Limitations |
 |---|---|---|---|---|---|

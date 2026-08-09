@@ -89,8 +89,29 @@ Before reading the algorithmic detail, the table below answers the practical que
 **Key trade-offs in brief:**
 - **Compatibility vs. efficiency**: H.264 wins compatibility; AV1 wins efficiency. H.265 sits in the middle but carries patent licensing concerns for software encoders.
 - **Encoding speed**: H.264 >> H.265 > VP9 ≈ AV1 (hardware); software AV1 (libaom) is 5–10× slower than x265. SVT-AV1 narrows the gap significantly.
-- **Royalties**: AV1, VP9, and VVC (under the MFI, Media Coding Industry Forum, pool) are royalty-free for most uses; H.264 and H.265 carry MPEG-LA patent pools that affect commercial software encoders.
+- **Royalties**: AV1 and VP9 are royalty-free (AOMedia patent cross-license); H.264 and H.265 carry MPEG-LA (and, for H.265, additional Access Advance/Velos) patent pools that affect commercial software encoders. VVC is *not* royalty-free — it is covered by multiple non-free pools (Access Advance's "VVC Advance", MPEG-LA, Via LA); the MFI (Media Coding Industry Forum) is an advocacy body pushing for simpler, more predictable terms, not a royalty-free licensing pool itself.
 - **Hardware decode coverage** (desktop Linux, mid-2026): H.264 = universal; H.265 = near-universal (Mesa 23+, all NVIDIA, Intel); AV1 = RTX 30xx+/RDNA2+/Arc/Tiger Lake+; VVC = no desktop GPU support yet.
+
+### Codec Feature Comparison
+
+The table below compares the four codecs covered in depth in this chapter (Sections 5–8) feature-by-feature, at the algorithmic level rather than the use-case level of the selection guide above.
+
+| Feature | H.264/AVC | H.265/HEVC | AV1 | VVC/H.266 |
+|---|---|---|---|---|
+| Standardised | 2003 (ITU-T/ISO) | 2013 (ITU-T/ISO) | 2018 (AOMedia) | 2020 (ITU-T/ISO) |
+| Largest coding unit | 16×16 macroblock (fixed) | 64×64 CTU (quadtree) | 128×128 superblock (extended quadtree incl. non-square splits) [§7](#av1) | 128×128 CTU (quadtree + binary + ternary tree) [Source](https://antmedia.io/versatile-video-coding-vvc-h266-codec-guide/) |
+| Minimum block size | 4×4 | 8×8 CU | 4×4 [§7](#av1) | 4×4 |
+| Intra prediction modes | 9 | 35 (1 planar, 1 DC, 33 angular) [§6](#h265-hevc) | 71 (56 directional + DC/PAETH/SMOOTH×3/CfL) [§7](#av1) | 67 (1 planar, 1 DC, 65 angular) + MRL, ISP, MIP, CCLM [Source](https://www.emergentmind.com/topics/versatile-video-coding-vvc) |
+| Entropy coding | CAVLC (Baseline) / CABAC (Main, High) — ~460 CABAC contexts [§5](#h264-avc) | CABAC — ~1,000 contexts, slice/tile-resettable [§6](#h265-hevc) | Multi-symbol ANS (MSAC) [§7](#av1) | CABAC — extended contexts, multi-hypothesis probability update [Source](https://www.emergentmind.com/topics/versatile-video-coding-vvc) |
+| In-loop filters | Deblocking only [§5](#h264-avc) | Deblocking + SAO [§6](#h265-hevc) | Deblocking + CDEF + Loop Restoration [§7](#av1) | Deblocking + SAO + ALF/CCALF + LMCS [Source](https://www.emergentmind.com/topics/versatile-video-coding-vvc) |
+| Motion compensation | Translational, up to 16×16 blocks, quarter-pel | Translational, up to 64×64 PUs, quarter-pel | Translational + warped motion + OBMC + compound prediction (12,768 modes) [§7](#av1) | Translational + affine (4- and 6-parameter) + GPM + SBT [§8](#vvc-h266) |
+| Max resolution (highest defined level) | 4096×2304 (Level 5.2) | 8192×4320 (Level 6.2) | 7680×4320 (Level 6.3) | 16384×8704 (Level 6.2) [Source](https://www.forasoft.com/learn/video-encoding/articles/codec-comparison-table) |
+| Parallel decode tools | Slices only | Tiles + WPP [§6](#h265-hevc) | Tiles | Tiles + subpictures |
+| Screen-content tools | None | Limited (SCC extension, rarely deployed) | Palette mode (native) [§7](#av1) | Intra block copy, palette mode |
+| BD-rate vs. H.264 | — (baseline) | ≈ −53% [Source](https://www.researchgate.net/publication/384538845_The_efficiency_of_HEVCH265_AV1_and_VVCH266_in_terms_of_performance_compression_and_video_content) | ≈ −63% (libaom) [§9](#vvc-h266) | ≈ −65 to −78% (VVenC/VTM) [§9](#vvc-h266) |
+| Reference/production encoders (Linux) | x264 | x265 | libaom, SVT-AV1, rav1e [§7](#av1) | VVenC, VTM (reference) [§9](#vvc-h266) |
+| Licensing | MPEG-LA patent pool | MPEG-LA + Access Advance + Velos pools | Royalty-free (AOMedia patent cross-license) | Multiple non-free pools (Access Advance VVC Advance, MPEG-LA, Via LA); MFI advocates royalty-free-friendly terms but is not itself a licensing pool |
+| Linux HW decode (mid-2026) | Universal | Near-universal (Mesa 23+, NVIDIA, Intel) | RTX 30xx+/RDNA2+/Arc/Tiger Lake+ | None on desktop GPUs; Snapdragon 8 Gen 3+ mobile only |
 
 ### 1.1 What is a Video Codec?
 
