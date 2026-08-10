@@ -8,13 +8,14 @@ A game engine and a reinforcement-learning trainer want opposite things from tim
 
 These three appetites produce three genuinely distinct software architectures, and almost every framework in this space is an instance of one of them. **Synchronous lockstep** puts the engine and the trainer in separate processes exchanging observations and actions over a local socket, each blocking on the other; Godot RL Agents and `bevy_rl` are the engine-native examples. **Vectorized headless simulation** rewrites the environment as pure array code, compiled by XLA and `vmap`-ed so that thousands of copies advance in a single kernel launch with the policy update fused into the same program — no socket, no process boundary, and in the extreme case no graphics API involvement whatsoever; Craftax is the reference example. The **decoupled asynchronous agent loop** runs a simulation tick at interactive rates while agent cognition — retrieval, reflection, planning, dialogue — runs on a far slower clock, with results landing whenever they arrive; AI Town is the reference example.
 
-This chapter reads each architecture out of primary source: the wire protocol in `godot_env.py`, the REST integration test in `bevy_rl`, the `step_env` method in Craftax's pixel environment, and the timing constants in AI Town's `convex/constants.ts`. It treats the **GPU-to-CPU readback path for pixel observations** as a first-class subject, because that readback is where the graphics stack and the learning stack actually collide, and it is the dominant cost in vision-based training on a conventional engine. One further caution: this corner of the ecosystem has an unusually high ratio of celebrated papers to maintained code, and several of the most-cited projects have not received a commit in close to three years. Section 7 lists them with last-commit dates rather than pretending they are live options.
+This chapter reads each architecture out of primary source: the wire protocol in `godot_env.py`, the REST integration test in `bevy_rl`, the `step_env` method in Craftax's pixel environment, and the timing constants in AI Town's `convex/constants.ts`. It treats the **GPU-to-CPU readback path for pixel observations** as a first-class subject, because that readback is where the graphics stack and the learning stack actually collide, and it is the dominant cost in vision-based training on a conventional engine. One further caution: this corner of the ecosystem has an unusually high ratio of celebrated papers to maintained code, and several of the most-cited projects have not received a commit in close to three years. Section 8 lists them with last-commit dates rather than pretending they are live options.
 
 ---
 
 ## Table of Contents
 
 - [1. Scope: What Counts as "AI in the Game Loop"](#1-scope-what-counts-as-ai-in-the-game-loop)
+  - [1.1 A Note: Classical Game AI Under LLM Planners](#11-a-note-classical-game-ai-under-llm-planners)
 - [2. The Environment API Standard: Gymnasium and PettingZoo](#2-the-environment-api-standard-gymnasium-and-pettingzoo)
   - [2.1 The Single-Agent Contract](#21-the-single-agent-contract)
   - [2.2 `terminated` vs `truncated`](#22-terminated-vs-truncated)
@@ -37,16 +38,21 @@ This chapter reads each architecture out of primary source: the wire protocol in
   - [5.2 Rasterization as Array Code](#52-rasterization-as-array-code)
   - [5.3 Optimistic Resets and Why Branching Is Expensive](#53-optimistic-resets-and-why-branching-is-expensive)
   - [5.4 Compilation Latency as the New Startup Cost](#54-compilation-latency-as-the-new-startup-cost)
-- [6. Decoupled Asynchronous Agent Loops: AI Town](#6-decoupled-asynchronous-agent-loops-ai-town)
-  - [6.1 The Arithmetic of Decoupling](#61-the-arithmetic-of-decoupling)
-  - [6.2 Engine, Inputs, and the Transactional Backend](#62-engine-inputs-and-the-transactional-backend)
-  - [6.3 Memory, Retrieval, and the Embedding Contract](#63-memory-retrieval-and-the-embedding-contract)
-  - [6.4 The Rendering Half: PixiJS](#64-the-rendering-half-pixijs)
-  - [6.5 Local Inference and Cost Control](#65-local-inference-and-cost-control)
-- [7. The Historical Tier: Lineage, Not Recommendations](#7-the-historical-tier-lineage-not-recommendations)
-  - [7.1 Maintained but CPU-Only: OpenSpiel and Melting Pot](#71-maintained-but-cpu-only-openspiel-and-melting-pot)
-- [8. Three Integration Shapes, Compared](#8-three-integration-shapes-compared)
-  - [8.1 Choosing a Shape](#81-choosing-a-shape)
+- [6. Beyond Craftax: The Wider GPU-Native Environment Ecosystem](#6-beyond-craftax-the-wider-gpu-native-environment-ecosystem)
+  - [6.1 The `vmap` Family: Brax, Pgx, and Jumanji](#61-the-vmap-family-brax-pgx-and-jumanji)
+  - [6.2 Hand-Written CUDA Batching: WarpDrive](#62-hand-written-cuda-batching-warpdrive)
+  - [6.3 A GPU-Native ECS Engine: Madrona](#63-a-gpu-native-ecs-engine-madrona)
+  - [6.4 The Deliberate Counter-Example: EnvPool](#64-the-deliberate-counter-example-envpool)
+- [7. Decoupled Asynchronous Agent Loops: AI Town](#7-decoupled-asynchronous-agent-loops-ai-town)
+  - [7.1 The Arithmetic of Decoupling](#71-the-arithmetic-of-decoupling)
+  - [7.2 Engine, Inputs, and the Transactional Backend](#72-engine-inputs-and-the-transactional-backend)
+  - [7.3 Memory, Retrieval, and the Embedding Contract](#73-memory-retrieval-and-the-embedding-contract)
+  - [7.4 The Rendering Half: PixiJS](#74-the-rendering-half-pixijs)
+  - [7.5 Local Inference and Cost Control](#75-local-inference-and-cost-control)
+- [8. The Historical Tier: Lineage, Not Recommendations](#8-the-historical-tier-lineage-not-recommendations)
+  - [8.1 Maintained but CPU-Only: OpenSpiel and Melting Pot](#81-maintained-but-cpu-only-openspiel-and-melting-pot)
+- [9. Three Integration Shapes, Compared](#9-three-integration-shapes-compared)
+  - [9.1 Choosing a Shape](#91-choosing-a-shape)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -62,7 +68,19 @@ This chapter covers frameworks that embed a learning or language-model agent int
 
 **Classical game AI** — navmeshes, behaviour trees, GOAP, utility systems — is deterministic authored logic rather than a learned or generative policy, and it introduces no new coupling to the render loop beyond an ordinary gameplay system.
 
-What remains is the intersection this chapter is about: the API standard that defines the environment contract (Section 2), two engine-integration bridges (Sections 3 and 4), one fully-vectorized GPU-native game environment (Section 5), one LLM-driven social simulation (Section 6), and the historical projects that established the research agenda (Section 7).
+What remains is the intersection this chapter is about: the API standard that defines the environment contract (Section 2), two engine-integration bridges (Sections 3 and 4), one fully-vectorized GPU-native game environment (Section 5), the wider ecosystem of GPU-native and vectorized environment frameworks it belongs to (Section 6), one LLM-driven social simulation (Section 7), and the historical projects that established the research agenda (Section 8).
+
+### 1.1 A Note: Classical Game AI Under LLM Planners
+
+The exclusion above is not a claim that navmeshes, behaviour trees, GOAP, and utility systems are untouched by the wave of interest this chapter covers — it is a claim that where they *are* touched, the render-loop-facing part stays the same. The pattern showing up across recent research is **LLM-as-planner over classical-executor**, not LLM-as-executor: a language model proposes a goal, a command, or a high-level plan, and a conventional behaviour tree, GOAP planner, or utility selector remains the thing that actually runs each tick, walks the navmesh, and drives animation and physics. That is precisely the "ordinary gameplay system" §1 already excludes — the LLM sits upstream of it, at design time or at a slow decision cadence, not inside the per-frame execution path.
+
+Four recent papers make the shape of this concrete, split evenly between the two directions the coupling can run:
+
+**LLM generates the classical structure.** Ito and Takahashi's "Game Agent Driven by Free-Form Text Command" has an LLM translate a player's free-form natural-language command into a *behavior branch* — a knowledge representation built directly on behaviour trees — which the game then executes; the authors validate the approach with a Pokémon-style simulation played by multiple human participants [[Source](https://arxiv.org/abs/2402.07442)]. Ao et al.'s "LLM-as-BT-Planner" (ICRA 2025) targets robot task planning rather than games, but the technique transfers directly: an LLM, combined with in-context learning and fine-tuning, generates behaviour trees for assembly tasks, trading some autonomy for the interpretability and debuggability a hand-authored BT already has [[Source](https://arxiv.org/abs/2409.10444)]. Shan and Michel's "Generative AI with GOAP for Fast-Paced Dynamic Decision-Making in Game Environments" (IEEE CoG 2024) addresses the coupling's central practical problem head-on — an LLM is too slow to call every tick — by having GOAP handle real-time action selection while the LLM contributes the slower strategic layer above it [[Source](https://ieeexplore.ieee.org/document/10645549)].
+
+**The classical structure disciplines the LLM.** Kelley's "Behavior Trees Enable Structured Programming of Language Model Agents" inverts the direction: the behaviour tree is not generated by the LLM but imposed on it, using BT composition (sequences, selectors, decorators) as scaffolding that constrains an otherwise brittle language-model agent, implemented in a library called Dendron and demonstrated on a chat agent, a robotic inspection system, and a safety-constrained agent [[Source](https://arxiv.org/abs/2404.07439)]. That direction matters for the same reason ch205b's Section 7 (AI Town) matters — it is a way to keep an LLM's output bounded and predictable rather than a way to make gameplay logic smarter.
+
+Both directions leave navmesh queries, animation blending, and physics untouched — an LLM proposing "flee to cover" or emitting a freshly-generated behaviour-tree fragment still hands off to the same A* or funnel-algorithm navmesh code and the same steering system a hand-authored AI would use. Commercial platforms are pursuing productized versions of the same idea — NVIDIA ACE and Inworld's game-engine integrations both market LLM-driven NPC dialogue and decision-making layered on top of conventional engine AI — but at the time of writing neither vendor's public documentation specifies the execution-layer architecture precisely enough to cite here. *Note: needs verification if a primary source describing that integration surfaces.*
 
 ---
 
@@ -595,13 +613,62 @@ Two documentation details matter before comparing numbers with anyone. Maximum a
 
 ---
 
-## 6. Decoupled Asynchronous Agent Loops: AI Town
+## 6. Beyond Craftax: The Wider GPU-Native Environment Ecosystem
+
+Craftax is one instance of a pattern, not a singleton. Since `vmap`-and-`jit` turned "rewrite the environment as a pure array function" into a repeatable technique rather than a one-off research trick, a small ecosystem of environment libraries has adopted it for domains far from tile-based survival games — continuous-control physics, board games, and combinatorial optimization all now have GPU-native implementations built on the identical purity/tracing contract Section 5.1 describes. Two frameworks depart from that recipe in instructive ways: one hand-writes CUDA kernels instead of tracing JAX, and one is a real GPU-resident ECS game engine rather than array code dressed as a renderer. A sixth framework belongs here as the deliberate counter-example — proof that the GPU-native pattern does not subsume every environment, and that a sufficiently well-engineered CPU thread pool remains the right answer when the state-transition function cannot be expressed as data-parallel array code at all.
+
+### 6.1 The `vmap` Family: Brax, Pgx, and Jumanji
+
+**Brax** is Google's JAX-native physics engine for continuous control — the domain Craftax's tile-grid technique does not cover. It bills itself as doing "massively parallel rigidbody physics simulation on accelerator hardware" and its documentation repeats the same order-of-magnitude claim Craftax makes for game logic: environments simulate "at millions of physics steps per second" on TPU, with full training runs completing in minutes rather than hours [[Source](https://github.com/google/brax)]. It is Apache-2.0, carries **3,214 stars**, and was last pushed **2026-08-06** — an actively maintained project, not a research artifact.
+
+**Pgx** applies the same technique to discrete, complete-information games: **27 environments** including Chess, Shogi, Go, Backgammon, Othello, Hex, 2048, Connect Four, Kuhn and Leduc poker, mahjong, bridge, and the five-game MinAtar suite, all executing as `vmap`-ed JAX step functions [[Source](https://github.com/sotetsuk/pgx)]. It is Apache-2.0 with **635 stars**, but its last push was **2025-03-06** — over a year stale as of this writing, which puts it closer to dormant-but-usable than to the actively-developed tier Brax and Jumanji occupy. Anyone depending on it should verify current activity before assuming it is a maintained target.
+
+**Jumanji** targets a third domain the other two don't: combinatorial optimization and routing — bin-packing, job-shop scheduling, the travelling salesman and capacitated vehicle routing problems, Sudoku, Rubik's Cube, and multi-agent scenarios like level-based foraging and search-and-rescue, 22 environments in total [[Source](https://github.com/instadeepai/jumanji)]. Its API is a deliberate hybrid — it adopts Gymnasium's registry and `render()` conventions while using DeepMind's `TimeStep` structure for the step return, so it reads as familiar to practitioners from either lineage rather than inventing a third convention [[Source](https://github.com/instadeepai/jumanji)]. It is Apache-2.0, **855 stars**, and was last pushed **2026-08-04** — actively maintained.
+
+All three inherit exactly the constraints Section 5.3 describes, because they are built on the same technique: fixed-size arrays in place of growable collections, `jnp.where`/`lax.select` in place of data-dependent branching, and reset machinery that distributes a small pool of fresh episodes rather than regenerating the whole batch. Nothing about that constraint is domain-specific — it is a property of `vmap` itself, and it recurs identically whether the array being traced represents a tile map, a rigid-body scene graph, or a chessboard.
+
+### 6.2 Hand-Written CUDA Batching: WarpDrive
+
+WarpDrive is the manual alternative to `vmap`'s automatic one. Rather than tracing a pure JAX function and letting XLA compile the batched kernel, WarpDrive has the environment author write the step function directly in **CUDA C via PyCUDA, or in Numba** for JIT-compiled GPU code, with a thin Python layer for the training loop on top [[Source](https://github.com/salesforce/warp-drive)]. The published claims are aggressive: "orders-of-magnitude faster RL compared to CPU simulation + GPU model implementations," at least **100x throughput over CPU-based counterparts**, roughly a 10x speedup against a 16-CPU node in multi-agent Tag benchmarks, and scaling to **10,000+ concurrent environment replicas on a single A100** [[Source](https://github.com/salesforce/warp-drive)]. It accompanied a JMLR 2022 paper on end-to-end multi-agent deep RL entirely on GPU.
+
+The honest caveat belongs up front rather than as a footnote: WarpDrive's repository is **archived and read-only**, with its last push on **2025-05-01** [[Source](https://github.com/salesforce/warp-drive)]. It is BSD-3-Clause and carries 503 stars, but it is no longer a live dependency choice — it belongs in this section on technical merit, as the clearest example of the direct-kernel-authorship path, rather than as something to build on today. Treat it the way Section 8 treats the historical Minecraft-agent projects: valuable to read, not safe to adopt.
+
+### 6.3 A GPU-Native ECS Engine: Madrona
+
+Madrona is architecturally distinct from every other framework in this section, and the distinction matters specifically to a graphics-stack audience: it is not JAX array code wearing a renderer's clothes, the way Craftax's tile compositor is. It is a real **game engine** — described in its own SIGGRAPH paper as "the first fully-GPU accelerated ECS implementation that natively supports batch environment simulation" [[Source](https://madrona-engine.github.io/)], published as "An Extensible, Data-Oriented Architecture for High-Performance, Many-World Simulation" (Shacklett et al., ACM Transactions on Graphics, SIGGRAPH 2023).
+
+The engine keeps its Entity Component System model but runs it on a CUDA GPU backend with unified-memory support (Linux only, Volta-or-newer, CUDA 12.4/12.8+), alongside a CPU backend that executes the identical code path for debugging and visualization [[Source](https://madrona-engine.github.io/)]. It exports ECS component state as PyTorch tensors directly from GPU memory, and it ships its own **high-throughput batch rasterizer** rather than delegating to Vulkan or a conventional engine's render graph — a genuine batch-rendering pipeline, not the array-blend trick Craftax's tile renderer performs. The performance claims are correspondingly framed against CPU game-engine baselines rather than against other JAX libraries: **100–300x over open-source CPU baselines and 5–33x over an optimized 32-thread CPU implementation**, with measured throughput of 2 million steps/second on an OpenAI Hide-and-Seek-style environment, 40 million steps/second on Overcooked-AI, and 20 million steps/second on Hanabi, all on a single RTX 4090 [[Source](https://madrona-engine.github.io/)]. Example projects distributed with the engine include `madrona_escape_room` and `madrona_puzzle_bench`. It is MIT-licensed, carries 513 stars, and was last pushed **2025-11-03**.
+
+Madrona's most direct connection to the rest of this book is `madrona_mjx`, a bridge that hands MuJoCo MJX's physics state to Madrona's batch renderer so that vision-based policies can train against physically simulated scenes at "rendering FPS in the hundreds of thousands," with integrations into MuJoCo Playground and Brax training pipelines [[Source](https://github.com/shacklettbp/madrona_mjx)]. That bridge is itself now deprecated in favor of **MJWarp**, MuJoCo's own native high-throughput batch renderer — the ecosystem's center of gravity has moved from a separate GPU-ECS renderer bolted onto MJX toward a renderer built into MuJoCo's own project, which Chapter 211a's MJX coverage is the place to follow further [[Source](https://github.com/shacklettbp/madrona_mjx)].
+
+### 6.4 The Deliberate Counter-Example: EnvPool
+
+Every framework so far answers the question "how do I put the environment on the GPU." EnvPool answers a different one: what do you do when the environment fundamentally cannot be rewritten as array or ECS code at all? Atari's ALE emulator, VizDoom, Google Research Football, and a full StarCraft II binary are irreducibly branching C++ and cannot be traced, `vmap`-ed, or expressed as batched entity updates — there is no rewrite that turns an emulator into array math.
+
+EnvPool's answer is to make the CPU path itself extremely well-engineered: a **C++ thread-pool-based vectorized execution engine**, exposed to Python through pybind11, supporting 16-plus environment families including Atari, MuJoCo, Classic Control, VizDoom, DeepMind Control Suite, Box2D, Google Research Football, Procgen, Minigrid, and MetaWorld [[Source](https://github.com/sail-sg/envpool)]. On an NVIDIA DGX-A100 with 256 CPU cores it reaches roughly **1 million frames per second on Atari and 3 million frames per second on MuJoCo** — throughput that rivals the GPU-native frameworks above for the class of environment that can accept it [[Source](https://github.com/sail-sg/envpool)]. It is Apache-2.0, carries **1,494 stars**, and was last pushed **2026-07-17** — actively maintained.
+
+The lesson EnvPool teaches is the one this section opened with: the choice is not "rewrite in JAX or accept a slow Pythonic bottleneck" as a universal binary. It is "match the technique to whether the environment's state-transition function can be expressed as data-parallel code at all." Gymnasium's own reference environments (Section 2.3) mostly cannot — many wrap exactly the emulators and physics engines EnvPool targets — which is why EnvPool, not a `vmap` rewrite, is the answer for that tier of environment, while Craftax-style rewrites are the answer for environments simple enough to express as array or ECS state.
+
+| Framework | Technique | Domain | Stars | License | Status |
+|---|---|---|---|---|---|
+| Brax | JAX/XLA, `vmap` | Continuous-control physics | 3,214 | Apache-2.0 | Active |
+| Pgx | JAX/XLA, `vmap` | Discrete board/card games | 635 | Apache-2.0 | Dormant (~17 mo) |
+| Jumanji | JAX/XLA, `vmap` | Combinatorial optimization | 855 | Apache-2.0 | Active |
+| WarpDrive | Hand-written CUDA/Numba | Multi-agent RL | 503 | BSD-3-Clause | Archived |
+| Madrona | GPU-native ECS engine | General batch simulation | 513 | MIT | Active |
+| EnvPool | CPU thread pool (C++) | Emulator-bound environments | 1,494 | Apache-2.0 | Active |
+
+*Star counts and push dates verified 2026-08-10.*
+
+---
+
+## 7. Decoupled Asynchronous Agent Loops: AI Town
 
 AI Town is the third shape. It is a maintained reimplementation of the "Generative Agents: Interactive Simulacra of Human Behavior" work (arXiv:2304.03442) — the "Smallville" simulation in which LLM-driven characters remember events, reflect on them, form plans, and hold conversations. It is MIT-licensed, carries **10,274 stars**, and was last pushed **2026-06-12** [[Source](https://github.com/a16z-infra/ai-town)].
 
 Its stated secondary goal is explicit and explains its existence: to provide a JavaScript/TypeScript framework for this class of simulation, since most simulators in the space — including the original paper's — are written in Python [[Source](https://github.com/a16z-infra/ai-town)]. The stack is Convex for the game engine, database, and vector search; PixiJS for rendering; and a pluggable LLM backend.
 
-### 6.1 The Arithmetic of Decoupling
+### 7.1 The Arithmetic of Decoupling
 
 The claim that the LLM loop is decoupled from the simulation tick does not need to be argued. It is visible in four constants in one file:
 
@@ -635,7 +702,7 @@ export const INPUT_DELAY = 1000; // Wait for 1s after sending an input to the en
 
 [[Source](https://github.com/a16z-infra/ai-town/blob/main/convex/constants.ts)]
 
-`MAX_PATHFINDS_PER_STEP = 16` is a per-step budget on the most expensive non-LLM operation, which is the standard way a simulation keeps a variable-cost subsystem from blowing the frame — the same reasoning as a navmesh query budget in a conventional game. `INPUT_DELAY = 1000` is the acknowledgement that this is a distributed system: an input submitted to the engine is not immediately visible, and the code waits a second rather than assuming read-after-write. `IDLE_WORLD_TIMEOUT` and `WORLD_HEARTBEAT_INTERVAL` are cost control, discussed in Section 6.5.
+`MAX_PATHFINDS_PER_STEP = 16` is a per-step budget on the most expensive non-LLM operation, which is the standard way a simulation keeps a variable-cost subsystem from blowing the frame — the same reasoning as a navmesh query budget in a conventional game. `INPUT_DELAY = 1000` is the acknowledgement that this is a distributed system: an input submitted to the engine is not immediately visible, and the code waits a second rather than assuming read-after-write. `IDLE_WORLD_TIMEOUT` and `WORLD_HEARTBEAT_INTERVAL` are cost control, discussed in Section 7.5.
 
 The conversation constants show the same philosophy applied to LLM spend:
 
@@ -651,7 +718,7 @@ export const INVITE_ACCEPT_PROBABILITY = 0.8;
 
 Every one of these is a bound on a process that would otherwise be unbounded. Conversations cap at 8 messages because each message is an LLM call and a two-agent conversation left alone will continue indefinitely. `CONVERSATION_DISTANCE = 1.3` ties cognition to spatial proximity, so agents only converse when adjacent — which is what keeps LLM calls proportional to interesting spatial events rather than to agent count squared. `INVITE_ACCEPT_PROBABILITY = 0.8` injects deliberate stochasticity so the social graph does not become deterministic. And a `TYPING_TIMEOUT` of 15 seconds is a UI affordance for latency: the typing indicator is how a multi-second generation is made to read as natural behaviour rather than as a hang. That is a genuinely transferable lesson — **the animation and UI layer is where LLM latency gets hidden**, and a game with LLM NPCs needs idle behaviours, thinking animations, and conversational filler as load-bearing architecture rather than polish. AI Town supplies exactly that in the form of an `ACTIVITIES` list — reading a book, daydreaming, gardening, 60 seconds each — that agents perform when they have nothing else to do.
 
-### 6.2 Engine, Inputs, and the Transactional Backend
+### 7.2 Engine, Inputs, and the Transactional Backend
 
 The Convex backend is not merely a database in this design; it is the game engine's execution substrate. The repository organizes it as `convex/engine/` for the generic simulation loop, `convex/aiTown/` for game-specific logic, and `convex/agent/` for cognition, alongside `schema.ts`, `crons.ts`, `http.ts`, and `constants.ts` [[Source](https://github.com/a16z-infra/ai-town)].
 
@@ -659,7 +726,7 @@ The property that makes this work is transactional. Convex is described as offer
 
 The `INPUT_DELAY` constant is the visible edge of this: the engine consumes *inputs* from a queue rather than accepting direct state mutation. An agent that decides to walk somewhere submits an input; the engine applies it on its next step. That indirection is what allows a slow, asynchronous decision-maker and a fast, synchronous simulator to share a world.
 
-### 6.3 Memory, Retrieval, and the Embedding Contract
+### 7.3 Memory, Retrieval, and the Embedding Contract
 
 `convex/agent/` contains four files, and their names are the cognitive architecture: `conversation.ts`, `memory.ts`, `embeddingsCache.ts`, and `schema.ts` [[Source](https://github.com/a16z-infra/ai-town)].
 
@@ -681,7 +748,7 @@ The one configuration hazard is dimensional. The default models are `llama3` for
 
 `VACUUM_MAX_AGE` is set to two weeks, so old data is reaped rather than accumulating indefinitely [[Source](https://github.com/a16z-infra/ai-town/blob/main/convex/constants.ts)] — memory growth being the other unbounded process in a long-running agent simulation.
 
-### 6.4 The Rendering Half: PixiJS
+### 7.4 The Rendering Half: PixiJS
 
 The client is where this chapter's usual concerns reappear. All interactions, background music, and rendering happen on a `<Game/>` component powered by **PixiJS** [[Source](https://github.com/a16z-infra/ai-town)].
 
@@ -691,7 +758,7 @@ The division of labour is clean and is the shape's main structural advantage. Th
 
 Contrast with Sections 3 and 4 one more time. There, the AI blocks the engine — the engine is documented as freezing during model updates. Here the AI *cannot* block the renderer, because they are separated by a network boundary and a database. For any application where a human is watching, that is the architecture to want.
 
-### 6.5 Local Inference and Cost Control
+### 7.5 Local Inference and Cost Control
 
 AI Town runs against Ollama for local inference by default, with Together.ai or any OpenAI-compatible API as alternatives, configured through Convex environment variables such as `npx convex env set OLLAMA_HOST` [[Source](https://github.com/a16z-infra/ai-town)]. Music generation uses Replicate's MusicGen. The self-hosted Docker layout exposes the frontend on 5173, the backend on 3210, the HTTP API on 3211, and a dashboard on 6791.
 
@@ -701,9 +768,9 @@ The cost-control mechanisms are explicit in the constants and the cron schedule.
 
 ---
 
-## 7. The Historical Tier: Lineage, Not Recommendations
+## 8. The Historical Tier: Lineage, Not Recommendations
 
-The projects below established the research agenda that Sections 3 through 6 build on. Most are no longer maintained. They are listed with last-commit dates so the maintenance status is a fact rather than an impression. Star counts and dates verified 2026-08-08.
+The projects below established the research agenda that Sections 3 through 7 build on. Most are no longer maintained. They are listed with last-commit dates so the maintenance status is a fact rather than an impression. Star counts and dates verified 2026-08-08.
 
 | Project | Stars | Last commit | Contribution |
 |---|---|---|---|
@@ -720,7 +787,7 @@ Two specific cautions. MineRL's most recent activity is on a `dev` branch rather
 
 Unity ML-Agents (`Unity-Technologies/ml-agents`, **19,612 stars**, actively pushed) belongs in this discussion as the commercially-backed precedent for the synchronous engine-bridge shape that Godot RL Agents occupies in the open-source world. Its license is reported inconsistently by automated tooling and is not asserted here — *Note: needs verification* against the repository's own `LICENSE.md` before any reuse decision.
 
-### 7.1 Maintained but CPU-Only: OpenSpiel and Melting Pot
+### 8.1 Maintained but CPU-Only: OpenSpiel and Melting Pot
 
 Two DeepMind libraries are genuinely maintained and deserve separating from the table above.
 
@@ -732,7 +799,7 @@ Both are CPU-only in the sense that matters for this chapter: their environments
 
 ---
 
-## 8. Three Integration Shapes, Compared
+## 9. Three Integration Shapes, Compared
 
 The chapter's argument, stated compactly.
 
@@ -756,7 +823,7 @@ Three cross-cutting observations.
 
 **Socket ownership is a genuine axis, not an implementation detail.** Godot RL Agents makes Python the server because the trainer owns the experiment lifecycle and must bind ports before games exist. `bevy_rl` makes the game the server because that lets anything speaking HTTP inspect and drive a live simulation. The first is better for throughput and orchestration; the second is better for interactivity and tooling. Both are correct for their priority, and knowing which priority you have determines which polarity you want.
 
-### 8.1 Choosing a Shape
+### 9.1 Choosing a Shape
 
 The choice is largely forced by what you already have and what you need. An existing game with existing content admits only **synchronous lockstep**, since it is the one shape that reuses the engine, the assets, and the gameplay code — the cost is IPC, mitigated by preferring structured observations over pixels and by Action Repeat. A benchmark that must absorb billions of steps justifies **vectorized headless**, whose price is a full rewrite in a functional array framework with every data-dependent branch reformulated as masked uniform work. Agents that reason or converse in language have no option but **decoupled async**: a 120-second cognition step cannot be made synchronous with a 16 ms frame, so the three clocks and the transactional store between them are structural requirements rather than design choices.
 
@@ -770,16 +837,20 @@ The choice is largely forced by what you already have and what you need. An exis
 
 **Chapter 69 — Omniverse, PhysX, and GR00T** describes the industrial-scale version of Section 5's vectorized-simulation argument. Isaac Lab applies the same insight — thousands of environment copies advancing in lockstep on one device, with the policy update fused into the same program — to robot learning with PhysX on a proprietary renderer and a USD scene model, where Craftax applies it to a 2D tile game with a hand-written JAX rasterizer. Reading them together separates the architectural idea from its implementation.
 
-**Chapter 211a — MuJoCo and MJX** is the closest structural analogue to Section 5 and the best companion to it. MJX is MuJoCo's step function rewritten as pure JAX so that XLA can compile and `vmap` thousands of parallel physics environments onto a single GPU; Craftax does the identical transformation to game logic and tile rendering. The constraints transfer exactly — fixed-size arrays, no data-dependent Python branching, masked uniform work instead of per-environment special cases — which is why both projects needed reset machinery of the kind Section 5.3 describes rather than a simple conditional.
+**Chapter 211a — MuJoCo and MJX** is the closest structural analogue to Section 5 and the best companion to it. MJX is MuJoCo's step function rewritten as pure JAX so that XLA can compile and `vmap` thousands of parallel physics environments onto a single GPU; Craftax does the identical transformation to game logic and tile rendering. The constraints transfer exactly — fixed-size arrays, no data-dependent Python branching, masked uniform work instead of per-environment special cases — which is why both projects needed reset machinery of the kind Section 5.3 describes rather than a simple conditional. Section 6.1's Brax is built by the same organization on the same technique for a different physics domain, and Section 6.3's Madrona connects to MJX directly through the now-deprecated `madrona_mjx` bridge, superseded by MuJoCo's own MJWarp batch renderer.
 
 **Chapter 240 — Isaac Sim and GR00T Synthetic Data Generation** covers the case where the *renderer's output is the product* rather than an observation to be consumed by a policy in the same process. That inverts this chapter's economics: Sections 3.4 and 4.3 treat GPU-to-CPU readback as pure overhead to be minimized or deleted, whereas a synthetic-data pipeline exists precisely to write rendered frames out at scale, making high-fidelity rasterization and domain randomization the goal rather than a tax.
 
-**Chapter 124 — Local LLM Inference** is the serving stack beneath Section 6. AI Town's default configuration points at Ollama with `llama3` for chat and `mxbai-embed-large` for embeddings, and the practical size of a simulation is set by that chapter's concerns — quantization choices, KV-cache management, continuous batching, and GPU memory pressure — since concurrent agent conversations are concurrent generation requests. It also explains the contention this shape uniquely suffers: the LLM and the PixiJS client can end up competing for the same device.
+**Chapter 124 — Local LLM Inference** is the serving stack beneath Section 7. AI Town's default configuration points at Ollama with `llama3` for chat and `mxbai-embed-large` for embeddings, and the practical size of a simulation is set by that chapter's concerns — quantization choices, KV-cache management, continuous batching, and GPU memory pressure — since concurrent agent conversations are concurrent generation requests. It also explains the contention this shape uniquely suffers: the LLM and the PixiJS client can end up competing for the same device.
 
 ---
 
 ## References
 
+- [Ito, Takahashi — "Game Agent Driven by Free-Form Text Command: Using LLM-based Code Generation and Behavior Branch"](https://arxiv.org/abs/2402.07442) — LLM translates free-form natural-language commands into behaviour-tree-based "behavior branches"; validated on a Pokémon-style simulation (§1.1)
+- [Ao, Wu, Wu, Swikir, Haddadin — "LLM-as-BT-Planner: Leveraging LLMs for Behavior Tree Generation in Robot Task Planning"](https://arxiv.org/abs/2409.10444) — ICRA 2025; LLM plus in-context learning and fine-tuning generates behaviour trees for robot assembly planning (§1.1)
+- [Shan, Michel — "Generative AI with GOAP for Fast-Paced Dynamic Decision-Making in Game Environments"](https://ieeexplore.ieee.org/document/10645549) — IEEE CoG 2024; GOAP handles real-time action selection while an LLM contributes a slower strategic layer, addressing LLM call latency in a fast-paced game loop (§1.1)
+- [Kelley — "Behavior Trees Enable Structured Programming of Language Model Agents"](https://arxiv.org/abs/2404.07439) — behaviour-tree composition (sequences, selectors, decorators) as scaffolding that constrains an LLM agent, implemented as the Dendron library (§1.1)
 - [Gymnasium](https://github.com/Farama-Foundation/Gymnasium) — Farama Foundation single-agent RL environment API; MIT, 12,298 stars, last pushed 2026-08-05 (§2)
 - [Gymnasium `pyproject.toml`](https://github.com/Farama-Foundation/Gymnasium/blob/main/pyproject.toml) — core dependency set contains no graphics library; `pygame-ce` appears only in `classic-control`, `box2d`, and `toy-text` extras (§2.3)
 - [Gymnasium — Basic Usage](https://gymnasium.farama.org/introduction/basic_usage/) — canonical `reset`/`step`/`close` loop, `terminated` vs `truncated`, and the `render_mode` values (§2.1–2.3)
@@ -799,15 +870,22 @@ The choice is largely forced by what you already have and what you need. An exis
 - [Craftax `craftax_pixels_env.py`](https://github.com/MichaelTMatthews/Craftax/blob/c3c2e0d038c4e641f9481320c158f457f30c28f3/craftax/craftax/envs/craftax_pixels_env.py) — `make_craftax_pixel_renderer` called from `get_obs` inside `step_env` under `lax.stop_gradient`, proving rasterization is traced JAX array code rather than a graphics-API call; plus the observation-space shape (§5.2)
 - [Craftax paper — arXiv:2402.16801](https://arxiv.org/abs/2402.16801) — ICML 2024; "up to 250x faster than the Python-native original" and "1 billion environment interactions finishes in under an hour using only a single GPU"; Craftax-Classic vs Craftax (§5)
 - [gymnax](https://github.com/RobertTLange/gymnax) — the functional JAX environment interface Craftax conforms to; 912 stars, active (§5.1)
-- [AI Town](https://github.com/a16z-infra/ai-town) — maintained TypeScript reimplementation of the generative-agents simulation; MIT, 10,274 stars, last pushed 2026-06-12; Convex backend, PixiJS rendering, Ollama/OpenAI-compatible LLM backends, Docker port layout, `EMBEDDING_DIMENSION` requirement (§6)
-- [AI Town `convex/constants.ts`](https://github.com/a16z-infra/ai-town/blob/main/convex/constants.ts) — `TICK = 16`, `STEP_INTERVAL = 1000`, `AGENT_WAKEUP_THRESHOLD = 1000`, `ACTION_TIMEOUT = 120_000`, conversation and pathfinding budgets, `NUM_MEMORIES_TO_SEARCH` 10x over-fetch comment, `VACUUM_MAX_AGE` (§6.1–6.5)
-- [Generative Agents — arXiv:2304.03442](https://arxiv.org/abs/2304.03442) — "Interactive Simulacra of Human Behavior"; the memory/reflection/planning architecture AI Town reimplements (§6, §7)
-- [generative_agents](https://github.com/joonspk-research/generative_agents) — reference implementation of the above; 21,899 stars, last commit 2023-08-11 (§7)
-- [Voyager](https://github.com/MineDojo/Voyager) — LLM-driven open-ended Minecraft agent using generated code as the action space; 7,121 stars, last commit 2023-07-27 (§7)
-- [MineDojo](https://github.com/MineDojo/MineDojo) — Minecraft task suite with internet-scale knowledge base; 2,244 stars, last commit 2023-08-29 (§7)
-- [MineRL](https://github.com/minerllabs/minerl) — Minecraft RL environment and human-demonstration dataset; 969 stars, last commit 2025-01-22 on `dev` (§7)
-- [Crafter](https://github.com/danijar/crafter) — the original Python survival benchmark Craftax reimplements; 577 stars, last commit 2023-12-13 (§7)
-- [MindAgent](https://github.com/mindagent/mindagent) — LLM multi-agent gaming-coordination research artifact; 102 stars, last commit 2024-06-12, no license field (§7)
-- [Unity ML-Agents](https://github.com/Unity-Technologies/ml-agents) — commercially-backed precedent for the synchronous engine-bridge architecture; 19,612 stars, active; license not verified in this pass (§7)
-- [OpenSpiel](https://github.com/google-deepmind/open_spiel) — framework for research in games spanning perfect/imperfect information and cooperative/zero-sum settings; 5,395 stars, active, CPU-only (§7.1)
-- [Melting Pot](https://github.com/google-deepmind/meltingpot) — multi-agent social-behaviour evaluation suite emphasising generalization to unfamiliar co-players; 860 stars, active, CPU-only (§7.1)
+- [Brax](https://github.com/google/brax) — Google's JAX-native massively-parallel rigidbody physics engine; Apache-2.0, 3,214 stars, last pushed 2026-08-06; "millions of physics steps per second" on TPU (§6.1)
+- [Pgx](https://github.com/sotetsuk/pgx) — vectorized JAX board/card-game environments; Apache-2.0, 635 stars, last pushed 2025-03-06; 27 games including Chess, Shogi, Go, Backgammon, poker variants, mahjong, bridge, and MinAtar (§6.1)
+- [Jumanji](https://github.com/instadeepai/jumanji) — InstaDeep's JAX suite of combinatorial-optimization and routing environments; Apache-2.0, 855 stars, last pushed 2026-08-04; 22 environments, hybrid Gym-registry/`dm_env`-`TimeStep` API (§6.1)
+- [WarpDrive](https://github.com/salesforce/warp-drive) — Salesforce's hand-written CUDA/Numba multi-agent RL framework; BSD-3-Clause, 503 stars, **archived**, last pushed 2025-05-01; 100x+ CPU throughput claim, 10,000+ environments on one A100, JMLR 2022 (§6.2)
+- [Madrona](https://madrona-engine.github.io/) — GPU-native ECS batch-simulation game engine with its own batch rasterizer and PyTorch tensor export; MIT, 513 stars, last pushed 2025-11-03; SIGGRAPH 2023 (Shacklett et al., "An Extensible, Data-Oriented Architecture for High-Performance, Many-World Simulation"), 100–300x over CPU baselines (§6.3)
+- [`madrona_mjx`](https://github.com/shacklettbp/madrona_mjx) — bridge from Madrona's batch renderer to MuJoCo MJX physics for vision-based RL; 163 stars, deprecated in favor of MJWarp; hundreds of thousands of rendering FPS, integrates with MuJoCo Playground and Brax (§6.3)
+- [EnvPool](https://github.com/sail-sg/envpool) — C++ thread-pool-based vectorized execution engine for emulator-bound environments (Atari, VizDoom, DeepMind Control Suite, Google Research Football, and more); Apache-2.0, 1,494 stars, last pushed 2026-07-17; ~1M FPS Atari / ~3M FPS MuJoCo on a DGX-A100 (§6.4)
+- [AI Town](https://github.com/a16z-infra/ai-town) — maintained TypeScript reimplementation of the generative-agents simulation; MIT, 10,274 stars, last pushed 2026-06-12; Convex backend, PixiJS rendering, Ollama/OpenAI-compatible LLM backends, Docker port layout, `EMBEDDING_DIMENSION` requirement (§7)
+- [AI Town `convex/constants.ts`](https://github.com/a16z-infra/ai-town/blob/main/convex/constants.ts) — `TICK = 16`, `STEP_INTERVAL = 1000`, `AGENT_WAKEUP_THRESHOLD = 1000`, `ACTION_TIMEOUT = 120_000`, conversation and pathfinding budgets, `NUM_MEMORIES_TO_SEARCH` 10x over-fetch comment, `VACUUM_MAX_AGE` (§7.1–7.5)
+- [Generative Agents — arXiv:2304.03442](https://arxiv.org/abs/2304.03442) — "Interactive Simulacra of Human Behavior"; the memory/reflection/planning architecture AI Town reimplements (§7, §8)
+- [generative_agents](https://github.com/joonspk-research/generative_agents) — reference implementation of the above; 21,899 stars, last commit 2023-08-11 (§8)
+- [Voyager](https://github.com/MineDojo/Voyager) — LLM-driven open-ended Minecraft agent using generated code as the action space; 7,121 stars, last commit 2023-07-27 (§8)
+- [MineDojo](https://github.com/MineDojo/MineDojo) — Minecraft task suite with internet-scale knowledge base; 2,244 stars, last commit 2023-08-29 (§8)
+- [MineRL](https://github.com/minerllabs/minerl) — Minecraft RL environment and human-demonstration dataset; 969 stars, last commit 2025-01-22 on `dev` (§8)
+- [Crafter](https://github.com/danijar/crafter) — the original Python survival benchmark Craftax reimplements; 577 stars, last commit 2023-12-13 (§8)
+- [MindAgent](https://github.com/mindagent/mindagent) — LLM multi-agent gaming-coordination research artifact; 102 stars, last commit 2024-06-12, no license field (§8)
+- [Unity ML-Agents](https://github.com/Unity-Technologies/ml-agents) — commercially-backed precedent for the synchronous engine-bridge architecture; 19,612 stars, active; license not verified in this pass (§8)
+- [OpenSpiel](https://github.com/google-deepmind/open_spiel) — framework for research in games spanning perfect/imperfect information and cooperative/zero-sum settings; 5,395 stars, active, CPU-only (§8.1)
+- [Melting Pot](https://github.com/google-deepmind/meltingpot) — multi-agent social-behaviour evaluation suite emphasising generalization to unfamiliar co-players; 860 stars, active, CPU-only (§8.1)

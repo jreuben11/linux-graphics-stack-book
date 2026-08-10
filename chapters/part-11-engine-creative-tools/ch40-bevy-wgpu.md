@@ -17,6 +17,7 @@
 - [6. Compute in Bevy](#6-compute-in-bevy)
 - [7. Unreal Engine 5 and Unity: The Closed-Source Counterpoints](#7-unreal-engine-5-and-unity-the-closed-source-counterpoints)
 - [8. Popular Bevy Third-Party Crates](#8-popular-bevy-third-party-crates)
+- [9. Fyrox: The All-in-One Rust-Native Alternative](#9-fyrox-the-all-in-one-rust-native-alternative)
 - [Roadmap](#roadmap)
 - [Integrations](#integrations)
 - [References](#references)
@@ -1543,6 +1544,36 @@ struct LevelAsset(Handle<Level>);
 [Source](https://raw.githubusercontent.com/NiklasEi/bevy_common_assets/v0.17.0/src/lib.rs) (doctest, compiler-checked at the 0.17.0 tag)
 
 `bevy_asset_loader`'s `standard_dynamic_assets` Cargo feature depends directly on `bevy_common_assets` to parse `.ron` dynamic-asset manifests — the two crates in this subsection compose by direct dependency, not just by convention.
+
+---
+
+## 9. Fyrox: The All-in-One Rust-Native Alternative
+
+Where Section 7 covers Bevy's closed-source counterparts, Fyrox (formerly rg3d) is the closest thing Rust has to an open-source *architectural* alternative to Bevy: another MIT-licensed, pure-Rust engine, but one that rejects Bevy's ECS-and-crates philosophy in favour of a classic scene-graph engine with a first-party visual editor, closer in spirit to Godot or Unity than to Bevy. [Source](https://github.com/FyroxEngine/Fyrox)
+
+### Architecture: Scene Graph, Not ECS
+
+Fyrox structures a game as a hierarchy of scene nodes (a scene graph), not as entities composed from components under a central `World`. Game logic is written as **scripts** — Rust structs attached to individual scene nodes — rather than as systems operating over query results. [Source](https://fyrox-book.github.io/beginning/scripting.html) The engine ships a full **plugin model**: a game project is itself a plugin consumed by both the runtime and the editor, and a `game-dylib` crate bridges game code into the editor as a dynamic library, enabling **native code hot reloading** — script changes take effect in a running scene without a full restart. Bevy has no equivalent first-party hot-reload path for compiled Rust systems. [Source](https://fyrox-book.github.io/beginning/scripting.html)
+
+### FyroxEd: A Dogfooded Editor
+
+Unlike Bevy, which has no official editor as of 2026 (`bevy_editor_prototypes` remains an early-stage discussion, [Source](https://github.com/bevyengine/bevy_editor_prototypes/discussions/1)), Fyrox ships **FyroxEd**, a Unity-style visual editor with scene hierarchies, prefabs, and inspector panels. FyroxEd is built using Fyrox itself — the editor crate `fyroxed_base` depends directly on the `fyrox` engine crate and its `fyrox-ui` retained-mode UI toolkit, rather than being a separate Qt or Electron application. [Source](https://github.com/FyroxEngine/Fyrox/blob/v1.0.0/editor/Cargo.toml)
+
+### Rendering Backend: OpenGL Today, an Unmerged wgpu Path in Progress
+
+This is the detail most relevant to a book tracking how engines reach Mesa. As of the **v1.0.0** release (2026-03-29), Fyrox's only shipping rendering backend is **OpenGL**, via the `glow` crate — not wgpu, and not Vulkan. [Source](https://github.com/FyroxEngine/Fyrox/blob/v1.0.0/fyrox-graphics-gl/Cargo.toml) On native Linux, `fyrox-graphics-gl` requests an OpenGL 3.3 core-profile context, falling back to GLES 3.0 core-profile. [Source](https://github.com/FyroxEngine/Fyrox/blob/v1.0.0/fyrox-graphics-gl/src/server.rs) That GL context reaches Mesa through the legacy GLX/EGL desktop-GL path — `i965`/`iris`/`radeonsi`/`zink` depending on driver and hardware — rather than the SPIR-V → `vk_spirv_to_nir()` route that Bevy's wgpu backend, UE5, and Unity all share (§2–§3, §7).
+
+The engine's rendering code is nonetheless already split into a backend-agnostic `fyrox-graphics` crate (trait-based "graphics server": `buffer.rs`, `framebuffer.rs`, `gpu_program.rs`, `gpu_texture.rs`, `server.rs`, no backend-specific code) and the concrete `fyrox-graphics-gl` implementation — a seam built specifically to allow additional backends. [Source](https://github.com/FyroxEngine/Fyrox/blob/v1.0.0/fyrox-graphics/src) A wgpu backend has been discussed since 2021 in [issue #133](https://github.com/FyroxEngine/Fyrox/issues/133) and tracked since 2025 in [issue #721](https://github.com/FyroxEngine/Fyrox/issues/721); as of mid-2026 it exists as an **unmerged, feature-flagged draft**, [PR #927](https://github.com/FyroxEngine/Fyrox/pull/927), gated behind a `backend_wgpu` Cargo feature with the OpenGL backend remaining the default, and with known gaps (deferred-renderer camera bugs, no MSAA on the wgpu path). A separate, direct-Vulkan attempt, [PR #859](https://github.com/FyroxEngine/Fyrox/pull/859), was opened and closed without an implementation landing. Until one of these merges, Fyrox is a Mesa client only through the legacy desktop-GL path, not through Vulkan.
+
+The renderer itself pairs a deferred pipeline for opaque geometry with a forward pipeline for transparent geometry, and is architecturally decoupled from the scene graph (the renderer depends on scene data; the scene has no dependency back on the renderer). [Source](https://github.com/FyroxEngine/Fyrox/blob/master/ARCHITECTURE.md)
+
+### Physics and Ecosystem
+
+Fyrox uses **Rapier** for both 2D and 3D physics — the same physics engine `bevy_rapier` (§8.1) wraps for Bevy — pinned to `rapier2d`/`rapier3d` 0.32 as of v1.0.0. [Source](https://github.com/FyroxEngine/Fyrox/blob/v1.0.0/fyrox-impl/Cargo.toml) This is a notable convergence point: Bevy's third-party physics ecosystem and Fyrox's built-in physics sit on the identical Rust physics engine, so the underlying simulation code is shared even though the two engines' integration models (crate-plus-ECS-plugin vs. built-in-and-scripted) differ.
+
+### When to Reach for Fyrox Instead of Bevy
+
+Fyrox trades Bevy's compile-your-own-engine flexibility for batteries-included tooling: a project that wants a Unity/Godot-style visual scene editor, prefabs, and native hot reload out of the box — and does not need the ECS performance model or Bevy's much larger plugin ecosystem (§8) — is better served by Fyrox. A project that wants fine-grained control over the render graph, the largest Rust game-dev community, or a wgpu-based path that already reaches Vulkan/Metal/D3D12 today rather than as an in-progress patch, is better served by Bevy. Fyrox's own showcase page lists mostly first-party tech demos (Station Iapetus, Fish Folly) alongside a small number of third-party FOSS multiplayer shooters (RustCycles, Breakfloor) rather than a broad commercial catalogue, indicating an earlier point on the adoption curve than Bevy's. [Source](https://fyrox.rs/games.html)
 
 ---
 
