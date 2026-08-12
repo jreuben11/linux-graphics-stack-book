@@ -128,6 +128,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 
 *The layer between compositor and application: calibration, HDR and wide colour gamut, colour science and ICC profiles, the Linux input stack, touch and stylus input, VRR, font rendering, screen capture, remote desktop, HDMI audio, DisplayPort MST, and desktop IPC.*
 
+- [Part Overview](chapters/part-06b-display-services/part-intro.md)
 - [Ch 53: Display Calibration and colord](chapters/part-06b-display-services/ch53-display-calibration-colord.md)
 - [Ch 54: The Linux Input Stack](chapters/part-06b-display-services/ch54-linux-input-stack.md)
 - [Ch 74: HDR and Wide Color Gamut on Linux](chapters/part-06b-display-services/ch74-hdr-wide-color-gamut.md)
@@ -175,6 +176,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 
 *Where GPU resources meet application-layer multimedia: PipeWire's graph model and session management, ALSA's kernel architecture and libasound API, Qt/GTK GPU rendering, font and text layout, Vulkan Video extensions, libcamera, Flatpak GPU access, and OpenCV GPU acceleration.*
 
+- [Part Overview](chapters/part-07b-multimedia-frameworks/part-intro.md)
 - [Ch 38: PipeWire and the Video Session Layer](chapters/part-07b-multimedia-frameworks/ch38-pipewire.md)
 - [Ch 38b: ALSA — The Linux Audio Subsystem](chapters/part-07b-multimedia-frameworks/ch38b-alsa-linux-audio-subsystem.md)
 *(Ch 39: Qt and GTK GPU Rendering has been absorbed into Part VII-C — see Ch39a–Ch39i under Desktop Frameworks below)*
@@ -187,6 +189,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 209: OpenSLAM — Classical and Graph-Based SLAM on the Linux Stack](chapters/part-07b-multimedia-frameworks/ch209-openslam.md)
 - [Ch 210: SLAM Theory and State of the Art](chapters/part-07b-multimedia-frameworks/ch210-slam-theory-sota.md)
 - [Ch 211: ROS 2 Multimodal Sensor and Perception Pipeline](chapters/part-07b-multimedia-frameworks/ch211-ros2-sensor-perception-pipeline.md)
+- [Ch 211b: NVIDIA Isaac Sim, Isaac Lab, and the GR00T Foundation-Model Family](chapters/part-07b-multimedia-frameworks/ch211b-isaac-sim-isaac-lab-groot.md)
 
 ---
 
@@ -277,8 +280,15 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 42: Blender GPU — Cycles and EEVEE](chapters/part-11-engine-creative-tools/ch42-blender-gpu.md)
 - [Ch 97: Unreal Engine 5 on Linux](chapters/part-11-engine-creative-tools/ch97-unreal-engine-5.md)
 - [Ch 176: OpenCASCADE Technology — The BRep Kernel and 3D Visualization Stack](chapters/part-11-engine-creative-tools/ch176-opencascade-cad-kernel.md)
+- [Ch 176a: State-of-the-Art CAD AI — Generative Models, Reverse Engineering, and Agentic Design](chapters/part-11-engine-creative-tools/ch176a-sota-cad-ai.md)
 - [Ch 190: VTK — Scientific Visualization on the Linux Graphics Stack](chapters/part-11-engine-creative-tools/ch190-vtk-scientific-visualization.md)
 - [Ch 205: AI-Driven 3D Creation — Blender MCP, Claude Code, and Generative Tools](chapters/part-11-engine-creative-tools/ch205-blender-ai-mcp.md)
+- [Ch 205a: Programmable Games and Competitive-Code Sandboxes](chapters/part-11-engine-creative-tools/ch205a-programmable-games.md)
+- [Ch 205b: AI Agents in Games — RL Environments and LLM-Driven NPCs](chapters/part-11-engine-creative-tools/ch205b-ai-agents-in-games.md)
+- [Ch 205c: Open-Source 2D Simulation-Game Engines](chapters/part-11-engine-creative-tools/ch205c-2d-simulation-engines.md)
+- [Ch 205d: Modding Architectures — Scripting, Sandboxing, and Hot-Reload on Linux](chapters/part-11-engine-creative-tools/ch205d-modding-architectures.md)
+- [Ch 205e: FOSS Simulation-Game Frameworks — Data Models, Rules Engines, and Modding as SDKs](chapters/part-11-engine-creative-tools/ch205e-simulation-game-frameworks.md)
+- [Ch 205f: Artificial Life on the GPU — Cellular Automata, Lenia, and Digital-Organism Simulators](chapters/part-11-engine-creative-tools/ch205f-artificial-life-gpu.md)
 
 ---
 
@@ -339,6 +349,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 69: NVIDIA Omniverse, OpenUSD, and the RTX Renderer](chapters/part-15-nvidia-stack/ch69-omniverse-usd.md)
 - [Ch 70: RTX Kit — RTXDI, RTXGI, NRD, RTXNS, and RTXNTC](chapters/part-15-nvidia-stack/ch70-rtx-kit.md)
 - [Ch 117: Slang — Differentiable and Modular Shading Language](chapters/part-15-nvidia-stack/ch117-slang-differentiable-shading.md)
+- [Ch 240: NVIDIA Cosmos, OSMO, and Omniverse Farm — Orchestrating Physical AI at Scale](chapters/part-15-nvidia-stack/ch240-cosmos-osmo-omniverse-farm.md)
 
 ---
 
@@ -385,7 +396,6 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 87: Android AR: ARCore Architecture, Camera HAL Integration, and the Android XR Platform](chapters/part-19-android-graphics/ch87-android-ar-arcore.md)
 - [Ch 161: Android Game Development Kit (AGDK) — Native Game Architecture, Input, Audio, and Frame Pacing](chapters/part-19-android-graphics/ch161-android-game-development-kit.md)
 - [Ch 164: Android Runtime and Native Interop — ART, JNI, and the NDK](chapters/part-19-android-graphics/ch164-android-runtime-native-interop.md)
-- [Ch 166: Android XR](chapters/part-19-android-graphics/ch166-android-xr.md)
 - [Ch 191: LiteRT and MediaPipe](chapters/part-19-android-graphics/ch191-litert-mediapipe.md)
 
 ---
@@ -403,6 +413,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 124: Local LLM Inference on Linux GPUs](chapters/part-20-ai-inference/ch124-llm-inference-linux.md)
 - [Ch 199: Jupyter Internals — Architecture, Python Runtime, Multi-Kernel Support, and GPU Computing](chapters/part-20-ai-inference/ch199-jupyter-internals.md)
 - [Ch 212: Python 3D ML Libraries — Open3D, PyTorch3D, and Kaolin](chapters/part-20-ai-inference/ch212-open3d-pytorch3d-kaolin.md)
+- [Ch 239: Geometric Abstraction for World-Model Visual Reasoning](chapters/part-20-ai-inference/ch239-geometric-abstraction-world-models.md)
 
 ---
 
@@ -450,6 +461,8 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 ### Part XXIX — Graphics Algorithms
 
 *Fifteen chapters covering the algorithms that run on top of the Linux graphics stack: shader techniques, GPU geometry, image processing, video processing, performance optimization, computational geometry, shape analysis, and computational topology.*
+
+- [Part Overview](chapters/part-29-graphics-algorithms/part-intro.md)
 
 **Shader Algorithm Catalog (Ch 204–207)**
 - [Ch 204: Shader Algorithm Catalog — Rendering Pipeline, Lighting, and Shadows](chapters/part-29-graphics-algorithms/ch204-shader-algorithm-catalog.md)
@@ -517,7 +530,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Appendix T: Terminal Graphics Protocol Reference](chapters/appendices/appendix-t-terminal-graphics-protocol-reference.md)
 - [Appendix U: WebGPU API Quick Reference](chapters/appendices/appendix-u-webgpu-api-reference.md)
 
-**Total: 226 chapters + 21 appendices**
+**Total: 265 chapters + 21 appendices**
 
 ## Repository Structure
 
@@ -630,12 +643,9 @@ chapters/
     ch165-vulkan-video.md
     ch173-vk-ext-shader-object.md
     ch192-vk-ext-device-generated-commands.md
-    ch204-shader-algorithm-catalog.md
-    ch208-gpu-geometry-algorithms.md
   part-07b-multimedia-frameworks/
     ch38-pipewire.md
     ch38b-alsa-linux-audio-subsystem.md
-
     ch47-font-text-rendering.md
     ch50-vulkan-video.md
     ch96-libcamera.md
@@ -645,6 +655,17 @@ chapters/
     ch209-openslam.md
     ch210-slam-theory-sota.md
     ch211-ros2-sensor-perception-pipeline.md
+    ch211b-isaac-sim-isaac-lab-groot.md
+  part-07c-desktop-frameworks/
+    ch39a-qt6.md
+    ch39b-kde.md
+    ch39c-gtk4.md
+    ch39d-gnome.md
+    ch39e-iced.md
+    ch39f-libcosmic.md
+    ch39g-flutter.md
+    ch39h-dear-imgui.md
+    ch39i-desktop-framework-comparisons.md
   part-08-gaming-layer/
     ch28-windows-compatibility.md
     ch29-upscaling-effects-overlays.md
@@ -690,8 +711,15 @@ chapters/
     ch42-blender-gpu.md
     ch97-unreal-engine-5.md
     ch176-opencascade-cad-kernel.md
+    ch176a-sota-cad-ai.md
     ch190-vtk-scientific-visualization.md
     ch205-blender-ai-mcp.md
+    ch205a-programmable-games.md
+    ch205b-ai-agents-in-games.md
+    ch205c-2d-simulation-engines.md
+    ch205d-modding-architectures.md
+    ch205e-simulation-game-frameworks.md
+    ch205f-artificial-life-gpu.md
   part-12-terminal-graphics/
     ch43-terminal-pixel-protocols.md
     ch44-terminal-gpu-rendering.md
@@ -724,6 +752,7 @@ chapters/
     ch69-omniverse-usd.md
     ch70-rtx-kit.md
     ch117-slang-differentiable-shading.md
+    ch240-cosmos-osmo-omniverse-farm.md
   part-16-intel-stack/
     ch71-intel-xe-arc.md
   part-17-amd-ecosystem/
@@ -742,7 +771,6 @@ chapters/
     ch87-android-ar-arcore.md
     ch161-android-game-development-kit.md
     ch164-android-runtime-native-interop.md
-    ch166-android-xr.md
     ch191-litert-mediapipe.md
   part-20-ai-inference/
     ch48-rocm-ml-linux.md
@@ -753,6 +781,7 @@ chapters/
     ch124-llm-inference-linux.md
     ch199-jupyter-internals.md
     ch212-open3d-pytorch3d-kaolin.md
+    ch239-geometric-abstraction-world-models.md
   part-21-platform-legacy/
     ch95-x11-xorg-dri-legacy.md
     ch103-history-design-philosophy.md
