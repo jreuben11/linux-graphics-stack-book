@@ -83,6 +83,8 @@ Isaac Sim 4.5 renamed essentially every extension in the product. The old namesp
 
 The practical consequence for anyone reading tutorials, blog posts, or Stack Overflow answers: any code importing `omni.isaac.core` predates 4.5 and will not run on a current install. This is not a deprecation shim situation — the old module names are gone.
 
+Isaac Sim's own version number and the Omniverse Kit SDK version underneath it (Ch69 §9) are independent numbering schemes tracking different release cadences, and Isaac Sim's release notes pin the mapping explicitly at each release: Isaac Sim 4.5.0 updated its embedded Kit SDK from 106.1.0 to 106.5.0 [Source](https://docs.isaacsim.omniverse.nvidia.com/4.5.0/overview/release_notes.html), and Isaac Sim 6.0.1 updated from Kit SDK 110.1.1 (introduced in Isaac Sim 6.0.0) to 110.1.2 [Source](https://docs.isaacsim.omniverse.nvidia.com/6.0.1/overview/release_notes.html). Concretely: the 4.5-era `omni.isaac.*`→`isaacsim.*` rename above shipped on Kit 106.x, the same Kit generation as Ch69's 25.02 SDK target (Ch69 §4.2); the `.experimental.` naming inversion below and the Newton integration (§8) ship on Kit 110.x, two Kit generations later. A reader debugging a Kit-level rendering or extension-loading issue against a specific Isaac Sim install should check that install's own release notes for the exact Kit SDK point release rather than assuming it matches Ch69's Kit 106.x/109.0/110.1 examples, which were sourced from Omniverse's own release notes rather than from an Isaac Sim build.
+
 ### 2.2 The Deprecation Sweep and `.experimental.` Naming
 
 A second, subtler churn event followed. In the Isaac Sim source tree at tag `v6.0.1`, the extensions are split across two directories: `source/extensions/` and `source/deprecated/`. Several extension IDs that most documentation still presents as current now live under `source/deprecated/` — including `isaacsim.core.api`, `isaacsim.sensors.rtx`, `isaacsim.sensors.physics`, and `isaacsim.sensors.camera` [Source](https://github.com/isaac-sim/IsaacSim/tree/v6.0.1/source/deprecated).
@@ -408,7 +410,7 @@ Separately, the documentation offers a hardware-scaled recommendation for camera
 
 ## 8. Newton: The Linux Foundation Physics Engine
 
-Newton is a GPU-accelerated physics engine hosted as a Linux Foundation project, initiated by Disney Research, Google DeepMind, and NVIDIA, and built on NVIDIA Warp [Source](https://github.com/newton-physics/newton). It generalises and supersedes Warp's deprecated `warp.sim` module, and its primary solver backend is MuJoCo-Warp, with an XPBD solver also available.
+Newton is a GPU-accelerated physics engine hosted as a Linux Foundation project, initiated by Disney Research, Google DeepMind, and NVIDIA, and built on NVIDIA Warp [Source](https://github.com/newton-physics/newton). It generalises and supersedes Warp's deprecated `warp.sim` module, and its primary solver backend is MuJoCo-Warp, with an XPBD solver also available. That solver choice is worth pausing on: it makes Newton the convergence point between this chapter's Isaac Lab path and the MJX-Warp variant of MuJoCo XLA covered in §11's comparison table below — not two independent GPU-physics efforts that happen to share a vendor, but the same underlying solver reached from both the NVIDIA-stack side and the vendor-neutral MuJoCo side. Chapter 211a covers MuJoCo/MJX's own side of that convergence in depth.
 
 Licensing is two-part, and the code licence file has a non-obvious name: `LICENSE.md` carries Apache-2.0 for the code, while documentation is CC-BY-4.0 [Source](https://github.com/newton-physics/newton/blob/main/LICENSE.md).
 
@@ -491,6 +493,25 @@ Three cautions follow:
 The structural rule to carry away: **repository code licence and model weights licence are independent**, and for GR00T the weights licence also varies by checkpoint version. Apache-2.0 on the inference code says nothing about whether you may deploy the weights commercially.
 
 > **Note: needs verification.** Model licensing changes without notice and without a version bump on the card. The table above is a point-in-time observation on 2026-08-10. Verify against the specific model card before any deployment decision.
+
+**Licensing across the stack, consolidated.** This chapter has now stated a separate licence for each layer, in the section covering that layer. Because "what licence governs X" is exactly the kind of question a reader returns to the chapter for later, without wanting to re-read every section, it is worth collecting those statements in one place rather than leaving them to be found by cross-reference alone:
+
+| Component | Licence | Section |
+|---|---|---|
+| Isaac Sim source (`isaac-sim/IsaacSim`) | Apache-2.0, over a proprietary Kit SDK runtime not covered by that grant | §2.4 |
+| Isaac Sim bundled assets/models | Separate terms, not Apache-2.0 | §2.4 |
+| IsaacSimZMQ bridge | MIT | §5.3 |
+| Isaac Lab core | BSD-3-Clause | §6.3 |
+| Isaac Lab `isaaclab_mimic` | Apache-2.0 (root-level `LICENSE-mimic`, mechanically enforced per-tree) | §6.3 |
+| MimicGen (`NVlabs/mimicgen`, the original algorithm `isaaclab_mimic` reimplements) | "NVIDIA License," not Apache-2.0 | §10 |
+| Newton code | Apache-2.0 | §8 |
+| Newton documentation | CC-BY-4.0 | §8 |
+| Isaac-GR00T repository code | Apache-2.0 | §9.5 |
+| GR00T-N1/N1.5/N1.6 weights | NVIDIA OneWay Noncommercial Licence | §9.5 |
+| GR00T-N1.7 weights | NVIDIA Open Model Licence Agreement | §9.5 |
+| GR00T weights under OpenMDW-1.1 | None currently — stated as a future intention only (Ch240 §2.2 covers OpenMDW-1.1 for Cosmos, not GR00T) | §9.5 |
+
+No single licence governs "Isaac Sim" or "GR00T" as a whole, and the two axes that most often get collapsed into one — repository code licence and shipped-artifact (runtime, asset, or weights) licence — are independent at every layer in this table, not just at the GR00T checkpoint boundary discussed in §9.5.
 
 ### 9.6 Inference: In-Process Policy and Client/Server
 
@@ -590,6 +611,8 @@ Readers approaching this stack from the **graphics** side rather than the roboti
 - [Isaac Sim repository, tag v6.0.1](https://github.com/isaac-sim/IsaacSim/tree/v6.0.1) — Isaac Sim source; extension layout under `source/extensions` and `source/deprecated` (§2)
 - [Isaac Sim `LICENSE` (v6.0.1)](https://github.com/isaac-sim/IsaacSim/blob/v6.0.1/LICENSE) — Apache-2.0 grant scope and its exclusions for the Kit SDK runtime and bundled assets (§2.4)
 - [Isaac Sim extension renaming guide (4.5.0 docs)](https://docs.isaacsim.omniverse.nvidia.com/4.5.0/overview/extensions_renaming.html) — authoritative `omni.isaac.*` to `isaacsim.*` mapping table (§2.1)
+- [Isaac Sim 4.5.0 Release Notes](https://docs.isaacsim.omniverse.nvidia.com/4.5.0/overview/release_notes.html) — embedded Kit SDK updated 106.1.0 → 106.5.0 (§2.1)
+- [Isaac Sim 6.0.1 Release Notes](https://docs.isaacsim.omniverse.nvidia.com/6.0.1/overview/release_notes.html) — embedded Kit SDK updated 110.1.1 → 110.1.2 (§2.1)
 - [`ImuSensor.h` (v6.0.1)](https://github.com/isaac-sim/IsaacSim/blob/v6.0.1/source/deprecated/isaacsim.sensors.physics/include/isaacsim/sensors/physics/ImuSensor.h) — empty `tick()` and populated `onPhysicsStep()`, proving the IMU has no rendering path (§4.2)
 - [`isaacsim.sensors.rtx` extension.py (v6.0.1)](https://github.com/isaac-sim/IsaacSim/blob/v6.0.1/source/deprecated/isaacsim.sensors.rtx/python/impl/extension.py) — `GenericModelOutput` AOV registration for RTX sensors (§4.1)
 - [`Ros2Distro.h` (v6.0.1)](https://github.com/isaac-sim/IsaacSim/blob/v6.0.1/source/extensions/isaacsim.ros2.core/include/isaacsim/ros2/core/Ros2Distro.h) — compile-time enumeration of the two supported ROS 2 distributions (§5.1)

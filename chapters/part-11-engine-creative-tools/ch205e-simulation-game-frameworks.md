@@ -24,6 +24,8 @@ This chapter covers five such frameworks on their own architectural terms — da
   - [3.1 civclient/civserver Separation](#31-civclientcivserver-separation)
   - [3.2 The .ruleset Text-File System](#32-the-ruleset-text-file-system)
   - [3.3 freeciv-web as a Bridge, Not a Reimplementation](#33-freeciv-web-as-a-bridge-not-a-reimplementation)
+  - [3.4 Lua Scripting Underneath the Text Rulesets](#34-lua-scripting-underneath-the-text-rulesets)
+  - [3.5 AI Opponents: A Deliberately Out-of-Scope Axis](#35-ai-opponents-a-deliberately-out-of-scope-axis)
 - [4. OpenXcom/OXCE: YAML Rulesets as the Entire Content Pipeline](#4-openxcomoxce-yaml-rulesets-as-the-entire-content-pipeline)
   - [4.1 The bin/standard/&lt;ModName&gt;/*.rul Convention](#41-the-binstandardmodnamerul-convention)
   - [4.2 Total-Conversion Mods and the Mod Portal](#42-total-conversion-mods-and-the-mod-portal)
@@ -31,6 +33,25 @@ This chapter covers five such frameworks on their own architectural terms — da
 - [5. Thousand Parsec: Protocol-First Rulesets (An Instructive Dead End)](#5-thousand-parsec-protocol-first-rulesets-an-instructive-dead-end)
 - [6. Data-Driven Rules Compared](#6-data-driven-rules-compared)
 - [7. Brief Survey: FreeCol, FIFE/Unknown Horizons, Wesnoth WML](#7-brief-survey-freecol-fifeunknown-horizons-wesnoth-wml)
+- [8. How Mods Compose: Load Order and Conflict Resolution](#8-how-mods-compose-load-order-and-conflict-resolution)
+  - [8.1 OpenCiv3: Declaration-Order Pipeline, No Conflict Detection](#81-openciv3-declaration-order-pipeline-no-conflict-detection)
+  - [8.2 OXCE: Explicit master Chains and Per-Field Override Keywords](#82-oxce-explicit-master-chains-and-per-field-override-keywords)
+  - [8.3 Freeciv and Thousand Parsec: No Runtime Composition](#83-freeciv-and-thousand-parsec-no-runtime-composition)
+- [9. Save-Game Version Compatibility](#9-save-game-version-compatibility)
+  - [9.1 Freeciv: Forward Migration Through a Versioned Compat Table](#91-freeciv-forward-migration-through-a-versioned-compat-table)
+  - [9.2 OXCE: No Version Gate, Silent Best-Effort Loading](#92-oxce-no-version-gate-silent-best-effort-loading)
+  - [9.3 OpenCiv3: A Version Field That Is Dead Code](#93-openciv3-a-version-field-that-is-dead-code)
+  - [9.4 Thousand Parsec: A Hard Version Gate, With One Exception](#94-thousand-parsec-a-hard-version-gate-with-one-exception)
+- [10. Mod Distribution and Discovery Channels](#10-mod-distribution-and-discovery-channels)
+  - [10.1 Freeciv: A Dedicated Modpack Installer and Repository](#101-freeciv-a-dedicated-modpack-installer-and-repository)
+  - [10.2 OpenCiv3: No Channel Yet — The Packaging Format Itself Is Unresolved](#102-openciv3-no-channel-yet--the-packaging-format-itself-is-unresolved)
+  - [10.3 Thousand Parsec: No Third-Party Distribution Ever Emerged](#103-thousand-parsec-no-third-party-distribution-ever-emerged)
+  - [10.4 FreeCol: A Separate Community-Mod Repository](#104-freecol-a-separate-community-mod-repository)
+- [11. Turn-Based Multiplayer Beyond Client/Server: Longturn, PBEM, and Deadline Resolution](#11-turn-based-multiplayer-beyond-clientserver-longturn-pbem-and-deadline-resolution)
+  - [11.1 Freeciv Longturn: Concurrent Play With a Very Long Timer](#111-freeciv-longturn-concurrent-play-with-a-very-long-timer)
+  - [11.2 Freeciv PBEM: Strict Alternation, Not Longturn Under Another Name](#112-freeciv-pbem-strict-alternation-not-longturn-under-another-name)
+  - [11.3 FreeCol and OXCE: Outside This Axis Entirely](#113-freecol-and-oxce-outside-this-axis-entirely)
+  - [11.4 Thousand Parsec: Simultaneous Resolution on a Deadline](#114-thousand-parsec-simultaneous-resolution-on-a-deadline)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -52,7 +73,9 @@ Every framework surveyed here shares a three-part structure:
 2. **A rules engine** that reads instances of that model out of a content format — INI-style text, YAML, or embedded Lua — and drives turn processing, combat, research, and AI against it.
 3. **A modding surface**, which is simply *how far into the rules engine an unprivileged content author can reach* without recompiling the host program. This ranges from filling in blanks in a text template (Freeciv's `.ruleset`) to writing arbitrary Lua that manipulates live engine objects by reflection (OpenCiv3) to writing and compiling a new C++ shared module that the server loads by name (Thousand Parsec).
 
-§6 returns to this axis directly. What varies across the five projects is not whether this pattern exists — it exists everywhere — but where the line falls between "data a mod can edit" and "code the engine's maintainers must write."
+A fourth axis, orthogonal to the three above, is *where the authoritative simulation state lives relative to the process rendering it*. Freeciv's `civclient`/`civserver` split (§3.1) and freeciv-web's WebSocket bridge over that same split (§3.3) put the rules engine in a separate, network-authoritative process from the outset. OpenCiv3's `MessageToEngine`/`MessageToUI` queues (§2.2) are explicitly shaped with that same split in mind for later — "exploring networking options," per its own `readme.md` — but today run in a single process. OXCE and Thousand Parsec sit at the two extremes of this axis with little middle ground between them: OXCE's rules engine runs entirely client-side, with no server process at all, while Thousand Parsec (§5) makes the network protocol itself the whole integration surface — ruleset modules run only inside `tpserver-cpp`, and every client, admin tool, and AI player is a separate program that never touches ruleset code directly. §6 folds this into its own comparison column alongside the modding axis.
+
+§6 returns to both axes directly. What varies across the five projects is not whether the data-vs-code pattern exists — it exists everywhere — but where the line falls between "data a mod can edit" and "code the engine's maintainers must write," and, independently, whether that line is enforced across a network boundary or inside one process.
 
 ---
 
@@ -159,13 +182,13 @@ Closure ResolveFunctionPath(string functionPath) {
 
 `GameMode` sits above this, loading a base scenario directory plus a list of addon directories (`GameMode.Config.baseModeDir` / `addonPaths`), and pulling three script kinds per directory: `textures.lua`, `behaviors.lua`, and `ruleset.lua`. Each addon's script "must return a function" that receives the accumulated table from earlier layers and returns a modified one — `current = lua.SafeCall(addon.Function, current)` — a middleware pipeline where each mod transforms the output of the mods loaded before it [Source](https://github.com/C7-Game/OpenCiv3/blob/Development/C7Engine/Lua/GameMode.cs). The ruleset load path has a notable special case: it checks for a `ruleset.json` file first and falls back to `ruleset.lua` only if no JSON file exists, then — regardless of which source it started from — converts the final accumulated Lua table back to JSON text and deserializes it through `SaveGame.LoadFromJSON`. Lua is therefore a *content-authoring* language for OpenCiv3, not a runtime scripting language in the usual sense: a ruleset written in Lua compiles down to the same JSON `SaveGame` representation described in §2.3, and the engine only ever loads rulesets as data.
 
-The reach given to that Lua is unusually broad. `ScriptInitializer`, run once at Lua-state initialization, reflects over `Assembly.GetExecutingAssembly().GetTypes()` filtered to `t.Namespace == "C7GameData"` and public visibility, and registers every one of them as MoonSharp `UserData` — plus every public enum in that namespace, flattened into a Lua `ENUMS` table with nested enums renamed `Outer_EnumName` (e.g. `Tile_YieldType`) to avoid collisions. It also installs a `GAME_DATA()` global function returning `EngineStorage.gameData` directly [Source](https://github.com/C7-Game/OpenCiv3/blob/Development/C7Engine/Lua/GameMode.cs). Because registration is driven by reflection over an entire namespace rather than a hand-written binding table, a mod script has access to essentially the full `C7GameData` object graph through `GAME_DATA()`, not a curated subset of it — a much wider modding surface than a purpose-built API like Freeciv's server commands or Luanti's `core.*` table (Ch205d, §3.2), at the cost of exposing internal engine state that a hand-curated binding could have kept private.
+The reach given to that Lua is unusually broad. `ScriptInitializer`, run once at Lua-state initialization, reflects over `Assembly.GetExecutingAssembly().GetTypes()` filtered to `t.Namespace == "C7GameData"` and public visibility, and registers every one of them as MoonSharp `UserData` — plus every public enum in that namespace, flattened into a Lua `ENUMS` table with nested enums renamed `Outer_EnumName` (e.g. `Tile_YieldType`) to avoid collisions. It also installs a `GAME_DATA()` global function returning `EngineStorage.gameData` directly [Source](https://github.com/C7-Game/OpenCiv3/blob/Development/C7Engine/Lua/GameMode.cs). Because registration is driven by reflection over an entire namespace rather than a hand-written binding table, a mod script has access to essentially the full `C7GameData` object graph through `GAME_DATA()`, not a curated subset of it — a much wider modding surface than a purpose-built, hand-curated API like Freeciv's `tolua`-bound `api_edit_*`/`api_server_*` functions (§3.4) or Luanti's `core.*` table (Ch205d, §3.2), at the cost of exposing internal engine state that a hand-curated binding could have kept private.
 
 ---
 
 ## 3. Freeciv: Network-Authoritative Client/Server and Text Rulesets
 
-Freeciv (`github.com/freeciv/freeciv`, GPL, C) is the oldest project in this chapter and the one whose client/server split is the most literal. Its repository root splits cleanly into `client/`, `server/`, `common/`, `ai/`, `data/`, and `lua/` as top-level directories [Source](https://github.com/freeciv/freeciv).
+Freeciv (`github.com/freeciv/freeciv`, GPL, C) is the oldest project in this chapter and the one whose client/server split is the most literal. Its repository root splits cleanly into `client/`, `server/`, `common/`, `ai/`, `data/`, and `lua/` as top-level directories [Source](https://github.com/freeciv/freeciv) — the `ai/` directory is picked up in §3.5, and `lua/` and the Lua-scripting parts of `server/` and `data/` are picked up in §3.4.
 
 ### 3.1 civclient/civserver Separation
 
@@ -198,6 +221,18 @@ Two things are worth pulling out of that header. First, the modding instruction 
 `freeciv-web` (`github.com/freeciv/freeciv-web`) is explicit in its own README that it wraps rather than replaces the C server: "Freeciv-web is an open-source turn-based strategy game... The Freeciv C server is released under the GNU General Public License, while the Freeciv-web client is released under the GNU Affero General Public License" [Source](https://github.com/freeciv/freeciv-web/blob/develop/README.md), a split confirmed by `LICENSE.txt`, which carries the full AGPLv3 text for the web client [Source](https://github.com/freeciv/freeciv-web/blob/master/LICENSE.txt). The README's own architecture description lists four components: "Freeciv-web" (a Java web application built with Maven, running on Tomcat 10 and nginx, implementing the browser-side UI and the Metaserver); "Freeciv" ("the Freeciv C server, which is checked out from the official Git repository, and patched to work with a WebSocket/JSON protocol"); "Freeciv-proxy" ("a WebSocket proxy which allows WebSocket clients in Freeciv-web to send socket requests to Freeciv servers... Implemented in Python"); and "Publite2" ("a process launcher for Freeciv C servers, which manages multiple Freeciv server processes and checks capacity through the Metaserver... Implemented in Python") [Source](https://github.com/freeciv/freeciv-web/blob/develop/README.md). The repository layout matches: `freeciv-proxy/` contains `civcom.py` and `freeciv-proxy.py`; `publite2/` contains `civlauncher.py`, `publite2.py`, and a set of paired `longturn_*.ruleset` / `pubscript_longturn_*.serv` files that configure specific long-running game instances [Source](https://github.com/freeciv/freeciv-web). Nothing in this stack forks or reimplements Freeciv's ruleset format; it patches the server's transport layer and puts a WebSocket/JSON proxy in front of the same `.ruleset`-driven server described in §3.2.
 
 The two projects' maintenance cadence is not close. Querying Freeciv's commit API with `since=2025-08-01T00:00:00Z&per_page=1` and reading the commit count off the `Link: rel="last"` page number returns 502 commits to `master` [Source](https://api.github.com/repos/freeciv/freeciv/commits?since=2025-08-01T00:00:00Z&per_page=1); the equivalent query against freeciv-web's `develop` branch over the same twelve-month window returns an empty result set — **zero** commits [Source](https://api.github.com/repos/freeciv/freeciv-web/commits?sha=develop&since=2025-08-01T00:00:00Z&per_page=100). That is a wide and easily reproduced gap, not a subjective impression: the bridge project has gone a full year with no commits to `develop` while the server it wraps continues active development. (A reader checking only the repository's overall activity indicators — issues, pull requests, other branches — may see more recent-looking signals than this; the commit count above is scoped specifically to `develop`, the branch `github.com/freeciv/freeciv-web` redirects to as the repository's default.)
+
+### 3.4 Lua Scripting Underneath the Text Rulesets
+
+§3.2's `.ruleset` files are plain-data INI text, but they are not Freeciv's whole content-authoring surface, and describing the project as "pure data, no code" (as §6 previously did) understates it. `server/scripting/` compiles a curated, `tolua`-generated C API into the server's embedded Lua state: `api_server_edit.h` alone declares dozens of `api_edit_*` functions — `api_edit_unleash_barbarians`, `api_edit_unit_teleport`, `api_edit_create_city`, `api_edit_change_gold`, and more — each taking the live `lua_State *L` plus native `Tile`/`Player`/`Unit`/`City` pointers [Source](https://raw.githubusercontent.com/freeciv/freeciv/master/server/scripting/api_server_edit.h). Every ruleset directory loads a `default.lua` shared across all rulesets (`data/default/default.lua`) plus, optionally, a ruleset-specific `script.lua` layered on top of it; `data/classic/script.lua` explains the relationship in its own header comment: "This file is for lua-functionality that is specific to a given ruleset. When freeciv loads a ruleset, it also loads script file called 'default.lua'. The one loaded if your ruleset does not provide an override is default/default.lua" [Source](https://raw.githubusercontent.com/freeciv/freeciv/master/data/classic/script.lua).
+
+The scripting model is event-driven rather than free-running. `data/classic/script.lua`'s only substantive content is a `city_destroyed_callback(city, loser, destroyer)` function registered against the engine's signal bus with `signal.connect("city_destroyed", "city_destroyed_callback")` [Source](https://raw.githubusercontent.com/freeciv/freeciv/master/data/classic/script.lua) — a ruleset hooks named engine events and calls back into the curated `api_edit_*`/`api_server_*` surface, rather than the engine's live object graph being open to arbitrary reflection the way OpenCiv3's `GAME_DATA()` is (§2.4). Both projects embed Lua as a modding surface; they differ in how much of the engine that Lua can reach, and by what mechanism it is invoked. §6's comparison table reflects this rather than treating Freeciv as code-free.
+
+### 3.5 AI Opponents: A Deliberately Out-of-Scope Axis
+
+Both Freeciv and OpenCiv3 name an AI-opponent implementation as a first-class part of their architecture — Freeciv's own README-level folder list calls out `ai/`, and C7Engine's root README describes the C7Engine folder as covering "the mechanics of the game, including AI logic" (§2.1). Freeciv's `ai/` directory holds engine-wide difficulty and trait tuning (`difficulty.c`, `handicaps.c`, `aitraits.c`) alongside per-ruleset AI modules — `ai/classic/classicai.c` and `classicai.h` implement the classic ruleset's opponent, distinct from the `ai/default` and `ai/stub` variants [Source](https://github.com/freeciv/freeciv/tree/master/ai). OpenCiv3's `C7Engine/AI/` directory is organized around an `IAI.cs` interface with `PlayerAI.cs` and `BarbarianAI.cs` implementations, plus `StrategicAI`, `UnitAI`, and `Pathing` subdirectories for the layered decision-making beneath them [Source](https://github.com/C7-Game/OpenCiv3/tree/Development/C7Engine/AI).
+
+Neither AI system is a data-driven ruleset in the sense §1.2 and §6 use the term — both are engine-native code a mod cannot redirect without recompiling, which is precisely why this chapter, scoped to data models, rules engines, networking, and modding surfaces, does not analyze them further here. The classical game-AI techniques underneath implementations like these — navmeshes, behaviour trees, GOAP, utility systems — are covered on their own terms in Chapter 205b, which this chapter defers to rather than duplicating.
 
 ---
 
@@ -265,14 +300,14 @@ The ruleset itself lives inside `tpserver-cpp` as compiled, swappable C++ module
 
 ## 6. Data-Driven Rules Compared
 
-| | Format | Moddable without recompiling? | Ceiling before engine code changes | Maintenance/tooling burden |
-|---|---|---|---|---|
-| **Freeciv** `.ruleset` | INI-style text, per-directory | Yes — copy a ruleset directory, edit values, select via `rulesetdir` | High but bounded: any field the format doesn't expose (a new combat formula, a new UI concept) needs C server changes | Low to author; the format is stable and self-documenting via in-file comments |
-| **OXCE** `.rul` | YAML, per-directory with `master` dependency declarations | Yes — the base game and every mod use the identical format and merge mechanism | Similarly bounded by what keys the loader recognizes, but the surface is large enough that total conversions (XPiratez, X-Com Files) replace nearly all content without touching engine code | Low to author individual mods; YAML key/merge semantics scale to total conversions without new tooling |
-| **OpenCiv3** embedded Lua | Lua scripts (`ruleset.lua`, `behaviors.lua`, `textures.lua`) compiled to a JSON `SaveGame` at load time | Yes, and further: mods are executable code with reflection-derived access to the live `C7GameData` object graph via `GAME_DATA()`, not just declarative values | Very high — a mod can implement arbitrary logic MoonSharp can express, bounded only by what `ScriptInitializer` exposes as userdata | Higher: authoring requires understanding both Lua and the reflected C# type surface; the addon-pipeline model (§2.4) also makes load order across mods significant |
-| **Thousand Parsec** protocol modules | Compiled C++ (`modules/games/*`), selected by the server at startup, speaking a network protocol to independent client/AI programs | No — a new ruleset is a new compiled module, not a data file | None in principle — a module can implement anything the server process can, since it *is* server code | Highest: requires a C++ toolchain and the server's internal module API; the project did not survive to demonstrate this at scale |
+| | Format | Moddable without recompiling? | Ceiling before engine code changes | Client/server topology | Maintenance/tooling burden |
+|---|---|---|---|---|---|
+| **Freeciv** `.ruleset` + Lua | INI-style text per-directory, plus a curated `tolua`-bound Lua API for event-driven logic (§3.4) | Yes — copy a ruleset directory, edit values, select via `rulesetdir`; a ruleset's `script.lua` can add `signal.connect`-hooked logic without a server rebuild | High but bounded: plain-data fields are capped by what the format exposes, and Lua hooks are capped by what `api_edit_*`/`api_server_*` exposes — a genuinely new mechanic still needs C server changes | Genuinely separate `civclient`/`civserver` processes over a network protocol (§3.1); freeciv-web proxies that same protocol over WebSocket (§3.3) without altering it | Low to author values; moderate to author Lua hooks, which require learning the signal-event model and the curated API surface |
+| **OXCE** `.rul` | YAML, per-directory with `master` dependency declarations | Yes — the base game and every mod use the identical format and merge mechanism | Similarly bounded by what keys the loader recognizes, but the surface is large enough that total conversions (XPiratez, X-Com Files) replace nearly all content without touching engine code | None — a single process; OpenXcom has no server/client split | Low to author individual mods; YAML key/merge semantics scale to total conversions without new tooling |
+| **OpenCiv3** embedded Lua | Lua scripts (`ruleset.lua`, `behaviors.lua`, `textures.lua`) compiled to a JSON `SaveGame` at load time | Yes, and further: mods are executable code with reflection-derived access to the live `C7GameData` object graph via `GAME_DATA()`, not just declarative values | Very high — a mod can implement arbitrary logic MoonSharp can express, bounded only by what `ScriptInitializer` exposes as userdata | Single process today; the `MessageToEngine`/`MessageToUI` queues (§2.2) are structured for a future client/server split but do not implement one | Higher: authoring requires understanding both Lua and the reflected C# type surface; the addon-pipeline model (§2.4) also makes load order across mods significant |
+| **Thousand Parsec** protocol modules | Compiled C++ (`modules/games/*`), selected by the server at startup, speaking a network protocol to independent client/AI programs | No — a new ruleset is a new compiled module, not a data file | None in principle — a module can implement anything the server process can, since it *is* server code | Network protocol *is* the integration surface — client, server, admin tool, and AI player (`daneel-ai`) are independent programs (§5) | Highest: requires a C++ toolchain and the server's internal module API; the project did not survive to demonstrate this at scale |
 
-Reading down the "moddable without recompiling" column against the "maintenance burden" column shows the trade-off directly: the two projects offering pure data-file modding (Freeciv, OXCE) are also the two still under active development, while the project offering the most powerful modding surface (Thousand Parsec, compiled swappable rulesets) is the one that stopped. OpenCiv3 sits in an interesting middle position — Lua is data in the sense that it loads without recompiling the host, but it is code in the sense that a mod author needs real programming skill and can touch far more of the live engine than a YAML key can, which is a genuinely different risk/power trade-off from either INI text or YAML merging, addressed more generally for engine modding across languages in Ch205d.
+Reading down the "moddable without recompiling" column against the "maintenance burden" column shows the trade-off directly: the two projects whose primary modding path is plain data-file editing (OXCE's YAML, and Freeciv's `.ruleset` text for most day-to-day balance work) are also the two still under active development, while the project offering the most powerful modding surface (Thousand Parsec, compiled swappable rulesets) is the one that stopped. OpenCiv3 and Freeciv both also embed Lua, and comparing them is instructive precisely because it isolates the code-vs-data axis from the active-vs-dead one: OpenCiv3 exposes its entire `C7GameData` object graph to mod-authored Lua by reflection, while Freeciv's Lua reaches the engine only through the curated, `tolua`-bound `api_edit_*`/`api_server_*` surface and only in response to named signals (§3.4) — a hand-curated API versus an open reflection surface, not "no code" versus "code." OXCE's YAML merging remains the one format in this chapter with no code path at all for a mod author to execute. The client/server column is a separate axis again: it tracks with neither modding power nor project health — the actively developed Freeciv is network-split and the actively developed OXCE is not — which is the point of listing it separately rather than folding it into "maintenance burden." All of this is addressed more generally for engine modding across languages in Ch205d.
 
 ---
 
@@ -302,11 +337,183 @@ Reading down the "moddable without recompiling" column against the "maintenance 
 
 ---
 
+## 8. How Mods Compose: Load Order and Conflict Resolution
+
+Every section so far describes how *one* ruleset or mod plugs into its engine (§2.4, §3.2, §4.1, §5). It says nothing about what happens once a player enables more than one at a time — whether order is significant, whether one mod can see what an earlier mod already changed, and whether the engine notices when two mods edit the same thing. That turns out to range from "not a concept that exists yet" to an explicit, engine-enforced dependency chain with per-field override semantics.
+
+### 8.1 OpenCiv3: Declaration-Order Pipeline, No Conflict Detection
+
+`GameMode.Config.addonPaths` is a plain `List<string>`, and `GameMode.Load`'s addon loader walks it with a `foreach`:
+
+```csharp
+// C7Engine/Lua/GameMode.cs, OpenCiv3 (Development branch)
+foreach (string addonPath in config.addonPaths) {
+    // ...
+    current = lua.SafeCall(addon.Function, current);
+}
+```
+[Source](https://github.com/C7-Game/OpenCiv3/blob/Development/C7Engine/Lua/GameMode.cs)
+
+There is no alphabetical sort, no dependency graph, and no explicit dependency-declaration field anywhere in `GameMode.Config` — load order is exactly declaration order in that list. The companion doc confirms this is the whole mechanism: "Addons are applied in the order listed in `addonPaths`, and each one only needs to provide the scripts it actually wants to change" [Source](https://github.com/C7-Game/OpenCiv3/blob/Development/C7/Lua/README.GameModes.md). The same doc's own TODO admits there is no user-facing mod system yet to assemble that list from installed mods: "TODO: Implement a code-change free mod loading mechanism" — today `addonPaths` lists are hardcoded in C# (`C7/GlobalSingleton.cs`), not player configuration.
+
+Because each addon's script "must return a function" that receives the accumulated table produced by every mod loaded before it and returns a modified one (§2.4), a later addon has unrestricted read/write access to whatever an earlier addon already produced. That gives OpenCiv3 no engine-level conflict detection at all: if two addons both target the same key, the later one in `addonPaths` order simply overwrites it, silently, by construction — correctness is left entirely to authors coordinating addon order themselves, with nothing in the engine to warn them if they don't.
+
+### 8.2 OXCE: Explicit master Chains and Per-Field Override Keywords
+
+OXCE's `master` field (§4.1) is not limited to declaring a dependency on the base game — it chains. `ModInfo.cpp`'s own comment states this directly: "masters can still have masters, but they must be explicitly declared" [Source](https://raw.githubusercontent.com/MeridianOXC/OpenXcom/oxce-plus/src/Engine/ModInfo.cpp). `FileMap::setup()` walks that chain for every active mod and expands it into the actual load order:
+
+```cpp
+// src/Engine/FileMap.cpp, OXCE (oxce-plus branch)
+while (true) {
+    insert_before = map_order.insert(insert_before, currentId);
+    masterId = /* ...modInfo.getMaster()... */;
+    if (masterId.empty()) break;
+    currentId = masterId;
+}
+```
+[Source](https://raw.githubusercontent.com/MeridianOXC/OpenXcom/oxce-plus/src/Engine/FileMap.cpp)
+
+— a comment in the same function describes exactly what this is for: "expand the mod list into map order, listing all the mod dependencies." No independent `requires:`/`dependencies:` field exists beyond `master`, `requiredMasterModVersion`, `requiredExtendedVersion`, and `requiredExtendedEngine` — a targeted search of `ModInfo.h`/`.cpp` found nothing broader. Among mods that don't have a `master`-chain relationship to each other, load order is simply the order of the `mods:` sequence in `options.cfg`, and it is directly reorderable in-game: `ModListState::moveModUp`/`moveModDown` let a player drag entries up and down a list with the mouse wheel or buttons [Source](https://raw.githubusercontent.com/MeridianOXC/OpenXcom/oxce-plus/src/Menu/ModListState.cpp).
+
+Conflict resolution, unlike OpenCiv3's silent overwrite, is a designed part of the loader. `Mod::loadRule` in `src/Mod/Mod.cpp` reuses the existing rule object if a prior-loaded mod already created an entry of the same `type:`, so a later mod's fields overwrite in place on the same object rather than replacing it wholesale:
+
+```cpp
+// src/Mod/Mod.cpp, OXCE (oxce-plus branch) — loadRule, abbreviated
+if (i != map->end()) {
+    rule = i->second; // reuse the object an earlier-loaded mod already created
+}
+```
+[Source](https://raw.githubusercontent.com/MeridianOXC/OpenXcom/oxce-plus/src/Mod/Mod.cpp)
+
+Authors get finer-grained control than plain overwrite-in-place through explicit `new`/`override`/`update`/`delete`/`ignore` keywords on an entry; combining two of these on the same node is caught and rejected with `"Conflict of main node X and Y"` [Source](https://raw.githubusercontent.com/MeridianOXC/OpenXcom/oxce-plus/src/Mod/Mod.cpp) — though that check is a syntax validation inside one mod's own file, not detection of a genuine cross-mod collision between two independently authored mods touching the same key.
+
+### 8.3 Freeciv and Thousand Parsec: No Runtime Composition
+
+Neither of the other two projects in this chapter has a runtime mod-stacking concept to compare against §8.1/§8.2 at all. Freeciv's `.modpack` files are consumed only by a separate installer tool, not by `civserver` itself, and dependency resolution happens strictly at *install* time: `doc/README.modpack_installer` states "the tool will download the files for the selected modpack, and any other modpacks it depends on" [Source](https://raw.githubusercontent.com/freeciv/freeciv/master/doc/README.modpack_installer) — once installed, a player still selects one whole ruleset directory at server start via `rulesetdir` (§3.2), and nothing composes multiple rulesets together at runtime. Thousand Parsec is narrower still: `tpserver-cpp`'s `main.cpp` reads a single `ruleset` config value and `PluginManager::loadRuleset` `dlopen`s exactly one shared library named after it [Source](https://raw.githubusercontent.com/thousandparsec/tpserver-cpp/master/tpserver/main.cpp) — there is no list to order, and `sample.conf` documents the setting as singular: "ruleset - sets which ruleset to load... If it is not set, no ruleset is loaded" [Source](https://raw.githubusercontent.com/thousandparsec/tpserver-cpp/master/tpserver/pluginmanager.cpp).
+
+Read together with §8.1 and §8.2, the four projects span a genuine spectrum on this axis, not just a yes/no split: Thousand Parsec and Freeciv treat "the ruleset" as a single, atomically-selected unit with no composition step at all; OpenCiv3 composes multiple mods but leaves ordering and conflict resolution entirely to author discipline; OXCE composes multiple mods *and* gives the engine an explicit dependency chain (`master`), a reorderable load list, and per-field override keywords with syntax-level conflict detection. That last point is also OXCE's most direct architectural link to §4's total-conversion mods (XPiratez, X-Com Files): a mod ecosystem with dozens of simultaneously-installable mods stacked over one `master` base is only tractable because the engine, not just convention, enforces load order and merge semantics.
+
+---
+
+## 9. Save-Game Version Compatibility
+
+A ruleset or mod format is only half the compatibility story; the other half is what happens when a save file was written against an older version of that format, or against a mod combination that has since changed. The four projects take four distinct, and instructively different, positions on this — from genuine forward migration to an explicit refusal to even try.
+
+### 9.1 Freeciv: Forward Migration Through a Versioned Compat Table
+
+Freeciv has a dedicated compatibility module, `server/savegame/savecompat.c`. `sg_load_compat()` reads the save's `savefile.version` and then walks an ordered `compat[]` table, running every migration function whose version number exceeds the save's own:
+
+```c
+/* server/savegame/savecompat.c, Freeciv (master) */
+loading->version = secfile_lookup_int_default(loading->file, -1, "savefile.version");
+sg_failure_ret(0 < loading->version && loading->version <= compat[compat_current].version,
+               "Unknown savefile format version (%d).", loading->version);
+for (i = 0; i < compat_num; i++) {
+    if (loading->version < compat[i].version && compat[i].load != NULL) {
+        compat[i].load(loading, format_class);
+    }
+}
+```
+[Source](https://raw.githubusercontent.com/freeciv/freeciv/master/server/savegame/savecompat.c)
+
+A save newer than the running build's own `compat_current` is refused outright in release builds (a `FREECIV_DEBUG` build instead logs a warning and attempts to load it anyway). Ruleset compatibility is handled by an analogous mechanism one layer down: `server/ruleset/rscompat.c`'s `rscompat_check_cap_and_version()` checks each `.ruleset` file's `datafile.format_version` against the current `RSFORMAT_3_4` constant defined in `server/ruleset/ruleload.h`, and a whole ruleset directory older than that is migrated forward via `compat_mode` functions gated on the same version check [Source](https://raw.githubusercontent.com/freeciv/freeciv/master/server/ruleset/rscompat.c). `savegame3.c`'s `sg_load_savefile()` reloads the exact ruleset directory named in the save's own `savefile.rulesetdir` field, so a save's ruleset dependency is resolved by re-loading that ruleset by name — through the same forward-migration path — rather than by re-checking it against whatever ruleset happens to be configured on the server at load time [Source](https://raw.githubusercontent.com/freeciv/freeciv/master/server/savegame/savegame3.c).
+
+### 9.2 OXCE: No Version Gate, Silent Best-Effort Loading
+
+OXCE takes a much looser position. `SavedGame::save()` writes each active mod into the save as `modId + " ver: " + modVersion` in a `mods` YAML list, but `SavedGame::load()` only uses that list for save-browser filtering, not as a load-time gate — and even that filtering check strips the version before comparing:
+
+```cpp
+// src/Savegame/SavedGame.cpp, OXCE (oxce-plus branch) — _isCurrentGameType, abbreviated
+std::string name = SavedGame::sanitizeModName(modName);
+if (name == curMaster) { matchMasterMod = true; break; }
+```
+[Source](https://raw.githubusercontent.com/MeridianOXC/OpenXcom/oxce-plus/src/Savegame/SavedGame.cpp)
+
+`sanitizeModName` discards the version suffix entirely — a save's declared mod *version* is never actually checked, only whether the current master mod's name is present in the list at all. Inside the field-by-field YAML load itself, an entity that no longer exists in the currently loaded ruleset is dropped with a log line rather than aborting the load: `if (mod->getCountry(type)) { ... } else { Log(LOG_ERROR) << "Failed to load country " << type; }` [Source](https://raw.githubusercontent.com/MeridianOXC/OpenXcom/oxce-plus/src/Savegame/SavedGame.cpp). `src/version.h` separately defines `MIN_REQUIRED_RULESET_VERSION_NUMBER 8,6,3,0`, but that constant gates a *mod's* compatibility against the *engine* at mod-load time — it has nothing to do with save-file version checking [Source](https://raw.githubusercontent.com/MeridianOXC/OpenXcom/oxce-plus/src/version.h). Loading a save written under a different mod configuration is, in short, a best-effort partial load with per-entity error logging, not a version-gated operation.
+
+### 9.3 OpenCiv3: A Version Field That Is Dead Code
+
+`SaveGame` declares `public string Version = "0.0.0";`, which reads like the beginning of exactly the kind of compat mechanism §9.1 and §9.2 have — except it is never assigned inside `SaveGame.FromGameData()` and never read or compared anywhere in the load path (`Load`/`LoadFromJSON`); a repository-wide search turns up no other reference to `SaveGame.Version` at all [Source](https://raw.githubusercontent.com/C7-Game/OpenCiv3/Development/C7Engine/C7GameData/Save/SaveGame.cs). The consequence shows up directly in the issue tracker: closed issue #434, "Loading Incompatible Save Ruins New Game," describes exactly the failure mode an unenforced version field predicts — "Data loaded from an incompatible save persists until the program is restarted... Here I have altered terrain from the scenario I loaded. However, the units can not be moved due to incompatibilities" [Source](https://github.com/C7-Game/OpenCiv3/issues/434). That is consistent with the root README's own framing of save/load as a feature still being merged in incrementally (§2.1) — save-format compatibility here is not a designed policy at all yet, just an open bug.
+
+### 9.4 Thousand Parsec: A Hard Version Gate, With One Exception
+
+Thousand Parsec's persistence is not purely in-memory: `tpserver-cpp`'s `modules/persistence/mysql/mysqlpersistence.cpp` backs the server with a MySQL database and tracks its own schema version in a `tableversion` table. On reconnecting to an existing database with an old schema, it refuses outright rather than attempting a migration:
+
+```cpp
+// modules/persistence/mysql/mysqlpersistence.cpp, tpserver-cpp (master)
+Logger::getLogger()->error("Old database format detected.");
+Logger::getLogger()->error("Incompatable old table formats and missing tables detected.");
+Logger::getLogger()->error("Changes to most stored classes means there is no way to update "
+                            "from your current database to the newer format");
+Logger::getLogger()->error("I cannot stress this enough: Please shutdown your game, delete "
+                            "the contents of the database and start again. Sorry");
+Logger::getLogger()->error("Mysql persistence NOT STARTED");
+```
+[Source](https://raw.githubusercontent.com/thousandparsec/tpserver-cpp/master/modules/persistence/mysql/mysqlpersistence.cpp)
+
+There is exactly one carve-out: a single `ALTER TABLE gameinfo ADD COLUMN turnname` migration runs when the `gameinfo` table's own tracked version is `0`, the one place in the file that migrates forward instead of refusing [Source](https://raw.githubusercontent.com/thousandparsec/tpserver-cpp/master/modules/persistence/mysql/mysqlpersistence.cpp). That makes Thousand Parsec's posture the hard-refuse end of the spectrum this section surveys: not silent best-effort loading (OXCE), not an unenforced field masking real incompatibility bugs (OpenCiv3), and not general forward migration (Freeciv) — a version check that stops the server rather than risk loading against a schema its own code no longer understands, with one narrow, explicitly-versioned exception rather than a general migration framework.
+
+Read across all four, the spread is really a spread of engineering investment rather than four unrelated designs: Freeciv's `savecompat.c`/`rscompat.c` pair represents the only project here that treats "an old save/ruleset combination should still load" as a maintained, ongoing engineering commitment; Thousand Parsec's hard refusal is the same underlying judgment — that migrating an unknown-shape save silently is worse than not loading it — applied without the migration half; OXCE's silent best-effort load optimizes for a save *usually* still loading fine across small mod-version bumps at the cost of no hard guarantee; and OpenCiv3's dead `Version` field is what §9.1–§9.4's design space looks like before anyone has had to solve it yet.
+
+---
+
+## 10. Mod Distribution and Discovery Channels
+
+§4.2 already covers OXCE's mod-sharing channel, the dedicated `openxcom.mod.io` portal hosting "hundreds of innovative mods" including total conversions like XPiratez and X-Com Files. That leaves an open question for the rest of this chapter's projects: once a mod or ruleset exists, how does anyone else find it? The answer ranges from a purpose-built installer tool to no channel existing at all — including, in one case, no settled definition yet of what a distributable unit of content even is.
+
+### 10.1 Freeciv: A Dedicated Modpack Installer and Repository
+
+Distinct from the "copy the ruleset directory manually" workflow §3.2 documents for `.ruleset` text-file edits, Freeciv ships a separate GUI tool — `freeciv-mp-gtk3`/`freeciv-mp-qt`, the "modpack installer" — that fetches a curated listing from `modpack.freeciv.org` and installs rulesets, scenarios, tilesets, soundsets, or musicsets automatically into the right data directory. The tool is not restricted to that official list: the project's own doc states modpacks can also be installed from arbitrary third-party `.mpdl`/`.list` URLs [Source](https://raw.githubusercontent.com/freeciv/freeciv/master/doc/README.modpack_installer). Alongside the installer, an active forum sub-board — "Rulesets and modpacks," described in its own header as a place to "contribute, display and discuss rulesets and modpacks for use in Freeciv" — currently holds 329 topics [Source](https://forum.freeciv.org/f/viewforum.php?f=11). The honest picture is two channels serving two different needs: a tool-mediated, curated repository for polished, install-ready content, and a forum for raw sharing and in-progress discussion.
+
+### 10.2 OpenCiv3: No Channel Yet — The Packaging Format Itself Is Unresolved
+
+No mod-sharing forum, wiki page, or directory convention exists for OpenCiv3 mods, and the clearest evidence for why is that the packaging question a distribution channel would presuppose is still open. GitHub issue #133, "Prototype Mod," open since 2022-03-12, asks directly "what form this should take" and "is a 'mod' or 'scenario' a collection of those [files]?" [Source](https://github.com/C7-Game/OpenCiv3/issues/133) — the same open question §8.1 found reflected in `README.GameModes.md`'s own "code-change free mod loading mechanism" TODO. The project wiki's page list (Home, Contributing, Developer Guide, Game Assets, Notes on game features) has nothing on mod sharing [Source](https://github.com/C7-Game/OpenCiv3/wiki). A distribution channel is downstream of a stable definition of what gets distributed, and OpenCiv3 does not have the latter yet.
+
+### 10.3 Thousand Parsec: No Third-Party Distribution Ever Emerged
+
+The `thousandparsec/wiki` repository's `Clone_Ruleset.mediawiki` page discusses ruleset *concepts* — a Diplomacy-style ruleset, a Master-of-Orion-style ruleset — as ideas for future implementation directly inside the server codebase, never as something to download or share separately from the project's own source tree [Source](https://github.com/thousandparsec/wiki/blob/master/Clone_Ruleset.mediawiki). Given §5's and §8.3's finding that a Thousand Parsec ruleset is a compiled C++ module `dlopen`ed by name, this is the expected consequence rather than a separate gap: authoring a new ruleset already requires being a `tpserver-cpp` contributor with a C++ toolchain, which is a fundamentally different starting point from a text-file or YAML mod a player installs after the fact. No distribution mechanism beyond the project's own repository ever developed before development stopped in 2011.
+
+### 10.4 FreeCol: A Separate Community-Mod Repository
+
+FreeCol is the one project in this section with a genuine external distribution channel, structurally distinct from the nineteen mods `data/mods/` already ships (§7). `github.com/FreeCol/freecol-mods` is a separate repository specifically for third-party content, with README instructions telling authors to "submit a pull-request with your mod and description added, along with a link to the download," adding that maintainers "can also create a github release with your mod package on request" [Source](https://github.com/FreeCol/freecol-mods/blob/master/mods/README.md). Its one tracked entry as of this writing, "New Nations by Mazim," is sourced from the FreeCol SourceForge forums — genuinely third-party content brought into a curated repository, rather than first-party content the core team wrote and bundled.
+
+Read against §4.2's OXCE mod.io portal, the picture across all five projects splits cleanly by whether distribution infrastructure was ever built at all, and that split tracks project activity more closely than it tracks how expressive the modding format itself is: OXCE (a full portal) and Freeciv (an installer plus a forum) both actively invest in discovery infrastructure; FreeCol has a minimal but real one; OpenCiv3 and Thousand Parsec have none, for two different reasons — OpenCiv3 because the underlying packaging question is still unsettled, Thousand Parsec because its ruleset format never lowered the bar enough for a non-contributor to produce one in the first place.
+
+---
+
+## 11. Turn-Based Multiplayer Beyond Client/Server: Longturn, PBEM, and Deadline Resolution
+
+§3.1's `civclient`/`civserver` split and §5's protocol-first Thousand Parsec architecture both describe *how* a client talks to a server, but neither says anything about *when* a turn actually advances once more than one human is involved and they are not all online at once. Three genuinely different concurrency models turn up across this chapter's projects, plus two projects that never left synchronous, all-players-present play at all.
+
+### 11.1 Freeciv Longturn: Concurrent Play With a Very Long Timer
+
+"Longturn" is a server-configuration mode built entirely from settings Freeciv already exposes, not a separate code path. The `timeout` server setting — "the number of seconds that is allowed for each player to make their moves. If this is set to zero, then players will have unlimited time" — can be set as high as 8,640,000 seconds (100 days) [Source](https://raw.githubusercontent.com/freeciv/freeciv/master/server/settings.c), and community Longturn servers document setting it to roughly 23 hours per turn [Source](https://longturn.readthedocs.io/en/latest/Playing/turn-change.html). Movement stays concurrent rather than alternating — moves from all connected players are processed in the order received, and a turn ends either when the timer expires or when every player has ended their turn [Source](https://longturn.readthedocs.io/en/latest/Playing/faq.html). freeciv-web's own `publite2/` directory, already cited in §3.3 for its process-launcher role, ships the concrete evidence of this in production: paired `longturn_*.ruleset`/`pubscript_longturn_*.serv` files configuring specific long-running game instances. Longturn is, in short, ordinary concurrent Freeciv multiplayer with the per-turn clock stretched from minutes to a day — a persistent server players check in on periodically, not a different network model.
+
+### 11.2 Freeciv PBEM: Strict Alternation, Not Longturn Under Another Name
+
+Freeciv also ships a genuinely distinct third mode, easy to conflate with longturn but architecturally different. freeciv-web's own README lists them as separate offerings side by side: "Single player, Multiplayer, Longturn, Play-by-Email, Hotseat" [Source](https://github.com/freeciv/freeciv-web/blob/develop/README.md). Where longturn keeps concurrent movement with a long timer, PBEM enforces strict per-player alternation — a `pbem/pbem.py` daemon in the same repository watches for saved-game files, determines whose turn it now is, and emails that player a link to continue. The mechanism is server-backed turn notification via email, not literal save-file-as-email-attachment exchange the "play-by-email" name might suggest historically. The distinction matters architecturally: longturn is a concurrency-model choice (everyone moves within a long window), while PBEM is a turn-order enforcement choice (only one player may act at a time) layered with an asynchronous notification mechanism — two independent axes that happen to both solve the same underlying problem of players who are never online simultaneously.
+
+### 11.3 FreeCol and OXCE: Outside This Axis Entirely
+
+Two of this chapter's projects simply never built an asynchronous mode to compare against §11.1/§11.2/§11.4. FreeCol's server code (`src/net/sf/freecol/server/{control,networking,...}`) describes only live client/server multiplayer, with nothing in its README, wiki, or javadoc resembling a PBEM or longturn-style deadline mode [Source](https://www.freecol.org/javadoc/net/sf/freecol/server/FreeColServer.html) — an absence-of-evidence finding, not a developer statement that async play is unsupported, but a consistent one across every primary source checked. OXCE's position is more structurally certain: its `src/` tree has no networking directory at all — `Basescape`, `Battlescape`, `Engine`, `Geoscape`, `Interface`, `Menu`, `Mod`, `Savegame`, `Ufopaedia` cover the whole engine [Source](https://github.com/MeridianOXC/OpenXcom/tree/oxce-plus/src) — confirming §4's existing characterization of OXCE as having no server process, synchronous or otherwise, to build a deadline-based mode into. Both projects sit outside this section's comparison for the same underlying reason: an asynchronous turn model presupposes a server-authoritative process to hold state between sessions, which FreeCol's architecture technically has but never used this way, and which OXCE's architecture does not have at all.
+
+### 11.4 Thousand Parsec: Simultaneous Resolution on a Deadline
+
+Thousand Parsec's model is a third, architecturally distinct pattern from both of Freeciv's. The *Architecture of Open Source Applications* chapter on Thousand Parsec, written by the project's own developers, describes turn advancement as genuinely simultaneous and deadline-bounded: "When a player has finished performing actions, he or she may signal readiness for the next turn via the `Finished Turn` request; the next turn is computed when all players have done so," and turns additionally "have a time limit imposed by the server, so that slow or unresponsive players cannot hold up a game" [Source](https://aosabook.org/en/v1/thousandparsec.html). That is neither Freeciv longturn's concurrent-with-long-timer model (where individual moves apply as they arrive) nor its PBEM's strict alternation — every player submits orders independently and the server resolves them all at once, either when everyone has explicitly finished or when the deadline forces resolution regardless. It is the only one of the three models surveyed here where no player's action is ever visible to another before the turn resolves.
+
+Across all four live comparison points, the chapter's projects turn out to cover three structurally different answers to "how do turn-based strategy games handle players who are never online at the same time": process-moves-as-they-arrive-with-a-long-clock (Freeciv longturn), strict-alternation-with-async-notification (Freeciv PBEM), and simultaneous-orders-resolved-on-a-deadline (Thousand Parsec) — with FreeCol and OXCE never needing to pick any of the three, because neither ever built the server-authoritative persistence layer the choice presupposes.
+
+---
+
 ## Integrations
 
-**Chapter 205d — Modding Architectures** covers the general engineering problem this chapter's frameworks each answer once, for one domain: embedded Lua as a modding substrate (§2.4's OpenCiv3/MoonSharp is a second, independently engineered instance of the `mlua`-style embedded-interpreter pattern Ch205d surveys generically, though built on MoonSharp rather than `mlua`), and data-driven rulesets more broadly as the domain-specific, code-free counterpart to Ch205d's scripting-and-sandboxing survey. Where Ch205d asks what an extension is allowed to *reach* — the file descriptor, the GPU, another mod's private state — this chapter's rulesets mostly sidestep that question by never running arbitrary code in the first place; OpenCiv3's Lua layer is the one framework here that reopens it, since a mod script reaching live engine objects through `GAME_DATA()` is a trust decision in exactly Ch205d's sense.
+**Chapter 205d — Modding Architectures** covers the general engineering problem this chapter's frameworks each answer once, for one domain: embedded Lua as a modding substrate (§2.4's OpenCiv3/MoonSharp is a second, independently engineered instance of the `mlua`-style embedded-interpreter pattern Ch205d surveys generically, though built on MoonSharp rather than `mlua`; Freeciv's `tolua`-bound `api_edit_*`/`api_server_*` surface, §3.4, is a third, hand-curated instance of the same pattern), and data-driven rulesets more broadly as the domain-specific, code-free counterpart to Ch205d's scripting-and-sandboxing survey. Where Ch205d asks what an extension is allowed to *reach* — the file descriptor, the GPU, another mod's private state — OXCE's declarative YAML merging (§4) sidesteps that question by never running arbitrary code in the first place. OpenCiv3 and Freeciv both reopen it, but at different points on the same axis: a mod script reaching live engine objects through OpenCiv3's `GAME_DATA()` is a trust decision with almost no boundary, while Freeciv's `signal.connect`-hooked Lua is scoped to whatever the curated `api_edit_*`/`api_server_*` functions choose to expose — the hand-curated-binding pattern Ch205d treats as the norm, against which OpenCiv3's reflection-based approach is the outlier.
 
 **Chapter 205c — Open-Source 2D Simulation-Game Engines** is this chapter's companion "reimplementation" chapter, there scoped to rendering architecture for a related family of projects and here scoped to rules and data-model architecture. Read together, the two chapters cover the same genre of open-source strategy/simulation project from its two structural halves: how it draws itself, and what it is actually simulating underneath.
+
+**Chapter 205b — AI Agents in Games** covers the classical game-AI techniques (navmeshes, behaviour trees, GOAP, utility systems) and their modern/LLM-driven successors that sit underneath opponent implementations like Freeciv's `ai/classic/classicai.c` and OpenCiv3's `C7Engine/AI/PlayerAI.cs` (§3.5) — this chapter deliberately stops at naming those AI modules as engine-native, non-data-driven code, and defers the AI architecture itself to Ch205b.
+
+**Chapter 205f — Artificial Life on the GPU** is a sibling Part XI chapter covering a different class of simulation software — deliberately GPU-compute-focused where this chapter is deliberately non-graphics. The two chapters share little architectural overlap but sit side by side in the Part XI survey of simulation-oriented software; Ch205f links back to this chapter as its data-driven, rules-engine-first counterpart.
 
 ---
 
@@ -330,6 +537,10 @@ Reading down the "moddable without recompiling" column against the "maintenance 
 - [freeciv-web commit count since 2025-08-01 (`develop`)](https://api.github.com/repos/freeciv/freeciv-web/commits?sha=develop&since=2025-08-01T00:00:00Z&per_page=100) — zero commits returned (§3.3)
 - [freeciv-web `README.md` (develop)](https://github.com/freeciv/freeciv-web/blob/develop/README.md) — Component breakdown: Freeciv-web (Java/Tomcat/nginx), Freeciv (patched C server), Freeciv-proxy (Python WebSocket proxy), Publite2 (Python process launcher) (§3.3)
 - [freeciv-web `LICENSE.txt` (master)](https://github.com/freeciv/freeciv-web/blob/master/LICENSE.txt) — GPL for the C server vs. AGPLv3 for the web client (§3.3)
+- [Freeciv `server/scripting/api_server_edit.h` (master)](https://raw.githubusercontent.com/freeciv/freeciv/master/server/scripting/api_server_edit.h) — Curated, `tolua`-bound `api_edit_*` C functions exposed to the embedded Lua state (§3.4)
+- [Freeciv `data/classic/script.lua` (master)](https://raw.githubusercontent.com/freeciv/freeciv/master/data/classic/script.lua) — Ruleset-specific Lua layered over `default.lua`, `signal.connect("city_destroyed", ...)` example (§3.4)
+- [Freeciv `ai/` directory listing (master)](https://github.com/freeciv/freeciv/tree/master/ai) — `difficulty.c`, `handicaps.c`, `aitraits.c`, and per-ruleset `classic/classicai.c` AI modules (§3.5)
+- [OpenCiv3 `C7Engine/AI/` directory listing (Development)](https://github.com/C7-Game/OpenCiv3/tree/Development/C7Engine/AI) — `IAI.cs`, `PlayerAI.cs`, `BarbarianAI.cs`, `StrategicAI`, `UnitAI` (§3.5)
 - [GitHub — OpenXcom/OpenXcom](https://github.com/OpenXcom/OpenXcom) — GPL-3.0 license, base repository (§4, §4.3)
 - [OpenXcom commit count since 2025-08-01 (`master`)](https://api.github.com/repos/OpenXcom/OpenXcom/commits?since=2025-08-01T00:00:00Z&per_page=1) — 41 commits via `Link: rel="last"` page count (§4.3)
 - [GitHub — MeridianOXC/OpenXcom](https://github.com/MeridianOXC/OpenXcom) — GPL-3.0 license, `oxce-plus` branch, README mod-portal reference (§4, §4.2, §4.3)
@@ -348,6 +559,33 @@ Reading down the "moddable without recompiling" column against the "maintenance 
 - [GitHub — unknown-horizons organization](https://github.com/unknown-horizons) — `unknown-horizons` (FIFE-based) and `godot-port` repositories, both active and unarchived (§7)
 - [GitHub — wesnoth/wesnoth](https://github.com/wesnoth/wesnoth) — GPL-2.0, most active repository surveyed (§7)
 - [Wesnoth `data/campaigns/Heir_To_The_Throne/scenarios/01_The_Elves_Besieged.cfg` (master)](https://raw.githubusercontent.com/wesnoth/wesnoth/master/data/campaigns/Heir_To_The_Throne/scenarios/01_The_Elves_Besieged.cfg) — WML macro definition, `#enddef`, `[scenario]` tag (§7)
+- [OpenCiv3 `C7/Lua/README.GameModes.md` (Development)](https://github.com/C7-Game/OpenCiv3/blob/Development/C7/Lua/README.GameModes.md) — Addon declaration-order composition, "code-change free mod loading mechanism" TODO (§8.1, §10.2)
+- [OXCE `src/Engine/ModInfo.cpp` (oxce-plus)](https://raw.githubusercontent.com/MeridianOXC/OpenXcom/oxce-plus/src/Engine/ModInfo.cpp) — "masters can still have masters" chained-dependency comment (§8.2)
+- [OXCE `src/Engine/FileMap.cpp` (oxce-plus)](https://raw.githubusercontent.com/MeridianOXC/OpenXcom/oxce-plus/src/Engine/FileMap.cpp) — `FileMap::setup()` master-chain expansion into load order (§8.2)
+- [OXCE `src/Menu/ModListState.cpp` (oxce-plus)](https://raw.githubusercontent.com/MeridianOXC/OpenXcom/oxce-plus/src/Menu/ModListState.cpp) — `moveModUp`/`moveModDown` in-game mod reordering (§8.2)
+- [OXCE `src/Mod/Mod.cpp` (oxce-plus)](https://raw.githubusercontent.com/MeridianOXC/OpenXcom/oxce-plus/src/Mod/Mod.cpp) — `Mod::loadRule` reuse-and-overwrite merge, `new`/`override`/`update`/`delete`/`ignore` keyword conflict check (§8.2)
+- [Freeciv `doc/README.modpack_installer` (master)](https://raw.githubusercontent.com/freeciv/freeciv/master/doc/README.modpack_installer) — Modpack installer, install-time dependency resolution, third-party `.mpdl`/`.list` URLs (§8.3, §10.1)
+- [tpserver-cpp `tpserver/main.cpp` (master)](https://raw.githubusercontent.com/thousandparsec/tpserver-cpp/master/tpserver/main.cpp) — Single `ruleset` config value read at server startup (§8.3)
+- [tpserver-cpp `tpserver/pluginmanager.cpp` (master)](https://raw.githubusercontent.com/thousandparsec/tpserver-cpp/master/tpserver/pluginmanager.cpp) — `PluginManager::loadRuleset`, single `dlopen`ed ruleset module (§8.3)
+- [Freeciv `server/savegame/savecompat.c` (master)](https://raw.githubusercontent.com/freeciv/freeciv/master/server/savegame/savecompat.c) — `sg_load_compat()`, versioned `compat[]` forward-migration table (§9.1)
+- [Freeciv `server/ruleset/rscompat.c` (master)](https://raw.githubusercontent.com/freeciv/freeciv/master/server/ruleset/rscompat.c) — `rscompat_check_cap_and_version()`, ruleset format-version migration (§9.1)
+- [Freeciv `server/savegame/savegame3.c` (master)](https://raw.githubusercontent.com/freeciv/freeciv/master/server/savegame/savegame3.c) — `sg_load_savefile()`, ruleset reload keyed off `savefile.rulesetdir` (§9.1)
+- [OXCE `src/Savegame/SavedGame.cpp` (oxce-plus)](https://raw.githubusercontent.com/MeridianOXC/OpenXcom/oxce-plus/src/Savegame/SavedGame.cpp) — `sanitizeModName`/`_isCurrentGameType` version-stripped mod-name check, silent per-entity load failures (§9.2)
+- [OXCE `src/version.h` (oxce-plus)](https://raw.githubusercontent.com/MeridianOXC/OpenXcom/oxce-plus/src/version.h) — `MIN_REQUIRED_RULESET_VERSION_NUMBER` (mod-vs-engine gate, not save-file gate) (§9.2)
+- [OpenCiv3 issue #434 — "Loading Incompatible Save Ruins New Game"](https://github.com/C7-Game/OpenCiv3/issues/434) — Observed incompatible-save failure mode (§9.3)
+- [tpserver-cpp `modules/persistence/mysql/mysqlpersistence.cpp` (master)](https://raw.githubusercontent.com/thousandparsec/tpserver-cpp/master/modules/persistence/mysql/mysqlpersistence.cpp) — `tableversion` schema-version table, hard-refusal error log, single `gameinfo.turnname` migration exception (§9.4)
+- [Freeciv forum — Rulesets and modpacks board](https://forum.freeciv.org/f/viewforum.php?f=11) — 329-topic community sharing/discussion board (§10.1)
+- [OpenCiv3 issue #133 — "Prototype Mod"](https://github.com/C7-Game/OpenCiv3/issues/133) — Open since 2022-03-12; unresolved mod-packaging-format question (§10.2)
+- [OpenCiv3 wiki](https://github.com/C7-Game/OpenCiv3/wiki) — Page listing with no mod-sharing/distribution page (§10.2)
+- [thousandparsec/wiki `Clone_Ruleset.mediawiki` (master)](https://github.com/thousandparsec/wiki/blob/master/Clone_Ruleset.mediawiki) — Ruleset concepts discussed as in-tree future work, not external distribution (§10.3)
+- [FreeCol `freecol-mods` repository, `mods/README.md`](https://github.com/FreeCol/freecol-mods/blob/master/mods/README.md) — Separate community-mod repository, pull-request submission workflow (§10.4)
+- [Freeciv `server/settings.c` (master)](https://raw.githubusercontent.com/freeciv/freeciv/master/server/settings.c) — `timeout` server setting, up to 8,640,000-second maximum (§11.1)
+- [Longturn documentation — turn change](https://longturn.readthedocs.io/en/latest/Playing/turn-change.html) — ~23-hour longturn timer convention (§11.1)
+- [Longturn documentation — FAQ](https://longturn.readthedocs.io/en/latest/Playing/faq.html) — Concurrent move processing, turn-end conditions (§11.1)
+- [freeciv-web `README.md` (develop)](https://github.com/freeciv/freeciv-web/blob/develop/README.md) — "Single player, Multiplayer, Longturn, Play-by-Email, Hotseat" mode list (§11.2) — also cited at §3.3
+- [FreeColServer javadoc](https://www.freecol.org/javadoc/net/sf/freecol/server/FreeColServer.html) — No PBEM/longturn-style async mode found in server architecture (§11.3)
+- [OXCE `src/` directory listing (oxce-plus)](https://github.com/MeridianOXC/OpenXcom/tree/oxce-plus/src) — No networking directory present, confirming single-process/no-server architecture (§11.3)
+- [AOSA — "Thousand Parsec" chapter](https://aosabook.org/en/v1/thousandparsec.html) — `Finished Turn` request, simultaneous deadline-bounded turn resolution, written by project developers (§11.4)
 
 ---
 

@@ -1542,7 +1542,9 @@ docker run --gpus all \
 2. Pre-warm images in CI by running a brief render after pull and committing the result
 3. NVIDIA Container Toolkit (see Ch55) exposes the GPU to the container via `--gpus all`; this is a prerequisite, not optional
 
-**Isaac Lab and Isaac Sim** extend this pattern for robot learning: `nvcr.io/nvidia/isaac-lab:latest` provides headless-only operation for large-scale parallel training with PhysX GPU simulation feeding directly into Fabric for Hydra rendering.
+**Isaac Lab and Isaac Sim** extend this pattern for robot learning: `nvcr.io/nvidia/isaac-lab:latest` provides headless operation for large-scale parallel training with PhysX GPU simulation feeding directly into Fabric for Hydra rendering. Headless is the default for cluster training, not the only mode — Isaac Lab's `--headless` and `--enable_cameras` launch flags are orthogonal, so a headless run can still render tiled camera observations with no display attached; a purely proprioceptive training run never loads the camera extension stack at all (Ch211b §7.4 covers this distinction in full).
+
+Isaac Sim's own version number tracks a separate release cadence from the Kit SDK version numbers used throughout this section (106.x, 109.0, 110.1) — Isaac Sim pins a specific Kit SDK point release per Isaac Sim release, and that mapping is documented per-release rather than following a fixed offset (Ch211b §2.1).
 
 ### 10.4 Omniverse Nucleus Architecture
 
@@ -2041,6 +2043,10 @@ This chapter sits at the intersection of several threads developed throughout th
 **Headless containers ↔ NVIDIA Container Toolkit (Ch55):** The `--gpus all` flag and the NVIDIA Container Runtime hook described in Ch55 are prerequisites for all container-based Omniverse deployment patterns.
 
 **Blender USD (Ch42) and Godot USD (Ch41):** Both engines consume USD assets via their import layers. Blender's Hydra viewport (Cycles/EEVEE as Hydra delegates) provides an open alternative rendering path over the same USD scene description.
+
+**Kit extensions ↔ Isaac Sim and Isaac Lab (Ch211b):** Isaac Sim is a Kit-based application in the sense described throughout §9 — its `.kit` experience files, extension loader, and USD/Fabric/USDRT scene representation are this chapter's mechanisms, not a separate stack. Ch211b covers the Isaac-specific extension namespace (`isaacsim.*`), Isaac Lab's RL workflows over that base, and pins Isaac Sim's own version numbers against the Kit SDK versions used as examples in this chapter (§9, §10.3).
+
+**Headless container deployment at fleet scale ↔ Cosmos, OSMO, and Omniverse Farm (Ch240):** The headless Kit rendering path and NGC container pattern documented in §10.2–§10.3 is the exact mechanism Omniverse Farm's job dispatch invokes across many nodes; Ch240 covers the orchestration layer built on top of what this chapter documents as a single-container deployment.
 
 ---
 
