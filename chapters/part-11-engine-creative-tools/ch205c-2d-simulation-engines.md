@@ -43,6 +43,7 @@ Four codebases carry the chapter. **OpenTTD** and **OpenLoco** demonstrate what 
 - [8. The Absence of Vulkan](#8-the-absence-of-vulkan)
 - [Integrations](#integrations)
 - [References](#references)
+- [Roadmap](#roadmap)
 
 ---
 
@@ -1306,6 +1307,58 @@ The honest conclusion is that the sprite-compositing problem these projects face
 **Specification references**
 
 - [OpenGL 3.3 Core Profile Specification](https://registry.khronos.org/OpenGL/specs/gl/glspec33.core.pdf) — `GL_MAX_TEXTURE_IMAGE_UNITS`, `GL_MAX_ARRAY_TEXTURE_LAYERS`, `GL_MAX_TEXTURE_SIZE` minimum required values; instanced array semantics for `glVertexAttribDivisor` and `glDrawArraysInstanced`.
+
+**Roadmap sources**
+
+Project status links are volatile by nature; all were checked on 2026-08-13.
+
+- [OpenTTD PR #15779 — "Change: migrate from SDL2 to SDL3"](https://github.com/OpenTTD/OpenTTD/pull/15779) — open; renames `sdl2_opengl_v.cpp` → `sdl3_opengl_v.cpp` without touching `src/video/opengl.cpp`/`.h`. (Roadmap)
+- [OpenTTD issue #15580 — SDL3 support](https://github.com/OpenTTD/OpenTTD/issues/15580) — the request PR #15779 closes. (Roadmap)
+- [OpenTTD 16.0-beta1 release](https://github.com/OpenTTD/OpenTTD/releases/tag/16.0-beta1) and [16.0-beta2](https://github.com/OpenTTD/OpenTTD/releases/tag/16.0-beta2) — 2026-06-25 and 2026-07-12. (Roadmap)
+- [OpenTTD 16.0 milestone](https://github.com/OpenTTD/OpenTTD/milestone/8) — open; contains no rendering-backend items. (Roadmap)
+- [OpenTTD issue tracker](https://github.com/OpenTTD/OpenTTD/issues) — searched for OpenGL and Vulkan; no open rendering-backend issues. (Roadmap)
+- [OpenRCT2 PR #26902 — "feat: Migrate to SDL3"](https://github.com/OpenRCT2/OpenRCT2/pull/26902) — open; author's "SDL drawing engine" remark and the maintainer replies on audio-rework and distribution blockers. (Roadmap)
+- [OpenRCT2 issue #23682 — "Migrate to SDL3"](https://github.com/OpenRCT2/OpenRCT2/issues/23682) — long-standing tracking issue, open since 2025. (Roadmap)
+- [OpenRCT2 PR #26618 — audio engine rework](https://github.com/OpenRCT2/OpenRCT2/pull/26618) — cited by a maintainer as the prerequisite for SDL3 migration. (Roadmap)
+- [OpenRCT2 issue #26859 — "OpenGL renderer randomly causes Windows OS to run at <1 FPS"](https://github.com/OpenRCT2/OpenRCT2/issues/26859) — opened 2026-08-03, open. (Roadmap)
+- [OpenRCT2 v0.5.4 release](https://github.com/OpenRCT2/OpenRCT2/releases/tag/v0.5.4) — 2026-08-02 changelog; no renderer or drawing-engine entries. (Roadmap)
+- [OpenRCT2 v0.5.5 milestone](https://github.com/OpenRCT2/OpenRCT2/milestone/82) — due 2026-09-06. (Roadmap)
+- [OpenRCT2 PR #3803 — "Refactor drawing"](https://github.com/OpenRCT2/OpenRCT2/pull/3803) — merged 2016-06-08; introduced the `IDrawingEngine` / `IDrawingContext` abstraction, describing the intent to add later engines using "OpenGL, DirectX, Vulkan etc or even a stub for headless mode". (§3, Roadmap)
+- [OpenLoco PR #3374 — "Hardware renderer"](https://github.com/OpenLoco/OpenLoco/pull/3374) — opened 2025-11-05, closed unmerged 2025-11-27; contains the render-to-texture-then-blit progress note and the closing assessment. (Roadmap)
+- [OpenLoco README](https://github.com/OpenLoco/OpenLoco#readme) — C++ reimplementation completed December 2025; stated goals are multiplayer and raised map/vehicle limits, bounded by the CSL save format. (Roadmap)
+- [OpenRA issue #22563 — "Vulkan support"](https://github.com/OpenRA/OpenRA/issues/22563) — opened 2026-08-09; the sole reply points to Zink. (Roadmap)
+- [Mesa documentation — Zink](https://docs.mesa3d.org/drivers/zink.html) — OpenGL-on-Vulkan Gallium driver, cited in the OpenRA reply above. (Roadmap)
+- [OpenRA issue #22509 — shader loading via the virtual FileSystem](https://github.com/OpenRA/OpenRA/issues/22509) and [#14674 — more efficient voxel renderer](https://github.com/OpenRA/OpenRA/issues/14674) — the open rendering-adjacent issues. (Roadmap)
+- [OpenRA `release-20250330`](https://github.com/OpenRA/OpenRA/releases/tag/release-20250330) — the most recent stable release. (Roadmap)
+- [OpenRA playtest-20260222 announcement](https://www.openra.net/news/playtest-20260222/) — random map generators, Tiberian Dawn HD content manager, localisation progress; no rendering items. (Roadmap)
+- [OpenRA milestones](https://github.com/OpenRA/OpenRA/milestones) — dominated by Tiberian Sun and C&C Remastered content work. (Roadmap)
+
+---
+
+## Roadmap
+
+None of the four projects publishes a formal graphics roadmap. The items below are drawn from open pull requests, milestones, release changelogs and maintainer replies on the projects' own trackers, checked on 2026-08-13; where nothing has been announced, that is stated rather than extrapolated.
+
+### Near-term (6–12 months)
+
+- **OpenTTD's SDL3 migration carries the presentation-only backend across unchanged.** An open pull request migrates OpenTTD from SDL2 to SDL3, motivated by distribution availability — "SDL2 is starting to be dropped from Linux distributions, while SDL3 is available in most" — and renames `src/video/sdl2_opengl_v.cpp` to `sdl3_opengl_v.cpp` with about five added and five removed lines (`SDL_GL_DeleteContext` → `SDL_GL_DestroyContext`; `void *gl_context` → `SDL_GLContext`). `src/video/opengl.cpp` and `src/video/opengl.h` — the `OpenGLBackend` of §2 — are not among the changed files at all, and the build continues to acquire OpenGL through SDL rather than adopting SDL3's `SDL_gpu` API. A full SDL generation change leaves the fullscreen-quad presentation path intact [Source](https://github.com/OpenTTD/OpenTTD/pull/15779) (§2, §8).
+- **OpenTTD 16.0 is in beta, with no rendering work in scope.** Betas shipped 2026-06-25 and 2026-07-12 and the 16.0 milestone remains open [Source](https://github.com/OpenTTD/OpenTTD/milestone/8). A search of the tracker returns no open issues titled for OpenGL and no Vulkan references in issue titles or bodies [Source](https://github.com/OpenTTD/OpenTTD/issues); OpenTTD has announced no rendering-backend roadmap of any kind (§2, §8).
+- **OpenRCT2's SDL3 migration is proposed and currently blocked.** A pull request opened 2026-08-09 states the hope that migration "could open up the way for a SDL drawing engine which uses current and supported graphics APIs" — but that is the contributing author's framing, and the maintainer replies engaged only with blockers: one noting that the audio-engine rework must land first, another that "SDL3 is not available on distros we still target." No maintainer endorsed a new drawing engine [Source](https://github.com/OpenRCT2/OpenRCT2/pull/26902). The distribution assessment is the direct opposite of OpenTTD's, which illustrates how far this decision is driven by packaging rather than by rendering requirements (§3, §8).
+- **OpenRCT2's monthly release stream carries no renderer changes.** Releases have arrived roughly monthly from v0.5.1 (2026-05-17) to v0.5.4 (2026-08-02), with the v0.5.5 milestone due 2026-09-06 [Source](https://github.com/OpenRCT2/OpenRCT2/milestone/82). The v0.5.4 changelog contains no renderer, OpenGL or drawing-engine entries at all; its graphics-adjacent work is in tooling and the plugin surface instead — scripts gained the ability to trigger a save, and sprite-file export now emits an accompanying JSON manifest allowing round-trip conversion [Source](https://github.com/OpenRCT2/OpenRCT2/releases/tag/v0.5.4) (§3.8, §6.2).
+- **OpenRA's next stable release remains pending.** The last stable release is `release-20250330`; the only build since is `playtest-20260222`, headlined by new random map generators for Red Alert, Tiberian Dawn and Dune 2000, a Tiberian Dawn HD content manager for selecting between remastered and classic artwork (the mod "remains a standalone mod, we hope to complete the merge in the next release"), and further progress toward localisation. No rendering, graphics-backend or SDL work appears anywhere in the announcement [Source](https://www.openra.net/news/playtest-20260222/) (§5, §6.3).
+
+### Medium-term (1–3 years)
+
+- **OpenLoco's GPU renderer was attempted and abandoned as too invasive.** A "Hardware renderer" pull request opened 2025-11-05 and closed unmerged on 2025-11-27 reached a "hello triangle" milestone by starting from precisely the architecture §4 describes: it "renders the game to texture(cpu) and uses opengl to blit to screen, then calls opengl to draw the triangle (gpu)", with the intent to "start trying to draw more and more of the game with opengl". Its closing note reads: "this was just an experiment and would require rewriting the entire loco renderer to actually work. maybe one day...." [Source](https://github.com/OpenLoco/OpenLoco/pull/3374) This dates the project's own assessment of the cost, and confirms §4's reading that the software drawing engine is not incrementally GPU-portable (§4).
+- **OpenLoco's stated goals lie outside graphics.** The project records that the C++ reimplementation was completed as of December 2025 and names multiplayer and raised map and vehicle limits as its goals, the latter bounded by the original CSL (SV5/SC5) save format until a new save format exists [Source](https://github.com/OpenLoco/OpenLoco#readme). Graphics does not appear among the stated goals, and the monthly calendar-versioned releases (v26.04 through v26.07.1) contain no renderer work (§4).
+- **OpenRCT2's OpenGL renderer has no announced successor and no announced removal.** It remains opt-in and experimental, and defect reports continue to arrive against it: one opened 2026-08-03 reporting that enabling the OpenGL renderer drops the host OS below 1 FPS is still open [Source](https://github.com/OpenRCT2/OpenRCT2/issues/26859), alongside the older unresolved reports catalogued in §3.8. No replacement backend has been proposed. It is worth noting that the `IDrawingEngine` abstraction was introduced in 2016 with exactly this extension in mind — its pull request describes the goal as moving low-level 8bpp drawing behind an interface so that "in the future we will add other drawing engines which use other technologies such as OpenGL, DirectX, Vulkan etc or even a stub for headless mode" [Source](https://github.com/OpenRCT2/OpenRCT2/pull/3803). A decade later the OpenGL engine of §3 is the only one of those to have been written, and it is still marked experimental (§3.8, §8).
+- **OpenRA's rendering issues are wishlist-grade, not roadmapped.** The open rendering-adjacent items are a 2026-06-14 proposal to route shader loading through the virtual filesystem abstraction and a long-standing request for a more efficient voxel renderer parked in the Tiberian Sun beta milestone [Source](https://github.com/OpenRA/OpenRA/issues/22509); the general "Renderer Improvements" issue is a 2017 user request still carrying an `Idea/Wishlist` label. The project's open milestones are dominated by Tiberian Sun and C&C Remastered content work rather than by graphics [Source](https://github.com/OpenRA/OpenRA/milestones). None of the open rendering-adjacent issues proposes changing the sampler-bounded batching of §5 (§5).
+
+### Long-term
+
+- **No project surveyed has adopted SDL3's `SDL_gpu` API.** A source search for `SDL_gpu` and `SDL_GPU` across [OpenRCT2](https://github.com/OpenRCT2/OpenRCT2), [OpenTTD](https://github.com/OpenTTD/OpenTTD), [OpenLoco](https://github.com/OpenLoco/OpenLoco) and [OpenRA](https://github.com/OpenRA/OpenRA) returns no results as of 2026-08-13. This matters because `SDL_gpu` is the most plausible route by which a Vulkan-capable path could reach these engines without any of them writing Vulkan code directly — and none has announced plans to take it. Both SDL3 migrations in flight are toolkit-compatibility work driven by distribution packaging, not renderer work (§8).
+- **Translation layers, not native backends, are this niche's answer to Vulkan.** An issue requesting a Vulkan backend for OpenRA, opened 2026-08-09 and reasoning by analogy from the original *Red Alert* running over DXVK, drew a single reply from a project member: "Zink is essentially equivalent to DXVK for OpenGL." The issue remains open with no further discussion [Source](https://github.com/OpenRA/OpenRA/issues/22563). This is a position rather than a plan, but it is the same position §8 arrives at from the code: for an engine whose GPU work is a handful of quads per frame, the Vulkan path already exists below the application's API boundary, in the Mesa driver stack [Source](https://docs.mesa3d.org/drivers/zink.html), and moving it into the engine buys nothing the engine is bottlenecked on (§8).
+- **The architectures described in this chapter are end-states, not transitional stages.** On the available evidence, the only GPU-renderer initiative among the four projects in the past year closed unmerged as requiring a full renderer rewrite; no Vulkan work is in flight anywhere; and the SDL3 migrations preserve the existing OpenGL paths essentially verbatim. The CPU-composite-plus-fullscreen-quad design of §2 and §4, and the instanced palette-index sprite renderer of §3, are therefore best read as stable designs matched to a palettized 2D workload rather than as way-stations toward a modern GPU pipeline. No announced plan from any of the four projects contradicts that reading (§2, §3, §4, §8).
 
 ---
 

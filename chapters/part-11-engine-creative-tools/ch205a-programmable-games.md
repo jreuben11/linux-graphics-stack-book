@@ -40,6 +40,7 @@ The escalation runs one way. Screeps executes player JavaScript **in-process**, 
 - [8. WebAssembly as the Successor Sandbox](#8-webassembly-as-the-successor-sandbox)
 - [Integrations](#integrations)
 - [References](#references)
+- [Roadmap](#roadmap)
 
 ---
 
@@ -585,7 +586,7 @@ Two things about this design generalise. Streaming *either* full snapshots *or* 
 
 ## 5. Battlesnake: The Bot as a Microservice
 
-Battlesnake takes the isolation argument to its logical endpoint: the game engine does not run player code at all. `BattlesnakeOfficial/rules` is the Go implementation of the game rules, licensed AGPL-3.0, and it powers the production platform. [Source](https://github.com/BattlesnakeOfficial/rules)
+Battlesnake takes the isolation argument to its logical endpoint: the game engine does not run player code at all. `BattlesnakeOfficial/rules` is the Go implementation of the game rules, licensed AGPL-3.0. It is the reference engine and the one the local CLI below embeds, but it is no longer what runs ranked play: the production platform at arena.battlesnake.com is `BattlesnakeOfficial/arena`, an Axum-based Rust rewrite of the older `play.battlesnake.com` with its own PostgreSQL-backed web service and a Rust rules crate that simulates Standard games directly — calling each snake's endpoints in parallel — rather than shelling out to the Go engine. [Source](https://github.com/BattlesnakeOfficial/rules) [Source](https://github.com/BattlesnakeOfficial/arena) The wire contract to a snake is unaffected by which engine is driving it, since `GET /`, `POST /start`, `/move`, and `/end` are defined by the Battlesnake API rather than by either implementation.
 
 A snake is an HTTP server that the player deploys and operates. The engine is a pure HTTP *client*, calling four endpoints:
 
@@ -621,7 +622,7 @@ if gameState.Timeout == 0 {
 
 [Source](https://github.com/BattlesnakeOfficial/rules/blob/main/cli/commands/play.go)
 
-**Note: needs verification.** The 500 ms figure above is the default of the open-source CLI, read from source. The official webhooks documentation consulted here does not state the timeout used by the hosted platform, so the production per-request latency budget should not be assumed equal to the CLI default.
+**Note: needs verification.** The 500 ms figure above is the default of the open-source Go CLI, read from source, and describes local development via `battlesnake play`. The production ranked platform runs the separate Rust engine in `BattlesnakeOfficial/arena` (below), whose request timeout is not published in its public source, so the production per-request latency budget should not be assumed equal to the CLI default.
 
 Architecturally, Battlesnake is not a sandbox — it is the *absence* of one, and that is the point. All four of §1.2's bounds are handled by construction rather than by enforcement:
 
@@ -817,6 +818,11 @@ The summary claim, offered as analysis rather than as a documented property of a
 - [Open source graphics engine — Screeps blog, 2018-08-24](https://blog.screeps.com/2018/08/renderer/) — release announcement; PixiJS basis; private-server and third-party-GUI use cases (§2.6)
 - [screeps/launcher — example renderer mods](https://github.com/screeps/launcher/tree/ptr/init_dist/example-mods/renderer) — custom object-type graphics (§2.6)
 - [rustyscreeps/screeps-game-api](https://github.com/rustyscreeps/screeps-game-api) — typed Rust→Wasm bindings to the in-game API, MIT (§8)
+- [Arena and World Roadmap 2026 — Steam, 2025-12-15](https://store.steampowered.com/news/app/464350/view/1818752592133871) — seasonal cadence, Power Creep classes, Warp Containers, premium fast-tick shard, runtime update (§Roadmap)
+- [Node.js v24 upgrade — Steam, 2026-04-01](https://store.steampowered.com/news/app/464350/view/1828894815555845) — all runtime servers moved to Node.js v24; Pixi v7 and backported Arena renderer fixes (§Roadmap)
+- [New shard + Unlimited Access Keys Pack — Steam, 2026-04-23](https://store.steampowered.com/news/app/464350/view/1830797770234042) — shardX at 2000 ticks/hour, `Game.shard.access`/`accessTime`/`activateAccess`, `ERR_ACCESS_DENIED` (§Roadmap)
+- [10th Anniversary and Free Season — Steam, 2026-05-28](https://store.steampowered.com/news/app/464350/view/1833968530888223) — decorations, Terminal Nodes, two new Power Creep classes, a new Screeps IDE (§Roadmap)
+- [Screeps: Arena — Season 3 starts on May 1st, Steam, 2026-04-26](https://store.steampowered.com/news/app/1137320/view/1830797770240825) — three-month Arena season cadence in practice (§Roadmap)
 
 **Robocode**
 
@@ -832,6 +838,12 @@ The summary claim, offered as analysis rather than as a documented property of a
 - [tank-royale — bot-intent.schema.yaml](https://github.com/robocode-dev/tank-royale/blob/master/schema/schemas/bot-intent.schema.yaml) — delta semantics, firepower bounds, `stdOut`/`stdErr` (§3.3)
 - [tank-royale — tick-event-for-bot.schema.yaml](https://github.com/robocode-dev/tank-royale/blob/master/schema/schemas/tick-event-for-bot.schema.yaml) — per-turn state, all fields required (§3.3)
 - [Tank Royale — My First Bot for the JVM](https://robocode.dev/tutorial/jvm/my-first-bot-for-jvm.html) — bot skeleton, launch script, JSON descriptor (§3.2)
+- [robo-code/robocode — releases](https://github.com/robo-code/robocode/releases) — classic still shipping: v1.10.3 (2026-05-18), v1.11.0 (2026-06-06), v1.11.1 (2026-07-13) (§Roadmap)
+- [robocode-dev/tank-royale — releases](https://github.com/robocode-dev/tank-royale/releases) — v1.0.0 (2026-05-03), v1.0.2 (2026-05-18) (§Roadmap)
+- [tank-royale issue #232 — Release Tank Royale 1.1.0 with TwinDuel GUI](https://github.com/robocode-dev/tank-royale/issues/232) — opened 2026-08-04 (§Roadmap)
+- [tank-royale issue #12 — Bring original robocode bots to new platform](https://github.com/robocode-dev/tank-royale/issues/12) — labelled *in progress* / *huge effort* (§Roadmap)
+- [tank-royale issue #100 — Booter to connect to a remote game server](https://github.com/robocode-dev/tank-royale/issues/100) — open community request (§Roadmap)
+- [tank-royale issue #106 — Server websocket over wss](https://github.com/robocode-dev/tank-royale/issues/106) — open community request, labelled *huge effort* (§Roadmap)
 
 **RoboCup Soccer Simulation**
 
@@ -849,6 +861,13 @@ The summary claim, offered as analysis rather than as a documented property of a
 - [SimSpark wiki — Effectors](https://gitlab.com/robocup-sim/SimSpark/-/wikis/Effectors) — `(scene …)`, `(init …)`, `(beam …)`, joint effectors, `(say …)`, `(syn)` (§4.2)
 - [SimSpark wiki — Perceptors](https://gitlab.com/robocup-sim/SimSpark/-/wikis/Perceptors) — `HJ`, `GYR`, `ACC`, `FRP`, `TCH`, `See`, `GS`, `AgentState`, `hear` (§4.2)
 - [Open Dynamics Engine](https://www.ode.org/) — rigid-body dynamics library used by SimSpark (§4.2)
+- [RoboCup Federation — Objective](https://www.robocup.org/objective) — 1997 founding mission: beat the human World Cup champions by 2050 (§Roadmap)
+- [RoboCup 2026 — Incheon, South Korea](https://2026.robocup.org/) — first Korean hosting of the annual competition, July 2026 (§Roadmap)
+- [rcssserver — releases](https://github.com/rcsoccersim/rcssserver/releases) — last protocol release `rcssserver-19.0.0`, 2024-03-25 (§Roadmap)
+- [rcssserver issue #90 — UDP ↔ WebRTC bridge](https://github.com/rcsoccersim/rcssserver/issues/90) — open since 2022, browser-direct client connections (§Roadmap)
+- [rcssserver issue #148 — AppImage and official Docker container release](https://github.com/rcsoccersim/rcssserver/issues/148) — open packaging request (§Roadmap)
+- [rcsoccersim/RoboCup2026](https://github.com/rcsoccersim/RoboCup2026) — 2D competition logs and binaries, published July 2026 (§Roadmap)
+- [SimSpark — tags](https://gitlab.com/robocup-sim/SimSpark/-/tags) — `SIMSPARK_0.3.8_RELEASE` and `RCSSSERVER3D_0.7.9_RELEASE`, both 2026-01-30 (§Roadmap)
 
 **Battlesnake**
 
@@ -856,6 +875,10 @@ The summary claim, offered as analysis rather than as a documented property of a
 - [BattlesnakeOfficial/rules — cli/commands/play.go](https://github.com/BattlesnakeOfficial/rules/blob/main/cli/commands/play.go) — 500 ms default request timeout (§5)
 - [Battlesnake API — webhooks](https://docs.battlesnake.com/api/webhooks) — `GET /`, `POST /start`, `/move`, `/end` (§5)
 - [BattlesnakeOfficial/board](https://github.com/BattlesnakeOfficial/board) — Svelte game board and playback control, AGPL-3.0 (§5)
+- [BattlesnakeOfficial/arena](https://github.com/BattlesnakeOfficial/arena) — Rust rewrite of `play.battlesnake.com`; Axum + PostgreSQL web service with its own built-in Rust rules crate (§5, §Roadmap)
+- [BattlesnakeOfficial/rules — releases](https://github.com/BattlesnakeOfficial/rules/releases) — last release v1.2.3, 2023-02-10; superseded as the ranked-play engine by `arena` (§5, §Roadmap)
+- [BattlesnakeOfficial/rfcs](https://github.com/BattlesnakeOfficial/rfcs) — public RFC and specification process opened January 2026 (§Roadmap)
+- [BattlesnakeOfficial/snake-zoo](https://github.com/BattlesnakeOfficial/snake-zoo) — Rust CLI and Dockerfile registry for running community snakes locally (§Roadmap)
 
 **Halite III**
 
@@ -864,12 +887,49 @@ The summary claim, offered as analysis rather than as a documented property of a
 - [Halite-III — starter_kits/Python3/MyBot.py](https://github.com/HaliteChallenge/Halite-III/blob/master/starter_kits/Python3/MyBot.py) — turn loop; stdout reserved for the protocol (§6)
 - [Halite-III — starter_kits/README.md](https://github.com/HaliteChallenge/Halite-III/blob/master/starter_kits/README.md) — kit layout, `install.sh`, ten-minute build allowance (§6)
 - [Halite-III — libhaliteviz](https://github.com/HaliteChallenge/Halite-III/tree/master/libhaliteviz) — HTML5 canvas replay viewer (§6)
+- [Halite-III — commit history](https://github.com/HaliteChallenge/Halite-III/commits/master) — last substantive commit 2020-02-08; Dependabot merges only since (§Roadmap)
+- [Halite-III — releases](https://github.com/HaliteChallenge/Halite-III/releases) — no tagged release has ever been published (§Roadmap)
 
 **WebAssembly sandboxing and other platforms**
 
 - [Wasmtime — `wasmtime::Store` API](https://docs.wasmtime.dev/api/wasmtime/struct.Store.html) — `Config::consume_fuel`, `set_fuel`, `get_fuel`, trap on exhaustion (§8)
 - [extism/extism](https://github.com/extism/extism) — cross-language Wasm plugin framework (§8)
+- [Wasmtime — Release Process](https://docs.wasmtime.dev/stability-release.html) — major version on the 20th of each month; every 12th release is an LTS supported for 24 months (§Roadmap)
+- [wasmtime PR #12541 — Add support for fine-grained operator costs](https://github.com/bytecodealliance/wasmtime/pull/12541) — per-operator fuel cost configuration, merged 2026-02-19 (§Roadmap)
+- [wasmtime PR #13393 — Insert fuel/epoch checks in bulk copies/fills](https://github.com/bytecodealliance/wasmtime/pull/13393) — fuel proportional to bulk-transfer size, merged 2026-05-18 (§Roadmap)
+- [wasmtime PR #13612 — Update WASI to 0.3.0, enable component-model-async](https://github.com/bytecodealliance/wasmtime/pull/13612) — merged 2026-06-12 (§Roadmap)
+- [wasmtime PR #13558 — Remove wasi-threads and wasi-common](https://github.com/bytecodealliance/wasmtime/pull/13558) — merged 2026-06-05 (§Roadmap)
 - [CodinGame/codingame-game-engine](https://github.com/CodinGame/codingame-game-engine) — open-source Java SDK for authoring CodinGame games; the platform's execution judge is not open source (§7.3)
+
+---
+
+## Roadmap
+
+The five platforms dissected above are not frozen artefacts. Four of them are under active development and one is not, and the direction each is moving in sharpens rather than blurs the chapter's central argument: the sandbox boundary keeps migrating downward, out of the language runtime and into the process, the container, and increasingly the Wasm engine.
+
+### Near-term (6–12 months)
+
+- **Screeps: World is importing Arena's runtime.** The published 2026 roadmap commits to bringing Arena's execution model into World — ES module support, folder support, built-in JS definitions, native script uploads through the Steam client, and an official VSCode/vscode.dev extension carrying editor, console, and memory views. The Node.js half of that work already landed: all runtime servers were moved to Node.js v24 on 2026-04-01, in a release that also pulled the isolate host, the PixiJS 7 renderer, and the backported Arena room-renderer fixes forward together. [Source](https://store.steampowered.com/news/app/464350/view/1818752592133871) [Source](https://store.steampowered.com/news/app/464350/view/1828894815555845) (§2.1, §2.4, §2.6)
+- **Arena finishes its pipeline before World work resumes.** Two major Arena updates — Trophies and Decorations — are stated as remaining before development focus shifts back to World, with Arena running a new season every three months; Season 2 opened 2026-02-01 and Season 3 on 2026-05-01. Readers tracking §2's isolate-per-player design should expect World changes to trail Arena's by roughly that interval, because the runtime ideas are being proven in Arena first. [Source](https://store.steampowered.com/news/app/464350/view/1818752592133871) [Source](https://store.steampowered.com/news/app/1137320/view/1830797770240825) (§2.2)
+- **Robocode ships two lines in parallel, not one.** §3 traces the SecurityManager collapse into Tank Royale's process-isolated rewrite, but classic Robocode has not been retired: v1.10.3 (2026-05-18), v1.11.0 (2026-06-06), and v1.11.1 (2026-07-13) followed Tank Royale's own v1.0.0 (2026-05-03) and v1.0.2 (2026-05-18). The in-JVM and out-of-process sandboxes are being maintained concurrently, so the migration described in §3.1 is an addition to the ecosystem rather than a replacement of it. [Source](https://github.com/robo-code/robocode/releases) [Source](https://github.com/robocode-dev/tank-royale/releases) (§3.1, §3.2)
+- **Tank Royale 1.1.0 and a bridge for classic bots.** A maintainer-opened tracking issue targets 1.1.0 around a TwinDuel GUI, and the long-running request to run original Robocode bots on the new platform is labelled *in progress* and *huge effort* — the compatibility shim that would let the EPL-licensed classic bot corpus survive the move to the WebSocket protocol of §3.3. [Source](https://github.com/robocode-dev/tank-royale/issues/232) [Source](https://github.com/robocode-dev/tank-royale/issues/12) (§3.2, §3.3)
+- **The Go rules engine's role is narrowing to reference implementation and CLI.** `BattlesnakeOfficial/rules` has taken no tagged release since v1.2.3 (2023-02-10), while ranked play has already moved to the Rust `arena` engine described in §5. Whether the Go engine and its CLI stay in sync with `arena`'s rules as the RFC process below formalises game-mode semantics is the open question — a divergence would leave local `battlesnake play` testing unrepresentative of ranked outcomes. [Source](https://github.com/BattlesnakeOfficial/rules/releases) [Source](https://github.com/BattlesnakeOfficial/arena) (§5, §7.1)
+- **Wasmtime's fuel accounting is becoming finer-grained.** §8 presents fuel as a portable instruction count; two changes refine exactly what gets counted. Per-operator cost configuration merged 2026-02-19, letting an embedder price individual instructions rather than charging uniformly, and bulk memory copies and fills now consume fuel proportional to the size of the operation (merged 2026-05-18) where previously "a constant amount of fuel was consumed regardless" — though that change explicitly does not yet cover `memory.init` or `table.copy`. Anyone building a metered contest engine on Wasmtime should treat fuel as *configurable* and version-sensitive, not as a fixed universal constant. [Source](https://github.com/bytecodealliance/wasmtime/pull/12541) [Source](https://github.com/bytecodealliance/wasmtime/pull/13393) (§8)
+
+### Medium-term (1–3 years)
+
+- **A premium Screeps shard aiming at one-second ticks.** The roadmap describes a new shard gated behind Access Keys where ticks run "potentially even around the 1-second mark". The first instalment shipped on 2026-04-23 as shardX at 2000 ticks/hour against the standard 1000, with `Game.shard.access`, `Game.shard.accessTime`, and `Game.shard.activateAccess` added to the API and a new `ERR_ACCESS_DENIED` return from `claimController`, `reserveController`, and `upgradeController`. Halving the tick budget tightens every constraint in §2.4 — the isolate wake-up, the script timeout, and the CPU bucket all have to fit in less wall-clock time. [Source](https://store.steampowered.com/news/app/464350/view/1818752592133871) [Source](https://store.steampowered.com/news/app/464350/view/1830797770234042) (§2.4, §2.5)
+- **New Screeps game objects and a first-party IDE.** Two Power Creep classes, Commander and Executor, were designed years ago but never released; alongside them the announced backlog covers Warp Containers, a Terminal Nodes mechanic, an improved decorations system, and a new Screeps IDE. The IDE matters most to §2.6's argument: the renderer was open-sourced precisely so tooling could be built against it without forking. [Source](https://store.steampowered.com/news/app/464350/view/1818752592133871) [Source](https://store.steampowered.com/news/app/464350/view/1833968530888223) (§2.5, §2.6)
+- **Containerised and remote execution are the standing asks in both Robocode and Battlesnake.** Two open Tank Royale requests — a booter that connects to a remote game server, and serving the protocol over `wss://` — are community-filed with no maintainer commitment, but together they describe the deployment shape that reinforcement-learning users want: bots in containers, server elsewhere, transport encrypted. Battlesnake has already taken a step in that direction; its opponent-registry CLI runs community snakes locally from Docker images, the first containerised execution in the project's own tooling. [Source](https://github.com/robocode-dev/tank-royale/issues/100) [Source](https://github.com/robocode-dev/tank-royale/issues/106) [Source](https://github.com/BattlesnakeOfficial/snake-zoo) (§3.2, §5, §7.2)
+- **Battlesnake is formalising its rules through a public RFC process.** A dedicated repository for RFCs and specifications opened in January 2026, intended to pin down game-mode semantics that currently live only in engine source. No RFC has been accepted yet, so the normative description of the ruleset remains the Go implementation cited in §5. [Source](https://github.com/BattlesnakeOfficial/rfcs) (§5)
+- **Wasmtime is standardising on the component model and shedding legacy sandbox surface.** WASI 0.3.0 and asynchronous component-model support were enabled by default in a change merged 2026-06-12, and `wasi-threads` together with the older `wasi-common` crate were removed outright a week earlier. The direction is the one §8 identifies: a single typed, capability-explicit interface boundary replacing a scatter of ad-hoc host hooks — but embedders pinning older Wasmtime majors should note that the removal is a hard break, not a deprecation. [Source](https://github.com/bytecodealliance/wasmtime/pull/13612) [Source](https://github.com/bytecodealliance/wasmtime/pull/13558) (§8)
+- **The RoboCup 2D and 3D servers are diverging in maintenance tempo.** `rcssserver` has published no protocol release since `rcssserver-19.0.0` on 2024-03-25, and its open feature requests — a UDP-to-WebRTC bridge that would let browsers speak the S-expression protocol of §4.1 directly, and official Docker/AppImage packaging — remain unactioned. SimSpark, by contrast, tagged `SIMSPARK_0.3.8_RELEASE` and `RCSSSERVER3D_0.7.9_RELEASE` together on 2026-01-30, so the 2D protocol should be treated as stable-by-inertia while the 3D simulator is where engine work is happening. [Source](https://github.com/rcsoccersim/rcssserver/releases) [Source](https://github.com/rcsoccersim/rcssserver/issues/90) [Source](https://gitlab.com/robocup-sim/SimSpark/-/tags) (§4.1, §4.2)
+
+### Long-term
+
+- **RoboCup's 2050 Grand Challenge remains the organising goal.** The federation's stated mission, set when it was established in 1997, is to field a team of robots capable of winning against the human soccer World Cup champions by 2050. The simulation leagues of §4 are the cheap, fast testbed for that programme — no hardware, no batteries, thousands of matches per night — which is why their protocols evolve conservatively while the physical leagues absorb the rule churn. The 2026 competition was held in Incheon, South Korea, the first Korean hosting, and the 2D league's match logs and binaries are published as a public archive. [Source](https://www.robocup.org/objective) [Source](https://2026.robocup.org/) [Source](https://github.com/rcsoccersim/RoboCup2026) (§4)
+- **Halite III has no roadmap: development ceased in 2020.** The repository has never published a tagged release, its last substantive commit is dated 2020-02-08, and everything merged since has been automated dependency bumps. The competition site no longer exists — `halite.io` issues a cross-host redirect to its former sponsor's corporate homepage. Readers should treat §6 as an autopsy of a technique rather than a guide to a running platform: the `fork`/`execl` process-group sandbox is worth studying precisely because it is small, complete, and finished. [Source](https://github.com/HaliteChallenge/Halite-III/commits/master) [Source](https://github.com/HaliteChallenge/Halite-III/releases) (§6)
+- **WebAssembly is converging on the role each platform built separately.** Every sandbox in §7.1 was engineered in isolation: a V8 isolate here, a JVM security policy there, a process group, a network socket, an HTTP timeout. Wasmtime now ships a major version on the 20th of each month with every twelfth release designated LTS and supported for 24 months — a support model that makes a Wasm engine a defensible long-lived dependency for a contest platform rather than a moving research target. Screeps already accepts Rust compiled to Wasm through community bindings; the plausible end state is that the *language* runtime stops being the trust boundary entirely and the Wasm engine becomes the only one, with fuel replacing five different notions of a time limit. [Source](https://docs.wasmtime.dev/stability-release.html) [Source](https://github.com/rustyscreeps/screeps-game-api) (§7.1, §7.2, §8)
 
 ---
 

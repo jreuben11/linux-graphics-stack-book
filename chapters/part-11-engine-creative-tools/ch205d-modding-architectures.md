@@ -47,9 +47,12 @@ The through-line is a security argument developed concretely in §5: WebAssembly
 - [7. Engine-Native Extension](#7-engine-native-extension)
   - [7.1 Godot 4 GDExtension](#71-godot-4-gdextension)
   - [7.2 Bevy: Dynamic Plugin Removal and Hot-Patching](#72-bevy-dynamic-plugin-removal-and-hot-patching)
+  - [7.3 dexterous_developer: Dynamic-Library Hot-Reload for Bevy](#73-dexterous_developer-dynamic-library-hot-reload-for-bevy)
 - [8. Comparison](#8-comparison)
+- [9. Why There Is No Standard](#9-why-there-is-no-standard)
 - [Integrations](#integrations)
 - [References](#references)
+- [Roadmap](#roadmap)
 
 ---
 
@@ -73,7 +76,70 @@ The simplest possible mod loader scans a directory, calls `dlopen` on each share
 
 Its properties follow directly from the dynamic linker's semantics, and they are unforgiving: the loaded object shares the address space and the descriptor table, can issue syscalls, can run code through ELF constructors before the engine's entry point, and is linked against the engine's internal layout. §5.5 sets those properties against WASM's in detail once the sandbox mechanisms are on the table.
 
-The last of them — layout coupling — is what usually kills such systems in practice, before the security properties become anyone's problem. Bevy's removal of its dynamic-plugin path (§7.2) is exactly this story.
+ioquake3 is a working, GPL-2.0-or-later-licensed example of exactly this baseline, and it is worth reading because the mechanism is only a few lines of code once the platform macros are stripped away. The engine's loader macros resolve straight to `dlopen`/`dlsym` on dedicated-server builds:
+
+```c
+// code/sys/sys_loadlib.h
+#ifdef DEDICATED
+#	ifdef _WIN32
+	/* ... LoadLibrary/GetProcAddress ... */
+#	else
+#	include <dlfcn.h>
+#		define Sys_LoadLibrary(f) dlopen(f,RTLD_NOW)
+#		define Sys_UnloadLibrary(h) dlclose(h)
+#		define Sys_LoadFunction(h,fn) dlsym(h,fn)
+#		define Sys_LibraryError() dlerror()
+#	endif
+#else
+	/* normal client builds route through SDL_LoadObject/SDL_LoadFunction,
+	   which is itself a thin dlopen/dlsym wrapper on Linux */
+#endif
+```
+[Source](https://raw.githubusercontent.com/ioquake/ioq3/588393618dbc82e7207c21c6ddecca229944a03a/code/sys/sys_loadlib.h)
+
+`Sys_LoadGameDll` calls those macros, resolves two named symbols out of the loaded object, and hands the mod a raw function pointer — there is no capability table, no permission check, and no mediation between this call and the mod's own code:
+
+```c
+// code/sys/sys_main.c
+void *Sys_LoadGameDll(const char *name,
+	vmMainProc *entryPoint,
+	intptr_t (*systemcalls)(intptr_t, ...))
+{
+	void *libHandle;
+	void (*dllEntry)(intptr_t (*syscallptr)(intptr_t, ...));
+
+	libHandle = Sys_LoadLibrary(name);
+	if (!libHandle) { /* ... error path ... */ }
+
+	dllEntry = Sys_LoadFunction(libHandle, "dllEntry");
+	*entryPoint = Sys_LoadFunction(libHandle, "vmMain");
+	if (!*entryPoint || !dllEntry) { /* ... error path ... */ }
+
+	dllEntry(systemcalls);
+	return libHandle;
+}
+```
+[Source](https://raw.githubusercontent.com/ioquake/ioq3/588393618dbc82e7207c21c6ddecca229944a03a/code/sys/sys_main.c)
+
+On the mod side, the exported `dllEntry` symbol just stashes that function pointer in a file-static, and every `trap_*` call the mod makes is a call through it:
+
+```c
+// code/game/g_syscalls.c — compiled into the mod's .so, not the QVM bytecode target
+static intptr_t (QDECL *syscall)( intptr_t arg, ... ) = (intptr_t (QDECL *)( intptr_t, ...))-1;
+
+Q_EXPORT void dllEntry( intptr_t (QDECL *syscallptr)( intptr_t arg,... ) ) {
+	syscall = syscallptr;
+}
+
+void	trap_Print( const char *text ) {
+	syscall( G_PRINT, text );
+}
+```
+[Source](https://raw.githubusercontent.com/ioquake/ioq3/588393618dbc82e7207c21c6ddecca229944a03a/code/game/g_syscalls.c)
+
+That last file's own comment is the point: the same source compiles either into this native `.so` — sharing the process's address space, reachable by `dlsym`, bound by nothing but the two symbol names `dllEntry` and `vmMain` — or, with `Q3_VM` defined instead, into bytecode for ioquake3's sandboxed QVM interpreter. One source tree, two points on the trust axis; §5 covers the WASM equivalent of the sandboxed side.
+
+The last of the properties listed above — layout coupling — is what usually kills such systems in practice, before the security properties become anyone's problem. Bevy's removal of its dynamic-plugin path (§7.2) is exactly this story.
 
 ---
 
@@ -615,6 +681,16 @@ So the accurate statement — and the one §8's hot-reload column encodes — is
 
 Which is precisely why a Rust engine wanting third-party mods reaches for `mlua` or a WASM runtime. Both give a boundary made of names and bytes rather than of vtable layout — and Veloren, a Rust game, chose WASM for exactly this reason.
 
+### 7.3 dexterous_developer: Dynamic-Library Hot-Reload for Bevy
+
+`dexterous_developer` is the third-party project Bevy's own deprecation notice pointed users at (§7.2). It is worth a closer look because it is not a mod system at all — it is a **developer-loop** hot-reload tool, and its own design documents the same dynamic-linking hazards that #11969 gave as the reason to remove `bevy_dynamic_plugin` in the first place, just accepted deliberately in exchange for iteration speed.
+
+The README describes it as "a modular hot-reload system for Rust" with "a first-party Bevy adapter," not a Bevy-specific tool [Source](https://github.com/lee-orr/dexterous_developer). Its own future-work list is the clearest statement of its current mechanism: "Supporting the use of inter-process communication in addition to the current dynamic-library approach" [Source](https://github.com/lee-orr/dexterous_developer) — i.e., today it reloads by rebuilding and reloading a dynamic library into the running process, the same `dlopen`-class mechanism as §1.2's baseline, not by running the changed code out-of-process. That is exactly the trade Bevy's core team declined to make part of the engine: it is workable for a developer rebuilding their own crate with a matching toolchain, and unworkable as a distribution format for a third party's compiled mod, for the identical compiler/ABI reasons #11969 gives.
+
+Usage is CLI-driven rather than a library a mod loads unprompted: the `dexterous_developer_cli` builds and watches the project, and hot reload only compiles in at all behind an explicit `hot` Cargo feature — "designed to work only inside a reloadable library," and deliberately excluded from ordinary release builds [Source](https://github.com/lee-orr/dexterous_developer). Bevy code opts in with a `reloadable_main!` wrapper around the app and marks specific systems, components, events, and resources as reloadable via `reloadable_scope!` and `setup_reloadable_elements`; reloadable resources can be reset to a default or serialized and restored across the reload via `rmp_serde`, which is how it survives a schema change to a `struct` between one build and the next without simply losing that state [Source](https://github.com/lee-orr/dexterous_developer).
+
+Its own Bevy compatibility table stops at Bevy 0.14 [Source](https://github.com/lee-orr/dexterous_developer), the same release in which `bevy_dynamic_plugin` was deprecated, and the GitHub repository is now archived, with its last push on 2025-05-03 — after which Bevy shipped its own first-party `hotpatching` feature in 0.17 (§7.2) [Source](https://github.com/lee-orr/dexterous_developer). Read together with the "minimal-maintenance" marker already noted on its `bevy_dexterous_developer` crate, the project is a reasonable illustration of a pattern this chapter returns to more than once: a third-party crate can hold a gap open for a while, but a native ABI problem this fundamental tends to get solved, if at all, by the engine absorbing it as a first-class feature rather than by an ecosystem crate carrying it indefinitely.
+
 ---
 
 ## 8. Comparison
@@ -639,6 +715,22 @@ Three patterns fall out of the table.
 
 ---
 
+## 9. Why There Is No Standard
+
+Every architecture in this chapter is a genuinely different engineering decision, not a dialect of one underlying "mod format." That is worth stating plainly, because adjacent parts of the graphics stack do have real, cross-vendor standards — glTF for asset interchange (Chapter 64), OpenUSD for scene composition (Chapter 69), OpenXR for the runtime/compositor boundary (Chapter 27) — and modding conspicuously does not. Three separate observations explain why, and none of them is "nobody has gotten around to it yet."
+
+**What looks like standardization is distribution, not architecture.** Steam Workshop and mod.io are the two platforms an outside observer is most likely to point to as evidence of a modding standard, and both are explicit that they standardize logistics rather than a mod's technical shape. Valve's own Workshop documentation puts the boundary directly on the developer: "you'll need a tool for item authors to upload their entries to your Workshop using the ISteamUGC API," and "since the items you are accepting should be ready-to-use, then your submission tool should accept just the file formats your game client expects to load" [Source](https://partner.steamgames.com/doc/features/workshop). Steam supplies upload, hosting, discovery, and payment — "the Steam Workshop takes care of collecting bank and tax info from authors, provides the tools for specifying pricing... and handles all the backend payment processing" [Source](https://partner.steamgames.com/doc/features/workshop) — and stops there; the file format inside a Workshop item is whatever the game already expected.
+
+mod.io makes the same split even more visible, because it operates across engines rather than inside one game. Its own framing is "our service provides the framework for player customization and creativity within your game" [Source](https://docs.mod.io/) — a hosting and identity layer, sold separately per engine. The Unreal Engine integration is explicit that it does not replace Unreal's own packaging: "the Unreal Engine plugin is a wrapper around the mod.io C++ SDK," covering "connecting your title to mod.io," "browsing, searching, and filtering UGC," and "subscribing and managing local UGC (downloads, installs, updates, removals)" [Source](https://docs.mod.io/unreal), while the actual UGC content is still built and loaded through Unreal's own cooking and `.pak` pipeline underneath. mod.io standardizes *how a player finds and installs* a mod across a dozen engines; it has no opinion on what runs when that mod loads, because that is exactly the §1.1 trust/ABI/hot-reload decision each engine already made independently.
+
+**Where something like a standard does exist, it is scoped to one engine's install base, not the industry, and it is usually not a standard the vendor wrote.** Bethesda's Creation Engine plugin format (`.esp`/`.esm`) is the clearest case: every Skyrim or Fallout mod targets the same binary record format because every copy of the game shares the same engine build, not because Bethesda published a specification for it. The community documentation project that fills that gap says so about as plainly as a README can: "the Oblivion, Skyrim, Fallout 3 and Fallout: New Vegas plugin file formats are all very similar, but while there exists good documentation for Oblivion, there is no equivalent for Fallout 3 and Fallout: New Vegas. The aim is for this repository to become that equivalent" [Source](https://tes5edit.github.io/fopdoc/). xEdit — "an advanced graphical module editor and conflict detector for Bethesda games" spanning Oblivion through Fallout 4 [Source](https://tes5edit.github.io/) — exists because the format had to be reverse-engineered before it could be edited safely, and it remains the tool the entire Bethesda modding community depends on for load-order conflict resolution. The format is real, stable, and shared across an enormous mod ecosystem; it is a standard in every practical sense except that no standards process produced it.
+
+Unreal Engine shows the identical pattern from the vendor side. Epic ships no first-party in-game modding API comparable to Luanti's `core.*` or Bevy's `hotpatching` — its officially supported user-generated-content surface is Verse, scoped to Fortnite/UEFN, not to Unreal licensees generally. The gap is filled the same way BepInEx fills it for Unity (§6.5): a single third-party project, UE4SS, becomes the de facto standard for every other Unreal game's modding scene, injecting "a Lua scripting system platform, C++ Modding API, SDK generator, blueprint mod loader, live property editor and other dumping utilities for UE4/5 games" [Source](https://github.com/UE4SS-RE/RE-UE4SS), explicit that "the goal of UE4SS is not to be a plug-n-play solution that always works with every game" but "to have an underlying system that works for most games" [Source](https://github.com/UE4SS-RE/RE-UE4SS). BepInEx and UE4SS are not competitors — they are the same response to the same vendor silence, arising independently in two different engine communities because neither Unity nor Epic ships anything for third parties to standardize around.
+
+**The deeper reason is that §1.1's three axes are not a policy choice a standard could unify — they are consequences of what the engine already is.** A standards body can require every glTF exporter to emit the same JSON schema because the *asset* is inert data regardless of which engine renders it. It cannot require every engine to land on the same point of the trust/ABI/hot-reload cube, because that point falls out of decisions made for reasons that have nothing to do with modding: Bethesda's format is what a C++ engine with in-house tools produces; Unity and Unreal's absence of a modding API is what "modding wasn't a launch requirement" produces; Bevy's lack of a native plugin ABI is a direct, unavoidable consequence of Rust having no stable ABI at all (§7.2), not a feature the Bevy team declined to build. Standardizing "how mods work" across engines would mean standardizing engine internals — memory layout, type identity, scripting runtime — which is a far larger claim than anyone modding a single game actually needs. The narrower thing that *would* generalize, a shared sandboxing substrate like WASM's linear-memory model (§5), is exactly what is starting to happen — but it standardizes the isolation mechanism, not the mod, and adoption is still per-engine and voluntary (Extism, Veloren) rather than mandated by anything resembling a spec.
+
+---
+
 ## Integrations
 
 **Chapter 98 — WebAssembly and WebGPU as a Deployment Target** covers the Emscripten and WASM compilation model for shipping a whole graphics application into a browser sandbox. This chapter applies the identical machinery inward: the same linear-memory instance, imports-resolved-by-host, and no-ambient-authority properties that make a browser safe to run a stranger's renderer in are what make Extism and Veloren safe to load a stranger's mod into a native game (§5.1–5.3). The difference is only which side of the boundary the engine sits on — in Ch98 the engine is the guest, here the engine is the host writing the import table.
@@ -658,6 +750,9 @@ Three patterns fall out of the table.
 - [GitHub — mlua-rs/mlua](https://github.com/mlua-rs/mlua) — Rust↔Lua bindings, MIT; version matrix, Cargo features, async support (§2.1)
 - [GitHub — mlua-rs/rlua](https://github.com/mlua-rs/rlua) — Archived 2025-09-12; deprecation notice and re-export-only 0.20 (§2.2)
 - [Lua 5.4 Reference Manual — Operating System Facilities](https://www.lua.org/manual/5.4/manual.html#6.9) — `os.execute` shell access as standard-library ambient authority (§2.3)
+- [ioquake3 `code/sys/sys_loadlib.h`](https://raw.githubusercontent.com/ioquake/ioq3/588393618dbc82e7207c21c6ddecca229944a03a/code/sys/sys_loadlib.h) — `dlopen`/`dlsym` and SDL-loadso platform macros, GPL-2.0-or-later (§1.2)
+- [ioquake3 `code/sys/sys_main.c`](https://raw.githubusercontent.com/ioquake/ioq3/588393618dbc82e7207c21c6ddecca229944a03a/code/sys/sys_main.c) — `Sys_LoadGameDll`, symbol resolution by name, `dllEntry`/`vmMain` (§1.2)
+- [ioquake3 `code/game/g_syscalls.c`](https://raw.githubusercontent.com/ioquake/ioq3/588393618dbc82e7207c21c6ddecca229944a03a/code/game/g_syscalls.c) — Mod-side `dllEntry`, `trap_Print`, native-DLL vs. QVM-bytecode compile targets (§1.2)
 - [GitHub — luanti-org/luanti](https://github.com/luanti-org/luanti) — Luanti engine, LGPL-2.1-or-later (§3)
 - [Luanti `doc/lua_api.md` (master)](https://raw.githubusercontent.com/luanti-org/luanti/master/doc/lua_api.md) — Registration functions, formspec elements and version history, player callbacks, `core.request_insecure_environment`, `core.request_http_api`, `core.deserialize`, `core.compare_block_status` (§2.3, §3.2–3.6)
 - [Luanti API reference — api.luanti.org](https://api.luanti.org/) — `minetest`→`core` namespace rename; shared-environment mod loading (§3)
@@ -680,5 +775,61 @@ Three patterns fall out of the table.
 - [Godot Engine — Introducing GDNative's successor, GDExtension](https://godotengine.org/article/introducing-gd-extensions/) — ClassDB registration; classes indistinguishable from core classes; parity with statically linked C++ modules (§7.1)
 - [Bevy issue #11969 — Remove bevy_dynamic_plugin](https://github.com/bevyengine/bevy/issues/11969) — Three unsoundness categories, `TypeId`/generic codegen instability, deprecate-0.14/remove-0.15 plan (§7.2)
 - [Bevy 0.17 release notes](https://bevy.org/news/bevy-0-17/) — `hotpatching` cargo feature via `subsecond` and Dioxus `dx`; documented limitations (§7.2)
-- [GitHub — lee-orr/dexterous_developer](https://github.com/lee-orr/dexterous_developer) — Third-party Bevy hot-reload system (§7.2)
-- [lib.rs — bevy_dexterous_developer](https://lib.rs/crates/bevy_dexterous_developer) — Minimal-maintenance status (§7.2)
+- [GitHub — lee-orr/dexterous_developer](https://github.com/lee-orr/dexterous_developer) — Third-party Bevy hot-reload system, Apache-2.0, archived (last push 2025-05-03); dynamic-library reload mechanism, `hot` feature gate, `reloadable_main!`/`reloadable_scope!`, `rmp_serde` state serialization, Bevy 0.14-max compatibility table (§7.2, §7.3)
+- [lib.rs — bevy_dexterous_developer](https://lib.rs/crates/bevy_dexterous_developer) — Minimal-maintenance status (§7.2, §7.3)
+- [Steamworks docs — Steam Workshop](https://partner.steamgames.com/doc/features/workshop) — ISteamUGC upload tooling, Workshop-handles-payment/hosting vs. developer-defined file formats (§9)
+- [mod.io Documentation — Welcome](https://docs.mod.io/) — Cross-engine UGC hosting/identity framing (§9)
+- [mod.io Documentation — Unreal Engine Plugin](https://docs.mod.io/unreal) — Plugin as a wrapper around the mod.io C++ SDK; auth, browsing, subscription management layered over Unreal's own cooking/`.pak` pipeline (§9)
+- [fopdoc — Fallout 3/New Vegas plugin format documentation](https://tes5edit.github.io/fopdoc/) — Community-authored spec filling the gap left by no official Bethesda documentation (§9)
+- [xEdit GitHub Page](https://tes5edit.github.io/) — Module editor and conflict detector spanning Oblivion through Fallout 4 (§9)
+- [GitHub — UE4SS-RE/RE-UE4SS](https://github.com/UE4SS-RE/RE-UE4SS) — Injectable Lua/C++ modding system for UE4/5, MIT; "works for most games" rather than a vendor-sanctioned API (§9)
+- [mlua v0.12.0 release notes](https://github.com/mlua-rs/mlua/releases/tag/v0.12.0) — Derive-based `UserData`, module reorganisation, thread lifecycle callbacks, Rust 2024 edition (Roadmap)
+- [mlua v0.11.6 release notes](https://github.com/mlua-rs/mlua/releases/tag/v0.11.6) — Lua 5.5 support behind the `lua55` feature, external-string optimisation (Roadmap)
+- [mlua issue #23 — wasm32-unknown-unknown support](https://github.com/mlua-rs/mlua/issues/23) — Long-running request; only `wasm32-unknown-emscripten` is supported today (Roadmap)
+- [Luanti `doc/direction.md`](https://github.com/luanti-org/luanti/blob/master/doc/direction.md) — Official Direction Document; medium-term roadmap covering SSCSM, input handling, UI improvements (Roadmap)
+- [Luanti `doc/sscsm_security.md`](https://github.com/luanti-org/luanti/blob/master/doc/sscsm_security.md) — SSCSM threat model, non-binary `enable_sscsm` setting, planned SECCOMP process isolation (Roadmap)
+- [Luanti PR #15818 — Create SSCSM skeleton and scripting](https://github.com/luanti-org/luanti/pull/15818) — Merged 2026-01-27; first landed piece of server-sent client-side modding (Roadmap)
+- [Luanti issue #6527 — Replace formspecs](https://github.com/luanti-org/luanti/issues/6527) — Roadmap-tracked replacement of the declarative UI string protocol described in §3.4 (Roadmap)
+- [Wasmtime v46.0.0 release notes](https://github.com/bytecodealliance/wasmtime/releases/tag/v46.0.0) — WASI 0.3.0 and the `component-model-async` feature enabled by default (Roadmap)
+- [Wasmtime v47.0.0 release notes](https://github.com/bytecodealliance/wasmtime/releases/tag/v47.0.0) — Wasm GC and exception handling on by default; wasi-threads and `wasi-common` removed (Roadmap)
+- [Bytecode Alliance — WASI 0.3 Launched](https://bytecodealliance.org/articles/WASI-0.3) — Async made native to Components via `stream<T>`/`future<T>`; guest-toolchain work in progress (Roadmap)
+- [Bytecode Alliance — The Road to Component Model 1.0](https://bytecodealliance.org/articles/the-road-to-component-model-1-0) — Five workstreams to 1.0, including lazy ABI and the two-browser-engine requirement (Roadmap)
+- [Extism issue #666 — runtime: wasi preview2](https://github.com/extism/extism/issues/666) — Tracked migration that would bring per-directory permissions and wasi-sockets into the manifest (Roadmap)
+- [Extism `runtime/Cargo.toml`](https://github.com/extism/extism/blob/main/runtime/Cargo.toml) — Wasmtime dependency pinned at version 43, behind the WASI 0.3.0 default (Roadmap)
+- [BepInEx v6.0.0-pre.2 release](https://github.com/BepInEx/BepInEx/releases/tag/v6.0.0-pre.2) — Latest tagged v6 build, from 2024-08-27; BepInEx 5 plugins do not yet load under it, users directed to Bleeding Edge builds (Roadmap)
+- [BepInEx commit 6abdba4 — Revert Cpp2IL because of regressions](https://github.com/BepInEx/BepInEx/commit/6abdba47eeebe08552282e7a58ef0f4a9ab60b62) — Most recent `master` commit as of 2026-06-28; IL2CPP toolchain churn (Roadmap)
+- [godot-docs PR #10827 — Stop referring to GDExtension as experimental](https://github.com/godotengine/godot-docs/pull/10827) — Merged 2025-05-02; removed the experimental caveat quoted in §7.1 (Roadmap)
+- [Godot docs — About godot-cpp, Version compatibility](https://docs.godotengine.org/en/4.7/tutorials/scripting/cpp/about_godot_cpp.html) — Current compatibility promise: minor-version forward compatibility only (Roadmap)
+- [Godot — Introducing the Godot Asset Store](https://godotengine.org/article/introducing-the-godot-asset-store/) — Replacement for the Asset Library, integrated into Godot 4.7; paid assets planned (Roadmap)
+- [Bevy 0.19 release notes](https://bevy.org/news/bevy-0-19/) — Release announcement and "What's Next" list; no hot-patching or dynamic-plugin item (Roadmap)
+- [Bevy issue #24832 — hotpatching linker issue](https://github.com/bevyengine/bevy/issues/24832) — Representative of the open `hotpatching` issues, which are uniformly toolchain and linker failures (Roadmap)
+
+---
+
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **WASI 0.3 moves from runtime to toolchain.** WASI 0.3 launched on 2026-06-11, rebasing the standard onto Component Model async primitives — `stream<T>`, `future<T>`, and `async` as first-class parts of the canonical ABI [Source](https://bytecodealliance.org/articles/WASI-0.3) — and Wasmtime 46 enabled WASI 0.3.0 and the `component-model-async` feature by default [Source](https://github.com/bytecodealliance/wasmtime/releases/tag/v46.0.0), with Wasmtime 47 turning on Wasm GC and exception handling and removing wasi-threads and the `wasi-common` crate [Source](https://github.com/bytecodealliance/wasmtime/releases/tag/v47.0.0). The host side is therefore already shipped; the near-term work named by the Bytecode Alliance is guest-toolchain enablement for Rust, Go, JavaScript, and Python, which is what actually determines whether a mod author can target the capability model of §5.3 (§4.3, §5.3).
+- **Extism has not yet followed Wasmtime's WASI generation.** Extism's runtime still pins `wasmtime = { version = "43", ... }` [Source](https://github.com/extism/extism/blob/main/runtime/Cargo.toml), predating the release in which WASI 0.3.0 became the default, so the host functions and manifest described in §4.1 remain on the older preview generation. The tracked migration is issue #666, whose stated payoff is wasi-sockets reusing the existing allowed-hosts list and "more advanced permissions for files/directories," for which "we will need to think about how to integrate that information into the manifest" [Source](https://github.com/extism/extism/issues/666) — that is, the manifest gains finer capability granularity than the current directory-preopen model (§4.1, §5.3).
+- **Luanti's SSCSM ships, but deliberately clamped.** The SSCSM skeleton and scripting layer merged on 2026-01-27 [Source](https://github.com/luanti-org/luanti/pull/15818), putting server-sent client-side mods in-tree with their own `doc/sscsm_api.md` and `doc/sscsm_security.md`. The security document caps deployment rather than declaring victory: `enable_sscsm` is a graduated setting over `nowhere`, `singleplayer`, `localhost`, `lan`, and everywhere, and "until sufficient security measures are in place, users are disallowed to set this setting to anything higher than `localhost`" [Source](https://github.com/luanti-org/luanti/blob/master/doc/sscsm_security.md) — the same conservative posture as the `secure.trusted_mods` gate in §3.6, applied to a new surface before it is exposed (§3.6).
+- **mlua has shipped its Lua-version work and publishes no roadmap.** Lua 5.5 support landed in v0.11.6 behind the `lua55` feature [Source](https://github.com/mlua-rs/mlua/releases/tag/v0.11.6), and v0.12.0 followed with derive-based `UserData`, a reorganised module tree, thread create/resume/yield lifecycle callbacks across all Lua versions, and Rust 2024 edition [Source](https://github.com/mlua-rs/mlua/releases/tag/v0.12.0). The project maintains no published roadmap or release milestones, so the forward-looking claim available here is narrow: the sandboxing story of §2.3 is unchanged, because `Lua::sandbox` remains Luau-only and no equivalent exists for PUC-Rio Lua or LuaJIT [Source](https://github.com/mlua-rs/mlua) (§2.1, §2.3).
+
+### Medium-term (1–3 years)
+
+- **Luanti plans an OS-level fallback beneath its Lua sandbox.** The SSCSM threat model states the position §2.3 argues for in the abstract: "we do not trust the Lua implementation to not have bugs," therefore an "additional process isolation layer as fallback" is required. That layer is explicitly "not yet implemented" and is specified as a separate SSCSM process sandboxed with SECCOMP on Linux [Source](https://github.com/luanti-org/luanti/blob/master/doc/sscsm_security.md). This is the clearest statement in any project surveyed here that a language-level sandbox is treated as insufficient on its own (§2.3, §5).
+- **Luanti's formspec protocol is slated for replacement.** The project's Direction Document names UI improvements as one of three medium-term roadmap areas, alongside SSCSM and input handling, and tracks formspec replacement as its own long-running issue [Source](https://github.com/luanti-org/luanti/blob/master/doc/direction.md). The Direction Document is reviewed roughly every two years and functions as a gate rather than a wish list — pull requests outside it are closed absent concept approval — so the versioned string protocol dissected in §3.4 should be read as a format with a scheduled successor rather than a settled interface [Source](https://github.com/luanti-org/luanti/issues/6527) (§3.4).
+- **The Component Model's lazy ABI is staged for a default flip.** The path to Component Model 1.0 is described as five workstreams, one of which introduces a lazy ABI as opt-in during a 0.3.x minor release and then as the default at 1.0 [Source](https://bytecodealliance.org/articles/the-road-to-component-model-1-0). For mod hosting this is the ABI-stability axis of §1.1 being addressed by specification rather than by convention, which is precisely the property `dlopen`-based loading cannot obtain (§1.1, §5).
+- **Godot retired the "experimental" label without extending its ABI promise.** The caveat quoted in §7.1 — that breaking changes can occur between major versions because GDExtension remains experimental — was deliberately removed from the documentation by a pull request titled "Stop referring to GDExtension as experimental," merged on 2025-05-02 [Source](https://github.com/godotengine/godot-docs/pull/10827). What replaced it is narrower than a stability guarantee: current documentation promises only that extensions targeting an earlier version work in later *minor* versions and not the reverse, names the 4.0→4.1 break as the one exception, and adds that extensions are compatible only with engine builds using the same floating-point precision [Source](https://docs.godotengine.org/en/4.7/tutorials/scripting/cpp/about_godot_cpp.html). No cross-major ABI commitment is published anywhere, and no Godot 5 plans are announced (§7.1).
+- **BepInEx 6 has no announced stabilisation date.** The v6 line has stood at `v6.0.0-pre.2` since 2024-08-27, a build explicitly labelled a pre-release under which BepInEx 5 plugins do not yet load [Source](https://github.com/BepInEx/BepInEx/releases/tag/v6.0.0-pre.2); the stable line remains v5 LTS, and the README still qualifies the platform matrix with "currently only Unity Mono has stable releases" [Source](https://github.com/BepInEx/BepInEx). Development is active but flows through Bleeding Edge builds rather than tagged releases, which is what the v6 release page itself directs users to [Source](https://github.com/BepInEx/BepInEx/releases/tag/v6.0.0-pre.2), and the most recent commit on `master` reverts a Cpp2IL bump "because of regressions" [Source](https://github.com/BepInEx/BepInEx/commit/6abdba47eeebe08552282e7a58ef0f4a9ab60b62) — IL2CPP toolchain churn rather than stabilisation work, consistent with §6.5's account of IL2CPP support as the harder half of the problem (§6.5).
+- **Bevy has announced nothing further for hot-patching.** Neither the 0.18 nor the 0.19 release notes mention hot-patching, `subsecond`, or dynamic plugins, and the "What's Next" list published with 0.19 — scene format, unified 2D/3D rendering internals, entity inspector, assets-as-entities, WESL shaders — contains no hot-reload or extension item [Source](https://bevy.org/news/bevy-0-19/). The project publishes no roadmap page. The open `hotpatching` issues are uniformly linker and toolchain failures rather than design work [Source](https://github.com/bevyengine/bevy/issues/24832), which corroborates §7.2's characterisation of the feature as a development-loop tool sensitive to Rust and linker configuration rather than a shipping mod-loading mechanism (§7.2).
+
+### Long-term
+
+- **Component Model 1.0 is gated on browser adoption that has not been committed.** Reaching 1.0 is described as requiring native implementation in at least two browser engines, with the current state of engine interest characterised as signals rather than commitments, and no target date is given [Source](https://bytecodealliance.org/articles/the-road-to-component-model-1-0). The remaining workstreams — implementation simplification, a proposed `lower-components` tool, generated guest and host C ABI headers, and unresolved WIT expressivity gaps that will not all land before 1.0 — set the horizon on which the mod-hosting substrate of §5 becomes a stable versioned target rather than a moving one (§5).
+- **Shared-nothing components are the only cross-engine convergence with evidence behind it.** §9 argues that the narrow thing that could generalise across engines is the isolation mechanism rather than the mod format, and the Component Model work is explicit that shared-nothing architecture is what makes capabilities such as record/replay debugging tractable [Source](https://bytecodealliance.org/articles/the-road-to-component-model-1-0). Nothing surveyed here suggests a common mod *format*; adoption remains per-engine and voluntary, as with Extism and Veloren (§9, §5).
+- **No cross-engine mod standard is on any published roadmap.** Neither mod.io nor Steam Workshop publishes a forward-looking roadmap; mod.io's documentation describes only its existing per-engine integrations and hosting service [Source](https://docs.mod.io/), and Valve's Workshop documentation continues to place file-format responsibility on the developer [Source](https://partner.steamgames.com/doc/features/workshop). Godot's Asset Store, now integrated into 4.7 as the Asset Library's replacement, is a distribution and payments layer with paid assets as its headline planned feature, not an extension-architecture standard [Source](https://godotengine.org/article/introducing-the-godot-asset-store/) — which leaves §9's conclusion intact: the layer that standardises is distribution, and the layer that does not is architecture (§9).
+
+---
+
+*Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

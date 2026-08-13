@@ -26,6 +26,7 @@ Throughout, code is quoted only from repositories whose licensing permits it und
   - [3.1 Canonicalized Quadtrees](#31-canonicalized-quadtrees)
   - [3.2 Memoized Lookahead and Superlinear Speedup](#32-memoized-lookahead-and-superlinear-speedup)
   - [3.3 Why It Does Not Port](#33-why-it-does-not-port)
+  - [3.4 Computational Irreducibility: Why the Memo Table Sometimes Never Fills](#34-computational-irreducibility-why-the-memo-table-sometimes-never-fills)
 - [4. Pattern 2: Spectral Convolution and Lenia](#4-pattern-2-spectral-convolution-and-lenia)
   - [4.1 From Discrete Neighbour Counts to Continuous Kernels](#41-from-discrete-neighbour-counts-to-continuous-kernels)
   - [4.2 The Convolution Theorem as an Architecture Decision](#42-the-convolution-theorem-as-an-architecture-decision)
@@ -54,8 +55,14 @@ Throughout, code is quoted only from repositories whose licensing permits it und
   - [8.2 Choosing a Pattern](#82-choosing-a-pattern)
   - [8.3 WebGPU as the Portable ALife Substrate](#83-webgpu-as-the-portable-alife-substrate)
   - [8.4 Licensing in the ALife Ecosystem](#84-licensing-in-the-alife-ecosystem)
+- [9. AI-Driven Search and Evolution in ALife](#9-ai-driven-search-and-evolution-in-alife)
+  - [9.1 Neural Cellular Automata: The Update Rule as a Trained Network](#91-neural-cellular-automata-the-update-rule-as-a-trained-network)
+  - [9.2 GPU-Native Evolutionary Computation: evosax, QDax, EvoJAX, and Brax](#92-gpu-native-evolutionary-computation-evosax-qdax-evojax-and-brax)
+  - [9.3 JaxLife and the Fixed-Architecture Resolution to §7.4](#93-jaxlife-and-the-fixed-architecture-resolution-to-74)
+  - [9.4 LLM-Driven Program Evolution: Digital Red Queen and the Avida Lineage](#94-llm-driven-program-evolution-digital-red-queen-and-the-avida-lineage)
 - [Integrations](#integrations)
 - [References](#references)
+- [Roadmap](#roadmap)
 
 ---
 
@@ -200,6 +207,14 @@ HashLife has no property a GPU rewards and every property a GPU punishes:
 The result is a clean split by workload. For a dense pseudorandom soup with no repeating structure, the memo table never hits, HashLife degenerates, and the GPU stencil kernel of §2.1 wins by a wide margin. For structured patterns the asymptotics are not close: a single CPU core doing memoized quadtree lookups beats any number of GPU cores doing per-cell arithmetic, because it is not doing per-cell arithmetic at all. Golly ships both, exposing HashLife alongside a conventional per-cell algorithm in `gollybase/qlifealgo.cpp`, and the choice belongs to the user.
 
 The general form of this lesson: a compute shader parallelizes the *work*, but an algorithmic change can delete the work. Check for the second before investing in the first.
+
+### 3.4 Computational Irreducibility: Why the Memo Table Sometimes Never Fills
+
+§3.3 described HashLife's failure mode empirically: a dense pseudorandom soup defeats the memo table because no node repeats. Wolfram's theoretical framework for cellular automata gives a name and a general argument for why this happens, independent of HashLife's specific data structure.
+
+Wolfram's *Principle of Computational Equivalence* holds that almost any process whose behaviour is not obviously simple is computationally equivalent in sophistication to any other, including the step-by-step evolution of the process itself. A direct consequence is *computational irreducibility*: for such a process there is, in general, no procedure that predicts its state after *n* steps in less work than actually carrying out those *n* steps ([*A New Kind of Science*, Ch. 12 §6, "Computational Irreducibility"](https://www.wolframscience.com/nks/p737--computational-irreducibility/)). Historically, mathematical physics succeeded by finding closed-form shortcuts — a formula for a planet's position that skips over tracing every intermediate instant — and irreducibility is Wolfram's account of why that strategy runs out for most cellular automata: no such shortcut exists to find, not merely one that has not yet been found. A more restricted, formally stronger version of the same obstruction appears in Wolfram's earlier work on undecidability, which shows that some questions about cellular automaton evolution are not merely hard but formally undecidable ([Wolfram, "Undecidability and Intractability in Theoretical Physics," *Physical Review Letters* 54, 735 (1985)](https://doi.org/10.1103/PhysRevLett.54.735)).
+
+HashLife's memoized quadtree is exactly a search for closed-form shortcuts, restricted to shortcuts of one specific shape: "this spatial pattern's future is identical to a pattern already computed." That restriction is what makes the algorithm's measured behaviour track the irreducibility argument so cleanly. A glider, a still life, a small oscillator — anything periodic or self-similar in space or time — is by construction the kind of pattern for which such a shortcut exists, and HashLife finds it, which is why Golly can advance a stable glider gun by 2⁶⁴ generations from a single cache hit. A pseudorandom soup has no repeating substructure at any quadtree level, so it is, for the purposes of this particular algorithm, the irreducible case: nothing in the memo table matches, every node is constructed exactly once, and the amortized cost per generation degenerates to roughly what §2.1's per-cell GPU kernel already pays directly, without the pointer-chasing and hash-table overhead on top. HashLife is therefore not a general Life accelerator; it is a shortcut-finder whose hit rate is an empirical measurement of how reducible a given pattern happens to be, and the GPU-versus-HashLife split of §3.3 is that measurement made concrete at two ends of the reducibility spectrum.
 
 ---
 
@@ -592,6 +607,10 @@ The common thread: **these systems evolve their own structure, and structure is 
 
 ALIEN is the interesting counterexample and shows where the boundary actually lies. Its organisms genuinely evolve their morphology — the genome encodes a cell graph built at runtime by constructor cells. But it stays GPU-resident because the *simulation substrate* is uniform: whatever an organism's shape, it is made of cells drawn from a fixed set of types, and each type is processed by its own kernel over all cells of that type in the world (§6.2). The variable structure lives in the data — bond graphs, genomes — while the code executed per element remains fixed and homogeneous. That inversion is the design move that makes open-ended evolution tractable on a GPU, and it is the single most transferable idea in this chapter.
 
+It is worth being precise about what "GPU-hostile" does and does not mean here, because it is tempting to conflate computational sophistication with GPU-hostility, and elementary cellular automaton Rule 110 is the cleanest available proof that the two are independent. Rule 110 is one-dimensional, two-state, radius-1 — its entire rule table has eight entries — so its update is uniform, stateless, and embarrassingly parallel in exactly the sense of §1.1. Despite that, Rule 110 is computationally universal: Matthew Cook proved it capable of simulating an arbitrary Turing machine, by constructing the necessary logic gates and signal-carrying structures entirely out of colliding gliders in its own evolution ([Cook, "Universality in Elementary Cellular Automata," *Complex Systems* 15(1), 1–40 (2004)](https://wpmedia.wolfram.com/uploads/sites/13/2018/02/15-1-1.pdf); discussed at length in [*A New Kind of Science*, Ch. 11 §8–10](https://www.wolframscience.com/nks/chap-11--the-rule-110-cellular-automaton/)). A Rule 110 simulation running a universal computation is, from a compute-shader's point of view, indistinguishable from one doing anything else: every cell still runs the identical eight-entry lookup, so §2.1's grid ping-pong kernel ports it unmodified. What breaks GPU-friendliness in Avida, Polyworld, and body-plan evolution generally is not the sophistication of the computation each organism performs — it is that *different organisms run different rules*, which Rule 110 never does. Heterogeneity across elements is the obstacle; universal computation within a uniform element is not.
+
+Treating a cellular automaton as a large-scale parallel-hardware workload, rather than as a mathematical curiosity run on one machine, predates GPGPU by decades. Wolfram's own "Cellular Automaton Supercomputing" — whose Figure 1 illustrates Rule 110 as one of four one-dimensional rules generating "considerable complexity" from a single-site or random initial condition — reports a 2D fluid-dynamics cellular automaton run on a Connection Machine with 65,536 processors, updating lattices as large as 4096×8192 at roughly 10⁹ site updates per second, and attributes the result explicitly to "the readily scalable architecture of the Connection Machine computer" ([Wolfram, "Cellular Automaton Supercomputing," in *High-Speed Computing: Scientific Applications and Algorithm Design*, University of Illinois Press, 1988; NASA Technical Reports Server 19870017109](https://ntrs.nasa.gov/citations/19870017109)). The properties that made a CA rule suit a 65,536-processor SIMD machine in 1987 — bounded locality and embarrassing per-element parallelism — are exactly §1.1's properties, and they are the same properties a compute shader rewards forty years later. The mapping this chapter draws between CA rules and GPU dispatches is not a new observation about the hardware; it is the same observation about the *rule*, applied to newer hardware built on the same principle.
+
 ---
 
 ## 8. Comparison and Portability
@@ -648,6 +667,108 @@ The last category is the one most often mishandled. Absent an explicit grant, co
 
 ---
 
+## 9. AI-Driven Search and Evolution in ALife
+
+Everything so far has treated the *rule* as hand-designed and the GPU's job as executing it fast. A separate line of work treats the rule itself — or the search over rules, or the organisms subject to evolution — as the thing to be learned or automated, and it is worth a closing section because it changes what "the workload" even is. Three developments matter for the architectural questions this chapter asks: the update rule can itself be a trained neural network rather than a hand-written formula (§9.1); the evolutionary search loops that ALife has always used can themselves be reformulated as GPU-batched tensor programs, the same move §4.4 made for Lenia's simulation step (§9.2); and at least one recent simulator resolves §7.4's "structure must be fixed for GPU residency" thesis by fixing *architecture* while leaving *behaviour* open-ended (§9.3). A fourth development attacks §7.1's Avida problem from a different angle entirely, using large language models rather than mutation-and-selection to evolve organism-level programs (§9.4).
+
+### 9.1 Neural Cellular Automata: The Update Rule as a Trained Network
+
+A Neural Cellular Automaton (NCA) keeps every structural property §1.1 lists — uniformity, bounded locality, statelessness across steps, embarrassing parallelism within a step — and replaces the hand-written rule with a small neural network applied identically at every cell. The founding result grew a target image from a single seed pixel purely through local update rules learned by backpropagating through many simulation steps ([Mordvintsev, Randazzo, Niklasson, Levin, "Growing Neural Cellular Automata," *Distill* (2020), doi:10.23915/distill.00023](https://distill.pub/2020/growing-ca/)). Because the trained rule is still uniform and local, an NCA is exactly as GPU-friendly as Conway's Life — the only change from §2.1 is that `countNeighbors` becomes a small learned convolutional stack instead of a sum.
+
+A follow-up from the same research group generalises the idea to texture synthesis and ships as ordinary framework code rather than only a notebook, which makes it directly quotable here. `self_organising_systems/texture_ca/ca.py` in the Apache-2.0-licensed [google-research/self-organising-systems](https://github.com/google-research/self-organising-systems) repository — the companion codebase to the Distill article above and to the closely related "Texture Generation with Neural Cellular Automata" ([Mordvintsev, Niklasson, arXiv:2105.07299](https://arxiv.org/abs/2105.07299)) — implements the update rule as a perception step followed by a tiny dense network:
+
+```python
+# self_organising_systems/texture_ca/ca.py, google-research/self-organising-systems (Apache-2.0)
+@tf.function
+def perceive(x, angle=0.0, repeat=True):
+  chn = tf.shape(x)[-1]
+  identify = np.outer([0, 1, 0], [0, 1, 0])
+  dx = np.outer([1, 2, 1], [-1, 0, 1]) / 8.0  # Sobel filter
+  dy = dx.T
+  laplacian = np.outer([1, 2, 1], [1, 2, 1]) / 8.0
+  laplacian[1, 1] -= 2.0
+  c, s = tf.cos(angle), tf.sin(angle)
+  kernel = tf.stack([identify, c*dx-s*dy, s*dx+c*dy, laplacian], -1)[:, :, None, :]
+  kernel = tf.repeat(kernel, chn, 2)
+  ...
+  y = tf.nn.depthwise_conv2d(x, kernel, [1, 1, 1, 1], pad_mode)
+  return y
+```
+
+`perceive` is the neighbourhood-read step of §1.1 made explicit: a depthwise convolution with a fixed Sobel/Laplacian kernel bank, one 3×3 gather per channel, run over the whole grid as a single dispatch. The result feeds two dense layers implemented as 1×1 convolutions — `tf.nn.conv2d(x, w, 1, 'VALID')` rather than `tf.matmul`, because, per the source's own comment, "TFjs matMul doesn't work with non-2d tensors" — and the update is applied stochastically:
+
+```python
+# self_organising_systems/texture_ca/ca.py, google-research/self-organising-systems (Apache-2.0) — CAModel.embody
+update_mask = tf.random.uniform(tf.shape(x[:, :, :, :1])) <= fire_rate
+x += dx * tf.cast(update_mask, tf.float32)
+```
+
+The `fire_rate` mask — every cell independently decides whether to apply its own computed delta this step — is not a training convenience; it is the mechanism that makes the trained rule asynchronous-tolerant, so that the resulting pattern is stable under the same GPU-scheduling non-determinism §2.3 describes for a naive in-place stencil, rather than fragile to it. `perceive` is invoked with `pad_repeat` (toroidal wrap by explicit concatenation, the same topology §2.2 gets from unsigned modulo and §4.2 gets from the FFT for free), so the entire model — perception, two dense layers, stochastic update — is a per-cell function with no branch on cell identity, and it drops into §2.1's ping-pong dispatch exactly like Life's rule does.
+
+### 9.2 GPU-Native Evolutionary Computation: evosax, QDax, EvoJAX, and Brax
+
+ALife has always leaned on evolutionary search — evolving Lenia parameters, Physarum sensing angles, or (§7) whole organism genomes. §4.4 already showed one search system, ASAL, built entirely in JAX; ASAL's own search algorithm is Sep-CMA-ES supplied by [evosax](https://github.com/RobertTLange/evosax), which generalises the point beyond one search strategy. A small cluster of Apache-2.0/MIT JAX libraries reformulates the evolutionary-computation outer loop itself — not just the fitness evaluation — as a batched tensor program, applying the same architectural move §4.4 made for Lenia's simulation step to the search loop wrapped around it.
+
+`evosax` provides evolution strategies behind a uniform `ask`/`tell` interface, and the whole loop is `jax.jit`-compiled with the population handled by `jax.vmap` rather than a Python loop over individuals ([Lange, "evosax: JAX-based Evolution Strategies," arXiv:2212.04180](https://arxiv.org/abs/2212.04180)):
+
+```python
+# evosax/algorithms/base.py, RobertTLange/evosax (Apache-2.0)
+@partial(jax.jit, static_argnames=("self",))
+def ask(
+    self,
+    key: jax.Array,
+    state: State,
+    params: Params,
+) -> tuple[Population, State]:
+    """Ask evolutionary algorithm for new candidate solutions to evaluate."""
+    # Generate population
+    population, state = self._ask(key, state, params)
+
+    # Unravel population
+    population = jax.vmap(self._unravel_solution)(population)
+
+    return population, state
+```
+
+This is the population equivalent of §5.3's per-agent dispatch: one array axis is "which individual," `vmap` maps the per-individual solution-unraveling function across it with no Python-level iteration, and `jax.jit` fuses generation, evaluation, and the strategy's parameter update into one compiled call. Where a classical genetic algorithm's inner loop is `for individual in population: evaluate(individual)`, the JAX formulation makes population size a tensor dimension the accelerator batches over directly.
+
+QDax applies the same move to *quality-diversity* search, where the goal is not one best solution but an archive of diverse high-performing ones spanning a behaviour-descriptor space ([Lim et al., "Accelerated Quality-Diversity through Massive Parallelism," arXiv:2202.01258](https://arxiv.org/abs/2202.01258)). Its `MAPElites.update` composes the same three-step ask/score/tell shape, with the scoring step itself vmapped over the batch of candidate genotypes:
+
+```python
+# qdax/core/map_elites.py, adaptive-intelligent-robotics/QDax (MIT) — MAPElites.update
+# generate offsprings with the emitter
+key, subkey = jax.random.split(key)
+genotypes, extra_info = self.ask(repertoire, emitter_state, subkey)
+
+# scores the offsprings
+key, subkey = jax.random.split(key)
+(fitnesses, descriptors, extra_scores) = self._scoring_function(
+    genotypes, subkey
+)
+
+repertoire, emitter_state, metrics = self.tell(...)
+```
+
+QDax couples routinely to [Brax](https://github.com/google/brax), a differentiable rigid-body physics engine whose entire step function is itself JAX-traceable ([Freeman et al., "Brax — A Differentiable Physics Engine for Large Scale Rigid Body Simulation," arXiv:2106.13281](https://arxiv.org/abs/2106.13281)), so that `_scoring_function` above can be thousands of Brax environments stepped in parallel rather than a CPU-side simulator called once per genotype. [EvoJAX](https://github.com/google/evojax) targets the same niche with a lighter-weight `ask`/`tell` core aimed at neuroevolution specifically ([Tang et al., "EvoJAX: Hardware-Accelerated Neuroevolution," arXiv:2202.05008](https://arxiv.org/abs/2202.05008)). None of these four libraries is an ALife simulator on its own; they are the GPU-native answer to the outer evolutionary loop that wraps whatever simulator — Lenia, Physarum, a neural cellular automaton, or a JaxLife-style agent population (§9.3) — sits inside it.
+
+### 9.3 JaxLife and the Fixed-Architecture Resolution to §7.4
+
+§7.4 concluded that Avida-style systems stay off the GPU because *structure* — which instructions an organism executes, which network topology it evolved — is exactly what a GPU needs fixed in advance, and that ALIEN's answer is to keep structure in the data (bond graphs, genomes) while keeping the code executed per element fixed. JaxLife applies the same inversion to agent-based ALife directly: agents are parametrised by a recurrent neural network with a *fixed architecture*, evolved via natural selection that mutates weights, not topology, while the *behaviour* those weights encode — communication, tool use, rudimentary agriculture — is left fully open-ended ([Lu, Beukman, Matthews, Foerster, "JaxLife: An Open-Ended Agentic Simulator," arXiv:2409.00853, ALIFE 2024](https://arxiv.org/abs/2409.00853)). Because every agent runs the identical network forward pass, the population evaluation is a batched matrix-multiply problem — the one thing a GPU does best, and precisely the case §7.4 contrasts against Polyworld's per-agent, differently-shaped sparse graph.
+
+The simulation goes further than a fixed neural controller: agents can program *robot* entities in the world, and those robots are capable of Turing-complete computation — the project's own repository illustrates this with a rendered Rule 110 pattern, the same automaton discussed in §7.4 as the proof that universal computation and GPU-uniform execution are compatible. JaxLife is, in that sense, a direct existence proof of §7.4's closing claim applied to open-ended agent behaviour rather than to ALIEN's cell physics: unbounded behavioural and cultural complexity coexists with a GPU-resident, batch-uniform simulation substrate, as long as the thing left free to vary is *what the fixed network computes*, not *what code runs*.
+
+**Licensing note:** the [luchris429/JaxLife](https://github.com/luchris429/JaxLife) repository ships no `LICENSE` file and GitHub reports no detected licence, so — consistent with §8.4's rule — it is described here rather than quoted.
+
+### 9.4 LLM-Driven Program Evolution: Digital Red Queen and the Avida Lineage
+
+§7.1 and §7.4 identified the specific obstacle that has kept Avida off the GPU for its entire history: organisms are independent programs in a custom instruction set, and a population of them is a population of divergent control-flow paths with no shared structure to batch. Three decades on, that obstacle is unchanged for Avida itself (see the Roadmap), but a recent project attacks the same problem class — evolving competing self-replicating assembly-level programs — from a different angle, using a large language model as the mutation-and-recombination operator instead of a genetic algorithm.
+
+Digital Red Queen (DRQ) evolves "warriors," self-replicating assembly-like programs in Core War, a Turing-complete virtual-machine game with a decades-long history as an ALife testbed in its own right. Rather than random mutation and fitness-proportional selection, an LLM is prompted to write a new warrior specifically to defeat every warrior evolved so far, and the process repeats — an explicit implementation of Red Queen dynamics, where continued adaptation is driven by a constantly shifting competitive target rather than a fixed fitness function. Independent runs, started from unrelated initial conditions, were reported to converge toward similar general-purpose strategies ([Kumar et al., "Digital Red Queen: Adversarial Program Evolution in Core War with LLMs," arXiv:2601.03335, GECCO 2026](https://arxiv.org/abs/2601.03335); project page [sakana.ai/drq](https://sakana.ai/drq/)).
+
+This does not resolve §7.4's architectural problem — DRQ's warriors still execute as divergent per-organism programs, and the project runs that execution on ordinary CPU-hosted Core War virtual machines, not on a GPU. What has changed is where the *search* runs: the LLM proposing new warriors is a single large, batchable, GPU-resident forward pass, even though the artefact it produces — a heterogeneous population of assembly programs — remains exactly as GPU-hostile to *execute* as Avida's organisms always were. The distinction is the same one §9.2 draws for evolutionary search generally: the outer loop that finds structure can be GPU-native even when the structure it finds is not.
+
+---
+
 ## Integrations
 
 **Chapter 35 — Dawn and WebGPU** traces the path a WebGPU call takes from JavaScript through Chrome's GPU-process boundary into Mesa's Vulkan drivers. Every WGSL compute shader quoted in §2.1 and §5.3–5.5 travels that exact path: the `@compute` entry point is compiled by Tint to SPIR-V, the `@group`/`@binding` declarations become a Vulkan descriptor set layout, and the dispatch becomes a `vkCmdDispatch` on a compute queue. The constraints that shape §5.4's rasterizer-based deposit and §5.5's read/write texture split are WebGPU validation rules imposed above that translation layer rather than hardware limits below it — which is why the same simulation written in native Vulkan would be free to use storage-image atomics that the WebGPU version must design around.
@@ -656,7 +777,7 @@ The last category is the one most often mishandled. Absent an explicit grant, co
 
 **Chapter 66 — CUDA Runtime, Streams, and NVRTC** documents the API layer that §6 exercises in production. The stream-capture and graph-instantiation sequence in §6.3 is the runtime's graph API applied to a real pipeline whose launch sequence varies by configuration, and ALIEN's configuration-keyed `cudaGraphExec_t` cache is a concrete answer to the practical question that chapter raises — what to do when a graph must be static but the workload is not. The zero-copy interop in §6.4 similarly extends that chapter's device-memory model with the graphics-resource registration path, where the device pointer originates in an OpenGL buffer object rather than in `cudaMalloc`.
 
-**Chapter 205e — FOSS Simulation-Game Frameworks** examines simulation systems from the opposite architectural end: data models, rules engines, and modding surfaces, with rendering deliberately out of scope. Placing the two chapters side by side isolates a real design fork. A rules-engine simulation puts its complexity in *heterogeneous per-entity behaviour*, which is the property §7.4 identifies as fundamentally GPU-hostile. A GPU-resident simulation puts its complexity in *homogeneous per-element update rules applied to variable data*, which is ALIEN's inversion in §7.4. The same domain — an evolving population in a shared world — admits both architectures, and the choice determines almost everything else about the implementation.
+**Chapter 205e — FOSS Simulation-Game Frameworks** examines simulation systems from the opposite architectural end: data models, rules engines, and modding surfaces, with rendering deliberately out of scope. Placing the two chapters side by side isolates a real design fork. A rules-engine simulation puts its complexity in *heterogeneous per-entity behaviour*, which is the property §7.4 identifies as fundamentally GPU-hostile. A GPU-resident simulation puts its complexity in *homogeneous per-element update rules applied to variable data*, which is ALIEN's inversion in §7.4. The same domain — an evolving population in a shared world — admits both architectures, and the choice determines almost everything else about the implementation. §9.3 shows a third point on that spectrum: JaxLife fixes agent *architecture* — a neural-network policy evaluated identically for every agent — while leaving *behaviour* fully open-ended, which is a different way of satisfying the same GPU constraint than ALIEN's fixed-cell-type inversion.
 
 **Chapter 205c — Open-Source 2D Simulation-Game Engines** traces the CPU-to-GPU migration path in shipped 2D codebases, which is the same journey §5.6 sets up as an exercise. Particle Life's commented-out `#pragma omp parallel` is the exact state that chapter's engines began from, and the progression it documents — CPU loop, then threaded, then batched onto the GPU — is the concrete roadmap for the port sketched in §5.6, including the spatial-binning step that turns an *O(n²)* interaction into an *O(n)* one.
 
@@ -694,6 +815,62 @@ The last category is the one most often mishandled. Absent an explicit grant, co
 - [GitHub — devosoft/avida](https://github.com/devosoft/avida) — Digital-evolution platform; `avida-core/COPYING` states LGPL v3 or later, correcting the LGPL-2.1 attribution sometimes cited (§7.1, §8.4)
 - [GitHub — polyworld/polyworld](https://github.com/polyworld/polyworld) — Evolved-neural-network ALife system; `LICENSE.txt` is **Apple Public Source License 2.0** (§7.2, §8.4)
 - [Framsticks project site](https://www.framsticks.com/) — 3D ALife simulator with evolvable morphology and control. **Licensing, source terms, and GPU support not verified for this chapter** (§7.3)
+- [ALIEN `RELEASE-NOTES.md`](https://github.com/chrxh/alien/blob/develop/RELEASE-NOTES.md) — Per-release engine changelog on the `develop` branch; newest entry `[4.12.2] - 2025-05-26`, Blackwell support via CUDA Toolkit 12.8 (Roadmap)
+- [ALIEN `.github/workflows/windows-nightly-deploy.yml`](https://github.com/chrxh/alien/blob/develop/.github/workflows/windows-nightly-deploy.yml) — Nightly CUDA + HIP build; `HIP_ARCHS: gfx10-3-generic;gfx11-generic;gfx12-generic` packaged as one AMD executable (§6.5, Roadmap)
+- [MaCE: General Mass Conserving Dynamics for Cellular Automata (arXiv:2507.12306)](https://arxiv.org/abs/2507.12306) — Generalizes Flow-Lenia's mass conservation to arbitrary CAs, including discrete and neural CAs (§4.4, Roadmap)
+- [Flow-Lenia: Emergent evolutionary dynamics in mass conservative continuous cellular automata (arXiv:2506.08569)](https://arxiv.org/abs/2506.08569) — Journal version; parameter embedding in the state field enabling multispecies simulation (§4.4, Roadmap)
+- [Automating the Search for Artificial Life with Foundation Models (arXiv:2412.17799)](https://arxiv.org/abs/2412.17799) — ASAL; foundation-model-driven search across Boids, Particle Life, Game of Life, Lenia, and neural CAs (§4.4, §8.2, Roadmap)
+- [GitHub — SakanaAI/asal](https://github.com/SakanaAI/asal) — Apache-2.0; ASAL reference implementation, JAX throughout and end-to-end jittable (§4.4, Roadmap)
+- [Exploring Flow-Lenia Universes with a Curiosity-driven AI Scientist: Discovering Diverse Ecosystem Dynamics (arXiv:2505.15998)](https://arxiv.org/abs/2505.15998) — IMGEP-based automated discovery in Lenia's parameter space (§4.4, Roadmap)
+- [Guiding Evolution of Artificial Life Using Vision-Language Models (arXiv:2509.22447)](https://arxiv.org/abs/2509.22447) — VLM-guided evolutionary search over ALife substrates (Roadmap)
+- [Expedition & Expansion: Leveraging Semantic Representations for Goal-Directed Exploration in Continuous Cellular Automata (arXiv:2509.03863)](https://arxiv.org/abs/2509.03863) — Semantics-guided goal-directed exploration in continuous CAs (Roadmap)
+- [Visualizing the Structure of Lenia Parameter Space (arXiv:2601.01932)](https://arxiv.org/abs/2601.01932) — Parameter-space cartography with an interactive explorer at <https://lenia-explorer.vercel.app/> (§4.1, Roadmap)
+- [Chrome Platform Status — WebGPU Subgroups](https://chromestatus.com/feature/5126409856221184) — Enabled by default since Chrome 134 (§8.3, Roadmap)
+- [Chrome for Developers — What's New in WebGPU (Chrome 142)](https://developer.chrome.com/blog/new-in-webgpu-142) — `texture-formats-tier1` and `texture-formats-tier2` shipping; tier2 grants `"read-write"` storage access to `rgba16float` (§5.5, §8.3, Roadmap)
+- [Framsticks release history (`files/apps/history.xml`)](https://www.framsticks.com/files/apps/history.xml) — Dated per-version changelog; 5.5 on 23 April 2026 with a 5.6 entry open; no GPU or CUDA entries (§7.3, Roadmap)
+- [Wolfram, *A New Kind of Science*, Chapter 12 §6 — The Notion of Computational Irreducibility](https://www.wolframscience.com/nks/p737--the-notion-of-computational-irreducibility/) — Definition and rationale for computational irreducibility and the Principle of Computational Equivalence (§3.4)
+- [Wolfram, Undecidability and Intractability in Theoretical Physics, *Physical Review Letters* 54, 735 (1985)](https://www.stephenwolfram.com/publications/undecidability-intractability-theoretical-physics/) — Formal undecidability result underlying computational irreducibility (§3.4)
+- [Wolfram, *A New Kind of Science*, Chapter 11 §8–10 — Universality in Cellular Automata](https://www.wolframscience.com/nks/chapter-11-the-notion-of-computation/) — Rule 110 and the class of universal one-dimensional cellular automata (§3.4, §7.4)
+- [Cook, A Concrete View of Rule 110 Computation, *Complex Systems* 15(1), 1 (2004)](https://wpmedia.wolfram.com/uploads/sites/13/2018/02/15-1-1.pdf) — Formal proof of Rule 110's Turing completeness (§7.4)
+- [Wolfram, Cellular Automaton Supercomputing (NASA NTRS 19870017109, 1987/1988)](https://ntrs.nasa.gov/citations/19870017109) — Connection Machine CA hardware: 65,536 processors, 4096×8192 lattices, ~10⁹ site updates/sec; Figure 1 depicts Rule 110 (§7.4)
+- [Mordvintsev, Randazzo, Niklasson, Levin, Growing Neural Cellular Automata, *Distill* (2020), doi:10.23915/distill.00023](https://distill.pub/2020/growing-ca/) — Founding NCA result: a target image grown from one seed pixel via a trained local update rule (§9.1)
+- [Mordvintsev, Niklasson, Texture Generation with Neural Cellular Automata (arXiv:2105.07299)](https://arxiv.org/abs/2105.07299) — NCA generalised to texture synthesis (§9.1)
+- [GitHub — google-research/self-organising-systems](https://github.com/google-research/self-organising-systems) — Apache-2.0; `self_organising_systems/texture_ca/ca.py` Sobel/Laplacian `perceive`, `DenseLayer`, fire-rate-masked stochastic update (§9.1)
+- [Lange, evosax: JAX-based Evolution Strategies (arXiv:2212.04180)](https://arxiv.org/abs/2212.04180) — JIT-compiled, `vmap`-batched evolution-strategy library (§9.2)
+- [GitHub — RobertTLange/evosax](https://github.com/RobertTLange/evosax) — Apache-2.0; `evosax/algorithms/base.py` `ask`/`tell` interface, `jax.vmap`-batched population handling; used by ASAL's Sep-CMA-ES (§4.4, §9.2)
+- [Lim et al., Accelerated Quality-Diversity through Massive Parallelism (arXiv:2202.01258)](https://arxiv.org/abs/2202.01258) — QDax; MAP-Elites reformulated as a batched JAX ask/score/tell loop (§9.2)
+- [GitHub — adaptive-intelligent-robotics/QDax](https://github.com/adaptive-intelligent-robotics/QDax) — MIT; `qdax/core/map_elites.py` `MAPElites.update` (§9.2)
+- [Tang et al., EvoJAX: Hardware-Accelerated Neuroevolution (arXiv:2202.05008)](https://arxiv.org/abs/2202.05008) — `ask`/`tell` neuroevolution library targeting the same JAX ecosystem (§9.2)
+- [GitHub — google/evojax](https://github.com/google/evojax) — Neuroevolution library referenced alongside evosax and QDax (§9.2)
+- [Freeman et al., Brax — A Differentiable Physics Engine for Large Scale Rigid Body Simulation (arXiv:2106.13281)](https://arxiv.org/abs/2106.13281) — JAX-traceable rigid-body physics, commonly coupled to QDax's scoring function (§9.2)
+- [GitHub — google/brax](https://github.com/google/brax) — Differentiable physics engine referenced for QDax-scale parallel scoring (§9.2)
+- [Lu, Beukman, Matthews, Foerster, JaxLife: An Open-Ended Agentic Simulator (arXiv:2409.00853), ALIFE 2024](https://arxiv.org/abs/2409.00853) — Fixed recurrent-network agent architecture with open-ended evolved behaviour and Turing-complete robot programs (§9.3)
+- [GitHub — luchris429/JaxLife](https://github.com/luchris429/JaxLife) — **No licence file**; described not quoted. `pics/rule110.gif` illustrates robot-level Turing-complete computation (§9.3)
+- [Kumar et al., Digital Red Queen: Adversarial Program Evolution in Core War with LLMs (arXiv:2601.03335), GECCO 2026, doi:10.1145/3795095.3805116](https://arxiv.org/abs/2601.03335) — LLM-driven, Red-Queen-style evolution of self-replicating Core War warriors (§9.4)
+- [Sakana AI — Digital Red Queen project page](https://sakana.ai/drq/) — Project overview and convergent-strategy results across independent runs (§9.4)
+
+---
+
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **ALIEN's AMD backend moves from a source-only build to a shipped multi-architecture binary.** The project publishes no GitHub milestones and no roadmap issue, so its direction has to be read from the repository itself. The nightly deploy workflow on `develop` now builds the CUDA and HIP backends in the same run and packages them into one archive, with `HIP_ARCHS: gfx10-3-generic;gfx11-generic;gfx12-generic` so that a single AMD executable covers RDNA2, RDNA3, and RDNA4. That turns §6.5's HIP path from a per-architecture source build into a prebuilt binary, at the cost of the fat-binary size the generic targets imply. [Source](https://github.com/chrxh/alien/blob/develop/.github/workflows/windows-nightly-deploy.yml) (§6.5)
+- **A large accumulated ALIEN engine delta sits unreleased.** The most recent tagged release, `v4.12.3`, points at a merge commit dated 2025-09-08, while `develop` has continued to take engine and UI commits through August 2026. The changelog's newest entry is `[4.12.2] - 2025-05-26`, which records Blackwell support via CUDA Toolkit 12.8 — so Blackwell compatibility did ship, but the HIP backend of §6.5 appears in no tag, and readers who build from a release tarball rather than `develop` will not have it. No next-version number has been announced. [Source](https://github.com/chrxh/alien/blob/develop/RELEASE-NOTES.md) (§6.1, §6.5)
+- **WebGPU subgroups are no longer an extension with limited availability.** §8.3 describes subgroup operations that way; as of the August 2026 Candidate Recommendation Draft, `"subgroups"` and `"subgroup-size-control"` are standard `GPUFeatureName` entries [Source](https://www.w3.org/TR/webgpu/), and Chrome has enabled subgroups by default since version 134 [Source](https://chromestatus.com/feature/5126409856221184). Cross-lane reductions are therefore available to portable ALife kernels wherever the feature is reported, narrowing one of the gaps §8.3 charges against WebGPU. (§8.3)
+- **Extended storage-texture formats reach shipping browsers.** `texture-formats-tier1` and `texture-formats-tier2` shipped in Chrome 142; tier2 grants `"read-write"` `GPUStorageTextureAccess` to `rgba16float` among other formats. [Source](https://developer.chrome.com/blog/new-in-webgpu-142) This qualifies §8.3 in two ways: `read-write` is a core access mode, already supported without any feature flag by `r32uint`, `r32sint`, and `r32float`, and the extended format list now reaches the `rgba16float` trail field of §5.5. The ping-pong of §2.3 is nonetheless still required for any pass that reads its neighbours, because a read-write storage texture does not supply a device-wide barrier within a dispatch. (§5.5, §8.3)
+
+### Medium-term (1–3 years)
+
+- **Mass conservation generalizes beyond Lenia.** MaCE recasts the reintegration tracking that §4.4 describes for Flow-Lenia as a scheme applicable to arbitrary cellular automata, including discrete CAs and neural CAs. [Source](https://arxiv.org/abs/2507.12306) The journal version of Flow-Lenia meanwhile embeds per-cell parameters in the state field, so that multiple species coexist in one simulation without changing the convolution structure the GPU kernel implements. [Source](https://arxiv.org/abs/2506.08569) Both keep the spectral-convolution pattern of §4.3 intact and change only what is transported between steps. (§4.3–4.4)
+- **Automated search displaces hand-tuning of ALife parameters.** ASAL uses vision-language foundation models to search for target, open-ended, and illuminated behaviour, and is implemented entirely in JAX so that rollouts are end-to-end jittable and GPU-resident. [Source](https://arxiv.org/abs/2412.17799) [Source](https://github.com/SakanaAI/asal) It spans Boids, Particle Life, Game of Life, Lenia, and neural CAs — that is, all three of the parallelization patterns this chapter separates — which makes the JAX reformulation of §4.4 a prerequisite for the search rather than merely a faster way to run one simulation. Related work extends the loop with VLM-guided evolution [Source](https://arxiv.org/abs/2509.22447) and expedition/expansion search strategies [Source](https://arxiv.org/abs/2509.03863), and IMGEP-based curiosity-driven exploration attacks the same problem without foundation models [Source](https://arxiv.org/abs/2505.15998). (§4.4, §8.2)
+- **New Lenia results arrive as new JAX codebases, not as updates to the repositories cited here.** The three implementations §4.1–§4.4 draw on are dormant: `Chakazul/Lenia` was last pushed 2024-07-19, `erwanplantec/FlowLenia` 2024-02-08, and `morgangiraud/leniax` 2024-04-03. The research has not slowed correspondingly — parameter-space cartography with a browser-based interactive explorer is a 2026 result. [Source](https://arxiv.org/abs/2601.01932) Treat the chapter's code citations as pinned references to a specific formulation rather than as the currently maintained tooling. (§4.1–§4.4)
+
+### Long-term
+
+- **No GPU path is announced for any of the digital-organism simulators.** Avida's most recent commit is dated 2025-01-27 and is maintenance work — a population action and CI repair — with nothing touching execution strategy [Source](https://github.com/devosoft/avida). Polyworld's last substantive code commit is 2019-05-14; its later repository activity is a data-file upload [Source](https://github.com/polyworld/polyworld). Framsticks, by contrast, ships regularly — 5.5 on 23 April 2026, with a 5.6 entry already open in the changelog — but its published change history covers rigid-body collisions, UI, mobile platforms, and scripting, with no GPU or CUDA entries [Source](https://www.framsticks.com/files/apps/history.xml). This is the empirical form of §7.4's argument: the divergent, per-organism control flow these systems execute has not attracted a port, and none is planned in public. The §7.3 verification caveat on Framsticks licensing and source terms still stands. (§7.1–§7.4)
+- **Storage-texture atomics remain absent from WebGPU, so §5.4's workaround is durable.** The specification still provides atomics only in the storage and workgroup address spaces; no texture-atomic operation exists in WGSL or in any listed feature. [Source](https://www.w3.org/TR/webgpu/) The rasterizer-based scatter-to-gather deposit that §5.4 describes therefore remains the portable way to accumulate agent contributions into a shared field, independent of how the format tiers evolve. (§5.4, §8.3)
+- **The dispatch boundary stays the only device-wide barrier.** Nothing in the current specification or in the shipped Chrome features adds intra-dispatch global synchronization, and the roadmap items above extend formats and lane-level operations rather than the memory model. The multi-pass decomposition that §2.3, §5.2, and §6.2 all arrive at independently — a separate dispatch per phase, with double buffering as the synchronization mechanism rather than a memory convenience — is a property of the execution model, not a temporary gap. [Source](https://www.w3.org/TR/webgpu/) (§2.3, §5.2, §6.2, §8.1)
 
 ---
 
