@@ -31,6 +31,7 @@ This chapter reads each architecture out of primary source: the wire protocol in
   - [4.2 `terminated` vs `truncated`](#42-terminated-vs-truncated)
   - [4.3 Rendering Is Not in the Core Dependency Set](#43-rendering-is-not-in-the-core-dependency-set)
   - [4.4 PettingZoo: AEC and Parallel](#44-pettingzoo-aec-and-parallel)
+  - [4.5 pymunk: The Physics Substrate Beneath the Migration](#45-pymunk-the-physics-substrate-beneath-the-migration)
 - [5. Synchronous Lockstep I: Godot RL Agents](#5-synchronous-lockstep-i-godot-rl-agents)
   - [5.1 The Inverted Client/Server Polarity](#51-the-inverted-clientserver-polarity)
   - [5.2 Framing and Message Types](#52-framing-and-message-types)
@@ -71,6 +72,7 @@ This chapter reads each architecture out of primary source: the wire protocol in
 - [11. The Historical Tier: Lineage, Not Recommendations](#11-the-historical-tier-lineage-not-recommendations)
   - [11.1 The Commercial Precedent, Still Active: Unity ML-Agents](#111-the-commercial-precedent-still-active-unity-ml-agents)
   - [11.2 Maintained but CPU-Only: OpenSpiel and Melting Pot](#112-maintained-but-cpu-only-openspiel-and-melting-pot)
+  - [11.3 Shimmy: Bridging OpenSpiel into PettingZoo's AEC API](#113-shimmy-bridging-openspiel-into-pettingzoos-aec-api)
 - [12. Four Integration Shapes, Compared](#12-four-integration-shapes-compared)
   - [12.1 Choosing a Shape](#121-choosing-a-shape)
 - [Integrations](#integrations)
@@ -261,6 +263,37 @@ Two things are worth noting. `action_space` is a *function of the agent*, not a 
 **Parallel** is simultaneous: all agents submit actions together and observations and rewards are returned at the end of the cycle. This models a partially-observable stochastic game (POSG) and is the right choice for real-time games where agents genuinely act at the same instant [[Source](https://pettingzoo.farama.org/api/parallel/)].
 
 The Parallel API's hazard is that simultaneity is a fiction the implementation has to maintain. When two agents submit mutually exclusive actions in the same cycle — both moving into the same tile, both grabbing the same item — the outcome depends on the order in which the environment's internal update resolves them, a race-condition class PettingZoo's documentation notes AEC structurally avoids [[Source](https://pettingzoo.farama.org/api/aec/)]. For an engine bridge this is the same ordering ambiguity ECS schedules introduce whenever two systems mutate the same component set without an explicit constraint, and it deserves deterministic tie-breaking in the engine rather than being left to schedule order.
+
+### 4.5 pymunk: The Physics Substrate Beneath the Migration
+
+The Roadmap's box2d-to-pymunk item (§4, above) treats pymunk as a destination without saying what it is. It is a Python wrapper around **Munk2D**, a maintained fork of the **Chipmunk2D** rigid-body physics engine, first released in 2007 and MIT-licensed; the current release is **7.3.0**, with **1,061 stars** and last pushed 2026-07-06 [[Source](https://github.com/viblo/pymunk)]. Unlike Box2D's SWIG-generated Python bindings, pymunk is built on **CFFI** rather than a compiled CPython extension module, which is what lets it ship portable wheels without a C toolchain at install time [[Source](https://www.pymunk.org/en/latest/)].
+
+pymunk is not merely a Box2D replacement waiting to happen — it is already load-bearing inside the Farama environment suite Section 4.4 covers. PettingZoo's own `butterfly/pistonball` environment is built directly on it: `pymunk.Space`, `pymunk.Body`, `pymunk.Circle`, and `pymunk.Segment` construct the pistons and ball, and `pymunk.pygame_util` supplies the debug-draw path, with `self.space = pymunk.Space(threaded=False)` as the simulation root [[Source](https://github.com/Farama-Foundation/PettingZoo/blob/master/pettingzoo/butterfly/pistonball/pistonball.py)]. (Waterworld, an earlier PettingZoo environment also built on pymunk, was removed in the 1.26.0 release — Roadmap.)
+
+The API shape is intentionally small — a `Space`, one or more `Body` objects, and shapes attached to them, stepped forward with a fixed timestep:
+
+```python
+import pymunk
+
+space = pymunk.Space()      # Create a Space which contains the simulation
+space.gravity = 0, -981     # Set its gravity
+
+body = pymunk.Body()        # Create a Body
+body.position = 50, 100     # Set the position of the body
+
+poly = pymunk.Poly.create_box(body)  # Create a box shape and attach to body
+poly.mass = 10
+space.add(body, poly)
+
+for _ in range(100):        # Run simulation 100 steps in total
+    space.step(0.02)
+```
+
+[[Source](https://github.com/viblo/pymunk/blob/master/README.rst)]
+
+`space.step(dt)` is a plain, blocking, CPU-only function call — the same synchronous shape as Gymnasium's `env.step()` (§4.1), and no part of it is `vmap`-able or JIT-traceable in the sense Section 8 requires. That is precisely why the Craftax line of work (§8–§9) had to rewrite physics and rendering as JAX array code rather than reusing an existing CPU rigid-body engine: pymunk (like Box2D before it) is a fine substrate for the process-per-environment shapes in Sections 5, 6, and 11.2, but it sits on the wrong side of the vectorization boundary Section 8.3 describes.
+
+Gymnasium's own tracking issue for the migration gives the reasoning for choosing pymunk specifically, rather than any other 2D physics library: box2d's Python bindings "haven't been maintained in ~6 years," whereas pymunk's bindings are "actively maintained, better documented, and the maintainer of pymunk a few years back indicated that he intended to keep maintaining pymunk roughly for life" [[Source](https://github.com/Farama-Foundation/Gymnasium/issues/1597)]. The migration plan stages a parallel `pymunk` environment class alongside the existing `box2d` one with deprecation warnings before yanking the latter, starting with `BipedalWalker` because PettingZoo, MO-Gymnasium, and MOMAland all depend on it — so the version bump propagates across the whole Farama suite, not just Gymnasium itself [[Source](https://github.com/Farama-Foundation/Gymnasium/issues/1597)] (§4, Roadmap).
 
 ---
 
@@ -953,6 +986,34 @@ Two DeepMind libraries are genuinely maintained and deserve separating from the 
 
 Both are CPU-only in the sense that matters for this chapter: their environments execute on the host, and neither offers a `vmap`-style GPU-native batched step of the kind Section 8 describes. Scaling means process-level parallelism across cores, not kernel-level parallelism across a device. For OpenSpiel this is entirely appropriate — the state of a card game is a small tagged union, not an array, and the branching is irreducible. Melting Pot's grid worlds are closer to the class of thing a JAX rewrite could target, and the fact that a maintained, well-designed multi-agent social benchmark exists on CPU while Craftax demonstrates 250x from a rewrite marks one of the clearer open opportunities in this space. *Note: needs verification* — licenses for both are commonly given as Apache-2.0 but were not re-confirmed against the repositories in this pass.
 
+### 11.3 Shimmy: Bridging OpenSpiel into PettingZoo's AEC API
+
+OpenSpiel's own bindings are a raw Python wrapper around its C++ game library (`pyspiel`), not a PettingZoo or Gymnasium environment — so anything in this chapter's ecosystem that wants to consume it needs an adapter. **Shimmy** is the Farama Foundation's own answer to that problem generally: "PettingZoo and Gymnasium bindings for popular reinforcement learning environments outside of Farama," MIT-licensed, **222 stars**, last pushed 2026-08-08 [[Source](https://github.com/Farama-Foundation/Shimmy)]. It ships wrappers for a handful of external environment families — DeepMind Control, `bsuite`, Atari — and OpenSpiel's ~70 games are one of them [[Source](https://shimmy.farama.org/environments/open_spiel/)].
+
+The wrapper, `OpenSpielCompatibilityV0`, subclasses `pettingzoo.AECEnv` directly [[Source](https://github.com/Farama-Foundation/Shimmy/blob/main/shimmy/openspiel_compatibility.py)] — not Parallel. That choice is forced by what OpenSpiel actually models: turn-taking, imperfect-information games (backgammon, poker, chess) map onto Section 4.4's AEC loop exactly, one `agent_iter()` step per move, and the wrapper's own metadata declares `"is_parallelizable": False` for this reason [[Source](https://github.com/Farama-Foundation/Shimmy/blob/main/shimmy/openspiel_compatibility.py)]. Usage keeps the same `agent_iter()`/`last()` shape Section 4.4 already introduced, with one addition — an action mask pulled from `info`, since OpenSpiel games commonly have a legal-action subset smaller than the full `Discrete` action space:
+
+```python
+from shimmy import OpenSpielCompatibilityV0
+
+env = OpenSpielCompatibilityV0(game_name="backgammon", render_mode="human")
+env.reset()
+for agent in env.agent_iter():
+    observation, reward, termination, truncation, info = env.last()
+    if termination or truncation:
+        action = None
+    else:
+        action = env.action_space(agent).sample(info["action_mask"])
+    env.step(action)
+    env.render()
+env.close()
+```
+
+[[Source](https://shimmy.farama.org/environments/open_spiel/)]
+
+The observation space is built by walking a precedence order over what the underlying C++ game implements — observation tensor, then information-state tensor, then observation string, then information-state string, raising `NotImplementedError` only if a game exposes none of the four [[Source](https://github.com/Farama-Foundation/Shimmy/blob/main/shimmy/openspiel_compatibility.py)]. That precedence is a direct, visible consequence of OpenSpiel's perfect/imperfect-information split from Section 11.2: a perfect-information game can expose a full observation tensor, while an imperfect-information game such as poker can only honestly expose an information-state tensor scoped to what that player has actually seen.
+
+Documented caveats keep this a narrower tool than Section 4.4's own PettingZoo APIs: no Windows support, no random seeding for any wrapped environment, and rendering limited to ASCII text — some games print only their internal state rather than a formatted board [[Source](https://shimmy.farama.org/environments/open_spiel/)]. This is also not a hypothetical adjacent library: it is the literal mechanism behind the PettingZoo roadmap item already cited in this chapter — the plan to move the `classic/` suite off self-maintained and rlcard-backed logic onto OpenSpiel goes "via shimmy," one environment migrated per pull request, following the pattern already used for Hanabi (§4.4, Roadmap) [[Source](https://github.com/Farama-Foundation/PettingZoo/issues/1366)].
+
 ---
 
 ## 12. Four Integration Shapes, Compared
@@ -1033,6 +1094,10 @@ The choice is largely forced by what you already have and what you need. An exis
 - [PettingZoo](https://github.com/Farama-Foundation/PettingZoo) — multi-agent RL API; MIT, 3,488 stars, last pushed 2026-08-03 (§4.4)
 - [PettingZoo — AEC API](https://pettingzoo.farama.org/api/aec/) — sequential agent-environment-cycle model, `agent_iter`/`last`, and the race conditions AEC avoids (§4.4)
 - [PettingZoo — Parallel API](https://pettingzoo.farama.org/api/parallel/) — simultaneous-action POSG formulation (§4.4)
+- [pymunk](https://github.com/viblo/pymunk) — Python/CFFI wrapper around Munk2D, a fork of Chipmunk2D; MIT, 1,061 stars, last pushed 2026-07-06, current release 7.3.0 (§4.5)
+- [pymunk documentation](https://www.pymunk.org/en/latest/) — CFFI dependency, pythonic API design, Pygame/Pyglet/Matplotlib integration modules (§4.5)
+- [pymunk `README.rst`](https://github.com/viblo/pymunk/blob/master/README.rst) — quick-start `Space`/`Body`/`Poly` example and the "built on top of Munk2D, a fork of... Chipmunk2D" lineage statement (§4.5)
+- [PettingZoo `butterfly/pistonball/pistonball.py`](https://github.com/Farama-Foundation/PettingZoo/blob/master/pettingzoo/butterfly/pistonball/pistonball.py) — live `pymunk.Space`/`Body`/`Circle`/`Segment` usage and `pymunk.pygame_util` debug rendering inside a maintained Farama environment (§4.5)
 - [Godot RL Agents](https://github.com/edbeeching/godot_rl_agents) — Godot 4 ↔ Python RL bridge; MIT, 1,556 stars, last pushed 2026-07-10; four framework wrappers, ONNX export, arXiv:2112.03636 (§5)
 - [`godot_rl/core/godot_env.py`](https://github.com/edbeeching/godot_rl_agents/blob/207b6f476f5846f33d08b92c7a350147e7b78bf5/godot_rl/core/godot_env.py) — version constants, `_start_server`, 4-byte little-endian length-prefixed JSON framing, hex pixel decoding, headless launch flags, and the `done, done  # TODO update API to term, trunc` return (§5.1–§5.6)
 - [Godot RL Agents — `docs/CUSTOM_ENV.md`](https://github.com/edbeeching/godot_rl_agents/blob/main/docs/CUSTOM_ENV.md) — `AIController3D` skeleton, cooperative `needs_reset` pattern, and kwargs-to-CLI-args environment configuration (§5.3, §5.5)
@@ -1079,6 +1144,9 @@ The choice is largely forced by what you already have and what you need. An exis
 - [Unity ML-Agents — `docs/ML-Agents-Overview.md`](https://github.com/Unity-Technologies/ml-agents/blob/main/docs/ML-Agents-Overview.md) — the External Communicator, `mlagents-learn`, Unity Inference Engine runtime path, and built-in self-play and curriculum-learning support (§11.1)
 - [OpenSpiel](https://github.com/google-deepmind/open_spiel) — framework for research in games spanning perfect/imperfect information and cooperative/zero-sum settings; 5,395 stars, active, CPU-only (§11.2)
 - [Melting Pot](https://github.com/google-deepmind/meltingpot) — multi-agent social-behaviour evaluation suite emphasising generalization to unfamiliar co-players; 860 stars, active, CPU-only (§11.2)
+- [Shimmy](https://github.com/Farama-Foundation/Shimmy) — Farama Foundation compatibility layer wrapping external RL environments (OpenSpiel, DeepMind Control, `bsuite`, Atari) as Gymnasium/PettingZoo environments; MIT, 222 stars, last pushed 2026-08-08 (§11.3)
+- [Shimmy — OpenSpiel wrapper documentation](https://shimmy.farama.org/environments/open_spiel/) — installation, `OpenSpielCompatibilityV0` AEC usage example with action masking, and the no-Windows/no-seeding/ASCII-rendering caveats (§11.3)
+- [Shimmy `openspiel_compatibility.py`](https://github.com/Farama-Foundation/Shimmy/blob/main/shimmy/openspiel_compatibility.py) — `OpenSpielCompatibilityV0(pz.AECEnv)`, `"is_parallelizable": False` metadata, and the observation-tensor/information-state-tensor/observation-string/information-state-string precedence order (§11.3)
 - [Gymnasium v1.3.0 release notes](https://github.com/Farama-Foundation/Gymnasium/releases/tag/v1.3.0) — 2026-04-22; `pygame` → `pygame-ce` unlocking Python 3.14, the new `RepeatAction` wrapper, Taxi-v4 (§4, §5.5, Roadmap)
 - [Gymnasium issue #1597 — "Port all environments from box2d to pymunk"](https://github.com/Farama-Foundation/Gymnasium/issues/1597) — open, `help wanted`; box2d Python bindings unmaintained ~6 years with no Python 3.14 support (§4, Roadmap)
 - [Gymnasium issue #1388 — "[Proposal] Making gymnasium framework agnostic"](https://github.com/Farama-Foundation/Gymnasium/issues/1388) — open proposal to adopt the Python Array API so `torch`, `jax` and `cupy` become first-class alongside numpy in `spaces` and `vector` (§4, §8, Roadmap)
