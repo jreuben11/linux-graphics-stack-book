@@ -14,6 +14,7 @@
    - 2.1 [Shaka Player, hls.js, dash.js](#21-shaka-player-hlsjs-dashjs)
    - 2.2 [The Fetch-Append-Evict Loop](#22-the-fetch-append-evict-loop)
    - 2.3 [segments vs. sequence Mode](#23-segments-vs-sequence-mode)
+   - 2.4 [The npm Ecosystem for HTTP Adaptive Streaming](#24-the-npm-ecosystem-for-http-adaptive-streaming)
 3. [Recent MSE Evolution](#3-recent-mse-evolution)
    - 3.1 [MSE-in-Workers and MediaSourceHandle](#31-mse-in-workers-and-mediasourcehandle)
    - 3.2 [ManagedMediaSource](#32-managedmediasource)
@@ -134,6 +135,27 @@ Every one of these players runs the same core loop: the ABR controller picks a b
 ### 2.3 segments vs. sequence Mode
 
 `SourceBuffer.mode` controls how appended media segments are placed on the timeline. In `"segments"` mode (the default), each segment's own presentation timestamps determine where it lands — required for DASH, where segments carry absolute or well-defined relative timestamps. In `"sequence"` mode, segments are placed back-to-back in append order regardless of their embedded timestamps, which is what makes MSE tolerate certain live-HLS discontinuities (ad insertion, encoder restarts) without the player having to rewrite timestamps itself. [Source: MSE Recommendation §3.1 mode attribute](https://www.w3.org/TR/media-source/#dom-sourcebuffer-mode)
+
+### 2.4 The npm Ecosystem for HTTP Adaptive Streaming
+
+§1.5 covered the packages that only read or write ISOBMFF boxes. This section covers the layer above: npm packages that implement HTTP adaptive streaming end to end — DASH/HLS manifest handling, ABR, and MSE buffer management on the **client**, and DASH/HLS segmentation and packaging on the **server**.
+
+**Client: full players.** §2.1 already introduced Shaka Player, hls.js, and dash.js as libraries; their npm distributions are worth naming explicitly because the package name does not always match the project name:
+
+- **`dashjs`** ([npm](https://www.npmjs.com/package/dashjs), source [Dash-Industry-Forum/dash.js](https://github.com/Dash-Industry-Forum/dash.js)) — note the npm package name drops the dot that the GitHub repository name ("dash.js") uses. Published by the DASH Industry Forum as "a reference client implementation for the playback of MPEG DASH via Javascript and compliant browsers."
+- **`shaka-player`** ([npm](https://www.npmjs.com/package/shaka-player), source [shaka-project/shaka-player](https://github.com/shaka-project/shaka-player)) — Google's DASH/HLS/EME player library, the same engine referenced in §2.1.
+- **`rx-player`** ([npm](https://www.npmjs.com/package/rx-player), source [canalplus/rx-player](https://github.com/canalplus/rx-player)) — Canal+'s open-source player, supporting DASH, Smooth Streaming, and (since v4) HLS against a shared MSE-driven core; less widely embedded than the other two but notable as a second production-grade European broadcaster implementation independent of Shaka's and dash.js's codebases.
+- **`hls.js`** — already covered in §2.1 and §1.5; the npm package name matches the project name.
+
+All four expose broadly the same shape of API to an integrating app: point the player at a manifest URL, attach it to a `<video>` element, and it owns the `MediaSource`/`SourceBuffer` lifecycle from §1–§2.3 internally. Framework wrapper packages (`hls-video-element`, `dash-video-element`) exist on top of several of these to expose the player as a custom element rather than an imperative API, but they are thin adapters, not independent implementations.
+
+**Server: packaging and segmentation.** Producing conformant DASH/HLS output — the manifests and fMP4/TS segments the clients above consume — is generally native-binary work (ffmpeg, GPAC, Shaka Packager itself); npm's role here is almost entirely as a thin wrapper or companion utility around those binaries rather than a pure-JavaScript reimplementation:
+
+- **`shaka-packager`** ([npm](https://www.npmjs.com/package/shaka-packager), source [shaka-project/shaka-packager](https://github.com/shaka-project/shaka-packager)) — an npm-distributed wrapper around Google's Shaka Packager binary. Verified directly from its README: "a media packaging tool and SDK... for DASH and HLS packaging and encryption," producing fragmented ISO-BMFF (§1.4) output "compatible with Media Source Extensions" and supporting CENC (§5) "alongside SAMPLE-AES, supporting multiple DRM systems including Widevine, PlayReady, FairPlay, and Marlin." This is the closest thing in the npm registry to a general-purpose, standards-conformant DASH+HLS origin packager. [Source: shaka-project/shaka-packager README](https://github.com/shaka-project/shaka-packager)
+- **`fluent-ffmpeg`** ([npm](https://www.npmjs.com/package/fluent-ffmpeg), source [fluent-ffmpeg/node-fluent-ffmpeg](https://github.com/fluent-ffmpeg/node-fluent-ffmpeg)) — a generic fluent API over the `ffmpeg` CLI, not DASH/HLS-specific itself. It is nevertheless the most common way Node backends script HTTP adaptive streaming segmentation, by driving ffmpeg's own native `-f hls` and `-f dash` muxers (segment duration, playlist/manifest writing, variant-stream layout) rather than reimplementing packaging logic in JavaScript.
+- **`m3u8-parser`** ([npm](https://www.npmjs.com/package/m3u8-parser), source [videojs/m3u8-parser](https://github.com/videojs/m3u8-parser)) and **`mpd-parser`** ([npm](https://www.npmjs.com/package/mpd-parser), source [videojs/mpd-parser](https://github.com/videojs/mpd-parser)) — video.js's HLS and DASH manifest parsers, used internally by `@videojs/http-streaming` (§1.5) on the client, but also common server-side for manifest validation, origin-side inspection, or transforming a manifest between requests (e.g. stitching in ad breaks) without a full player attached.
+
+**A popular package that does *not* belong here.** `node-media-server`, one of the most widely used Node.js media servers, is deliberately excluded from this list: verification against its current README and source (no `hls`-matching code found via repository code search as of this writing) shows it implements RTMP/FLV ingest and playback — push/pull over RTMP, FLV over HTTP/WebSocket — with no DASH or HLS packaging in its current codebase, despite its name suggesting broader scope. Treating it as an HLS/DASH tool would be an overclaim; sites needing RTMP ingest transcoded to HLS/DASH pair a server like this with `fluent-ffmpeg` or Shaka Packager downstream instead of expecting it natively.
 
 ---
 
