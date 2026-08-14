@@ -774,6 +774,8 @@ The key contrast:
 | intel_gpu_top | < 1% | No | Intel only | Yes |
 | **bpftrace/eBPF** | **< 0.1%** | **No** | **Yes (DRM tracepoints)** | **Yes** |
 
+> **Note: there is no off-the-shelf eBPF GPU profiling library.** Everything in this section — the `dma_fence` scripts, the submission-latency tooling, the shader-compile-stall detector — is a hand-written bpftrace program against kernel/DRM tracepoints, not a packaged tool you `pip install` or `apt install`. That is also the practical state of the art in production: at the kernel/DRM level, eBPF-based GPU observability is mature and cross-vendor, but it ships as scripts you write yourself, following the patterns below, rather than as a library with a stable API. The one project pushing eBPF *inside* GPU execution — [bpftime](https://github.com/eunomia-bpf/bpftime), which compiles eBPF bytecode to PTX and injects it into running CUDA kernels for per-shader-invocation instrumentation — is experimental, NVIDIA-only, and not production-ready; it underlies the "eGPU" research prototype referenced in this chapter's Roadmap. If you need GPU-execution-level (not just kernel-submission-level) profiling today, vendor tools (Nsight, RGP) remain the only production option.
+
 ### DRM Tracepoints: The Kernel's Observability Interface
 
 The Linux kernel exports a stable set of GPU-related tracepoints across two subsystems. Stability is intentional: the DRM maintainers have explicitly designated certain `gpu_scheduler` tracepoints as stable uAPI so that tools like GPUVis and umr can rely on their field names without breaking across kernel updates. [Source: DRM Scheduler patch series, Jan 2025, LKML](https://lkml.iu.edu/hypermail/linux/kernel/2501.3/06940.html)
@@ -1373,13 +1375,13 @@ For applications that want to embed VK_KHR_performance_query counter data direct
 
 #### Installation
 
-The `perfetto` package is available in Ubuntu 23.10+ (Mantic Minotaur) and later:
+A `perfetto` apt package (CLI, `traced`, and `traced_probes`) exists in Debian/Ubuntu's `universe`/unstable archives, but only from Ubuntu 26.04 LTS (Resolute Raccoon) onward — it is **not** present in 24.04 LTS (Noble Numbat), 23.10 (Mantic Minotaur), or any earlier release, so `sudo apt install perfetto` fails there with "Unable to locate package." Where it is available:
 
 ```bash
 sudo apt install perfetto
 ```
 
-This installs the `perfetto` CLI, `traced`, and `traced_probes`. For older distributions or custom builds with Mesa `-Dperfetto=true` support:
+On 24.04 LTS and other distributions without the package, build the toolkit from source (this also matches the version needed for Mesa `-Dperfetto=true` support):
 
 ```bash
 git clone https://android.googlesource.com/platform/external/perfetto
