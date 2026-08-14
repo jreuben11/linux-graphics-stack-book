@@ -1236,6 +1236,28 @@ The 6.8 milestone is the most significant architectural transition in the Plasma
 
 **Plasma 7.** No timeline or design plans have been announced for Plasma 7. The Plasma 6 line continues indefinitely; the KDE 30th-anniversary window (October 2026) aligns with the Plasma 6.8 Wayland-only release.
 
+## Roadmap
+
+### Near-term (6-12 months)
+
+- **Vulkan renderer core infrastructure.** Beyond the initial DRM/KMS swapchain work described in §17, the project's own tracking issue lays out the next concrete steps: texture upload with correct GPU/GPU synchronization, porting the scene's shaders to SPIR-V, and — the most architecturally significant decision — building the new `ItemRenderer` around a compute-shader-based model rather than a direct per-item draw path, chosen for its expected latency and async-compute benefits. [Source](https://invent.kde.org/plasma/kwin/-/issues/169)
+- **Input-stack gap-closing.** KDE's community-wide "We care about your Input" goal is driving incremental work across the whole input pipeline: touchpad gesture recognition and customization interfaces, per-device pointer-acceleration curves, drawing-tablet configuration profiles, and a Wayland-native keyboard-layout-switching feature. Some pieces (relative tablet mode, pressure-curve adjustment) have already landed; others (custom pointer acceleration, automatic touchpad disabling when an external mouse is attached) remain open. [Source](https://community.kde.org/Goals/Input)
+- **Color management protocol maturity.** The Wayland `color-management-v1` protocol that KWin's HDR pipeline (§2.8) exposes to clients is still classified as a *staging* protocol upstream — meaning its core design is settled but it has not yet been promoted to stable. Continued interoperability testing across compositors and toolkits is the near-term blocker to stabilization. [Source](https://wayland.app/protocols/color-management-v1)
+
+### Medium-term (1-3 years)
+
+- **Effects and backends following the renderer, not leading it.** The KWin Vulkan plan explicitly defers porting individual effects (blur, magnifier, zoom, color picker) and the non-DRM output backends (Wayland-nested, X11-windowed, virtual) until the compute-shader `ItemRenderer` core is stable, with an interim Vulkan-to-OpenGL interop path so effects that have not yet been ported can keep running. This sequencing means Vulkan reaching parity across the full effect catalogue — not just the DRM scanout path — is a multi-year effort rather than a single release. [Source](https://invent.kde.org/plasma/kwin/-/issues/169)
+- **Non-C++ application development.** A separate community goal, "Streamlined Application Development Experience," has multi-language KDE app development explicitly in scope, aiming to make building Kirigami-based applications in languages such as Rust and Python as first-class an experience as C++/QML today. Concrete deliverables (binding generators, tooling, documentation) are tracked incrementally rather than as a single release milestone. [Source](https://community.kde.org/Goals)
+- **Input stack as sustained, not one-off, work.** The input goal is scoped as an ongoing effort to "fill the last missing gaps" rather than a project with a fixed end date; accessibility items (such as Wayland-native slow-keys support) and game-controller handling are tracked alongside the touchpad/tablet work cited above and are expected to land incrementally across several Plasma release cycles. [Source](https://community.kde.org/Goals/Input)
+
+### Long-term
+
+- **OpenGL remains the safe default during the Vulkan transition.** No KWin release has committed to Vulkan as the default compositing backend, and the project's own roadmap issue treats OpenGL/Vulkan interop as a deliberate bridging mechanism rather than a temporary stopgap — so application and effect developers should expect to keep targeting the OpenGL path for the foreseeable future, exactly as this chapter's §2.4 already advises. [Source](https://invent.kde.org/plasma/kwin/-/issues/169)
+- **No committed KF7/Qt7 transition.** As with the Plasma 7 question already noted in §17, no KDE or Qt roadmap currently commits to a KDE Frameworks 7 or Qt7 migration; the practical consequence is that the Tier system, `KF6::` CMake namespace, and versionless-QML-import conventions documented in §1 are likely to remain the stable target for KDE application development for several more years.
+- **Convergent input and form-factor work has no fixed finish line.** Because the input-handling goal is defined by "closing gaps" rather than a feature checklist, and because Kirigami's adaptive model (§4) is the mechanism by which the same application scales from Plasma Mobile to desktop, continued incremental convergence between touch, pen, gamepad, and keyboard/mouse input across form factors is likely to remain a standing area of work rather than a project with a defined completion point. [Source](https://community.kde.org/Goals/Input)
+
+---
+
 ## 18. Integrations
 
 This chapter sits within a broader narrative about how a desktop is assembled from the graphics stack up. Key related chapters:

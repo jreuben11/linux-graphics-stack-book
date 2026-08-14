@@ -556,6 +556,27 @@ The sustainability of open GPU drivers at the firmware-as-OS frontier depends on
 
 ---
 
+## Roadmap
+
+### Near-term (6-12 months)
+
+- **Rust firmware-client drivers are upstream but still marked experimental.** Both the NVIDIA GSP-facing Nova driver (`nova-core` plus the DRM-facing `nova` module, built as `nova-drm`) and the ARM Mali CSF-facing Tyr driver are merged into mainline Linux, but each carries an explicit "this driver is work in progress and may not be functional" disclaimer in its own Kconfig help text. [Source: DRM_NOVA Kconfig](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/nova/Kconfig) · [Source: DRM_TYR Kconfig](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/tyr/Kconfig)
+- **nova-core implements the newer FSP-mediated GSP boot chain.** The driver's `fsp.rs` module targets the simplified Hopper/Blackwell boot sequence (FMC, then FSP, then GSP) rather than the SEC2-mediated path used on Turing/Ampere/Ada, and its `mctp.rs` module implements the MCTP-framed command/response transport FSP uses for secure-boot signalling. This is concrete evidence that the Rust rewrite is tracking NVIDIA's current chain-of-trust design, not just replicating the older path. [Source](https://github.com/torvalds/linux/blob/master/drivers/gpu/nova-core/fsp.rs)
+- **AMD's MES-mediated user queues continue absorbing submission responsibility from the kernel.** The dynamic, preemptible "user queue" path (`amdgpu_userq.c`, `mes_userqueue.c`) sits alongside the legacy static "kernel queue" model and gives MES firmware direct control over queue mapping and oversubscription arbitration — a concrete instance of the MES-expansion trend already discussed in §10, rather than a purely predictive claim. [Source](https://docs.kernel.org/gpu/amdgpu/gc/mes.html)
+- **Panthor's firmware-parsing surface is being hardened.** Recent work on the Mali CSF-facing Panthor driver has focused on validating firmware-supplied section sizes and rejecting zero-sized, oversized, or truncated firmware images before they are mapped, narrowing exactly the host-firmware attack surface described in §8. [Source](https://github.com/torvalds/linux/commits/master/drivers/gpu/drm/panthor)
+
+### Medium-term (1-3 years)
+
+- **GSC firmware version is becoming a feature gate, not just a security boundary.** Intel's Protected Xe Path (PXP) session handling on newer Xe-driven platforms depends on the GSC firmware revision present on the specific silicon generation, meaning runtime feature availability — not only content-protection posture — is now tied to firmware currency. This deepens the GSC-scope-expansion trend §10 already flags, with a concrete runtime-gating example. [Source](https://github.com/torvalds/linux/commits/master/drivers/gpu/drm/xe/xe_pxp.c)
+- **Whether documented CPU-firmware protocols become the norm, or stay an NVIDIA/AMD-specific practice, remains the open question §11 poses.** No vendor has committed to a timeline for publishing MES scheduling semantics or CSF firmware protocol specifications at the level of detail NVIDIA's `open-gpu-doc` provides; the trajectory instead is visible only piecemeal, through firmware documentation releases like AMD's 2024 MES documentation drop. [Source](https://videocardz.com/newz/amd-releases-micro-engine-scheduler-mes-firmware-documentation-for-rdna3-gpus)
+
+### Long-term
+
+- **Register-programming GPUs are not disappearing.** Qualcomm's newest Adreno generation (Gen 4 / Adreno 8xx) has landed in-tree using the same register-programming model and GMU cooperation pattern as prior Adreno generations, rather than adopting a GSP/MES-style firmware scheduler. No public Qualcomm roadmap signals a shift toward a firmware-as-OS model for Adreno, so the register-programming/minimal-firmware branch of the spectrum described in §7 is likely to persist alongside — not be absorbed by — the firmware-as-OS branch. [Source](https://github.com/torvalds/linux/tree/master/drivers/gpu/drm/msm/adreno)
+- **No vendor currently commits to shipping firmware source.** NVIDIA, AMD, Intel, and ARM all continue to ship GSP-RM, PSP/SMU/DMCUB, GuC/HuC/GSC, and Mali CSF firmware as signed binaries respectively, with community access limited to documented (or reverse-engineered) protocol boundaries rather than firmware source. Barring a change in vendor policy, the trust model comparison in §8 — auditable CPU-side driver code paired with opaque firmware binaries — is likely to remain the durable industry default rather than a transitional state.
+
+---
+
 ## 12. Integrations
 
 - **Ch. 5 (x86 GPU Drivers)**: amdgpu's IP block chain, PSP authentication sequence, and GuC CT submission are the deployment context for the firmware architectures described here. The `amdgpu_device_ip_init()` path and `xe_guc_ct.c` are starting points for hands-on exploration.

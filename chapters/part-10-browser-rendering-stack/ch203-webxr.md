@@ -697,6 +697,23 @@ The key architectural difference is the copy at frame submission: native OpenXR 
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+- **Linux Vulkan graphics binding stays out-of-tree, for a documented reason.** Upstream Chromium's `device/vr/openxr/` tree still ships only a Windows D3D11 binding and an Android OpenGL ES binding — no Linux implementation exists in the official source tree. The community `webxr-linux` patch that adds one has not been rebased or upstreamed in step with Chromium's fast-moving `device/vr/openxr/` refactors (the tree has since grown scene-understanding, spatial-anchor, and mesh-manager modules the patch predates), and it documents a concrete Linux-specific blocker: Chromium's `gfx::GpuFence` IPC path is implemented only for Windows and Android, forcing the Linux patch to synchronise its ANGLE→Vulkan and Vulkan→OpenXR swapchain copies with a blocking `glFinish()` instead of a GPU semaphore. [Source: Chromium device/vr/openxr tree](https://chromium.googlesource.com/chromium/src/+/HEAD/device/vr/openxr/) · [Source: webxr-linux chromium patch notes](https://github.com/mrxz/webxr-linux/blob/main/chromium/README.md)
+- **`XRWebGPUBinding` (WebXR-WebGPU Binding) explainer and issue tracker remain under active iteration** in the Immersive Web Community Group, with discussion still centred on how a `GPUTexture`-backed projection layer should expose the OpenXR/WebGPU swapchain without the ANGLE copy that `XRWebGLLayer` requires today; no browser ships it unflagged yet. [Source: immersive-web/webxr-webgpu-binding](https://github.com/immersive-web/webxr-webgpu-binding)
+- **OpenXR 1.1 continues folding widely-implemented vendor extensions into the core spec** (most recently `XR_EXT_local_floor`, `XR_EXT_palm_pose`, and several Meta/Varjo controller-profile extensions), which reduces the number of extension strings a runtime like Monado or a browser's `OpenXrExtensionHelper` must negotiate for baseline functionality. [Source: OpenXR-Docs versions.adoc](https://github.com/KhronosGroup/OpenXR-Docs/blob/main/specification/sources/chapters/versions.adoc)
+
+### Medium-term (1–3 years)
+- **Depth, hit-test, and mesh-detection modules track scene-understanding maturity on the runtime side, not just the spec side.** The `depth-sensing` and `real-world-meshing` (mesh detection) Community Group repos are active, but on Linux the gating factor is whether Monado's driver backends expose the underlying scene-understanding data at all — a browser cannot surface an `XRDepthInformation` or `XRMesh` object that its OpenXR runtime never populates. [Source: immersive-web/depth-sensing](https://github.com/immersive-web/depth-sensing) · [Source: immersive-web/real-world-meshing](https://github.com/immersive-web/real-world-meshing)
+- **Raw camera access remains a privacy-gated proposal rather than a shipping feature.** The `raw-camera-access` Community Group repo explores exposing luminance/camera frames to WebXR content, which would let ML-based hand and body tracking (WebNN, Chapter 168) run against real sensor data instead of runtime-provided poses — but the proposal has not progressed to a formal W3C track, and any implementation will need Privacy Interest Group review before either Chromium or Firefox ships it. [Source: immersive-web/raw-camera-access](https://github.com/immersive-web/raw-camera-access)
+
+### Long-term
+- **No browser or OS vendor currently commits to a first-party Linux WebXR runtime binding**, unlike Windows (D3D11, shipped) and Android (OpenGL ES, shipped). Absent such a commitment, the Linux path is likely to remain a community-maintained patch layered on top of Monado or SteamVR's OpenXR loader rather than an in-tree Chromium feature — the same structural gap that has persisted since WebXR's Linux support was first attempted.
+- **Firefox's `wgpu`-backed architecture is the more likely long-term route to first-class Linux WebXR**, since `wgpu-hal`'s Vulkan backend already creates the `VkInstance`/`VkDevice` Firefox needs for an `XrGraphicsBindingVulkanKHR` without a Windows- or Android-specific intermediate — the same cross-platform property that lets `wgpu` back Firefox's WebGPU implementation on Linux today.
+
+---
+
 ## 14. Integrations
 
 **Chapter 27 (VR, AR, and OpenXR)**: WebXR is the browser-facing surface above the same Monado/SteamVR OpenXR runtimes described there. `XR_RUNTIME_JSON` discovery, DRM leasing for direct-mode output, and the Basalt VIO tracking pipeline all sit below both the native OpenXR and WebXR paths. The OpenXR session created by Chromium's `OpenXrApiWrapper` is an `XrSession` in the same Monado `monado-service` daemon that native apps use.

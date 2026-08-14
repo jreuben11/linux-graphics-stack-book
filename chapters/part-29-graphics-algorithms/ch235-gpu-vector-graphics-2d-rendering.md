@@ -1198,3 +1198,51 @@ Chromium GPU process, https://chromium.googlesource.com/chromium/src/+/main/docs
   that operates on the output of GPU 2D rendering: bloom, DoF, TAA, DLSS/FSR upscaling, and
   MSDF text rendering as a texturing technique (Category X). Ch235's rendered output passes through
   the post-processing pipeline documented in Ch207.
+
+## Roadmap
+
+### Near-term (6-12 months)
+
+- **The Vello renderer family keeps expanding around a shared core.** Alongside the GPU-compute
+  Vello pipeline described in §6, the project continues developing Vello CPU (software-only
+  rasterisation) and Vello Hybrid (CPU path preprocessing with GPU-only rasterisation) as
+  independently publishable crates sharing a common `vello_common` sparse-strip representation,
+  rather than folding those code paths back into the single compute-shader pipeline. [Source](https://github.com/linebender/vello/blob/main/CHANGELOG.md)
+- **Vello's own tracking issues describe blur/filter effects, glyph caching, and conflation
+  artifacts as open work**, not yet part of the pipeline this chapter documents in §6 — meaning
+  compositing operators that depend on filter effects (§10) and glyph atlasing strategy (§5) are
+  still moving targets in the reference GPU-compute 2D renderer. [Source](https://github.com/linebender/vello/issues/476)
+- **Pathfinder shows no feature development, only maintenance commits**, consistent with the
+  chapter's note in §7.6 that it lacks a first-class Vulkan backend; GPU 2D path rendering on Linux
+  is consolidating around Vello's Vulkan-native pipeline rather than Pathfinder's OpenGL/Metal
+  tile atlas. [Source](https://github.com/servo/pathfinder/commits/master/)
+
+### Medium-term (1-3 years)
+
+- **Vello Hybrid's own release notes commit to redesigning its API for consistency across the
+  Vello renderer family**, and explicitly state the crate has no API or file-format stability
+  guarantees yet — meaning the CPU-preprocess/GPU-rasterise split described alongside the full
+  Vello pipeline in §6 is expected to keep changing shape before it stabilises. [Source](https://github.com/linebender/vello/releases)
+- **COLRv2 remains an open design discussion rather than a ratified OpenType addition.** A
+  public proposal enumerates candidate features — new gradient paint types, blend-mode
+  compositing beyond COLRv1's fixed set, bitmap paints, and variable paint-graph components —
+  as a "laundry list" still being scoped, so the COLRv1 paint-graph model this chapter documents
+  in §9 remains the current ceiling for GPU colour-font rendering. [Source](https://github.com/googlefonts/colr-gradients-spec/issues/372)
+- **CSS mesh gradients remain a working-group discussion, not a shipped standard.** The proposal
+  is tracked as an open CSSWG issue and does not appear in either the CSS Images Level 4 or Level 5
+  editor's drafts, so the custom compute-shader mesh-gradient approach in §11.4 has no standardised
+  CSS/canvas equivalent to converge toward yet. [Source](https://github.com/w3c/csswg-drafts/issues/7648)
+
+### Long-term
+
+- **The browser-facing 2D renderer landscape is consolidating around a small set of GPU-native
+  architectures.** WebRender remains actively maintained as Firefox's OpenGL-based brush-shader
+  renderer (§1.6), while Pathfinder has settled into maintenance-only status and Skia's
+  Vulkan-native Graphite backend continues to replace the legacy Ganesh backend in Chromium; no
+  new general-purpose GPU vector-graphics renderer has emerged to challenge the Vello/Graphite/
+  WebRender set this chapter surveys in §1.6. [Source](https://github.com/servo/webrender)
+- **A GPU-compute-first architecture like Vello's is unlikely to remain unique.** Vello's prefix-scan,
+  tile-binning pipeline (§6) demonstrates that 2D vector rendering can be expressed almost entirely
+  as compute shaders rather than fixed-function rasterisation; whether other engines beyond Skia
+  Graphite adopt a similarly compute-centric architecture, or whether Vulkan mesh/task shaders offer
+  a competing path to the same goal, has no committed answer from any vendor roadmap yet.

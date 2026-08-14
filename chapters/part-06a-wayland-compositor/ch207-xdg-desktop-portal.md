@@ -1339,6 +1339,28 @@ Several commonly requested capabilities have open issues but no active implement
 
 ---
 
+## Roadmap
+
+### Near-term (6-12 months)
+
+- **Calendar versioning replaces the odd/even scheme.** The project has moved away from the odd-minor-unstable/even-minor-stable convention: every release is now a stable release numbered `major.minor`, with minor releases carrying security and bug fixes and only the latest major line supported at a time. The change was motivated by downstream inconsistency — some distributions packaged the "unstable" odd releases while others skipped them entirely, and GNOME OS nightly builds already tracked `main` directly, so the unstable channel delivered little isolation in practice. [Source — versioning scheme PR](https://github.com/flatpak/xdg-desktop-portal/pull/2042)
+- **PipeWire policy continues moving into WirePlumber.** Building on the ScreenCast-side migration noted in §14, active work extracts camera-presence detection and stream metadata out of the portal daemon and into a WirePlumber plugin, with the daemon reading that state via the PipeWire metadata object instead of managing permissions itself. The stated end goal is a portal daemon that no longer touches PipeWire permissions directly, leaving that policy entirely to WirePlumber. [Source — WirePlumber metadata PR](https://github.com/flatpak/xdg-desktop-portal/pull/2070)
+- **wlroots backend actively hardens dual-protocol screen capture.** `xdg-desktop-portal-wlr` sees ongoing fixes to keep `zwlr_screencopy_manager_v1` (the legacy wlroots-only path, §15) and `ext-image-copy-capture-v1` (the compositor-neutral replacement) working side by side, since the two protocols drive the PipeWire graph differently and compositors that only expose the older interface need separate handling. This is a maintained, actively developed backend, not one in maintenance mode. [Source — xdg-desktop-portal-wlr repository](https://github.com/emersion/xdg-desktop-portal-wlr)
+- **A Speech (text-to-speech) portal continues design iteration.** The proposed `org.freedesktop.portal.Speech` interface builds on the separately specified speech-provider D-Bus interface and the `libspiel` client library; discussion of how the portal should expose voice discovery relative to libspiel's own abstractions is still active. [Source — Speech portal PR](https://github.com/flatpak/xdg-desktop-portal/pull/1690)
+
+### Medium-term (1-3 years)
+
+- **Interface-versioning rework remains open.** The RFC to replace the current single-integer `version` property (used throughout §5–§9 for ScreenCast, RemoteDesktop, and InputCapture version gating) with major-version-suffixed interface names and an `active-revision` property has not reached maintainer consensus. If adopted, it would let old and new revisions of a portal interface coexist during a transition instead of requiring every client and backend to jump versions in lockstep. [Source — interface versioning RFC](https://github.com/flatpak/xdg-desktop-portal/pull/1964)
+- **InputCapture backend parity outside GNOME is unresolved.** The `org.freedesktop.portal.InputCapture` interface (§9) is implemented in the GNOME backend via Mutter; the KDE backend has an open, unimplemented request tracking KWin-side EIS support as the blocking dependency, and no KDE implementation has landed. Cross-desktop remote-input and KVM-style tooling that depends on InputCapture will continue to work only on GNOME/Mutter until that lands. [Source — xdg-desktop-portal-kde InputCapture issue](https://invent.kde.org/plasma/xdg-desktop-portal-kde/-/issues/12)
+- **ScreenCast audio-stream support is proposed but not yet merged.** The change adds an `audio` option to `SelectSources()` and lets `Start()` return additional PipeWire streams tagged by `media_type`, reusing the same `OpenPipeWireRemote` fd path described in §5 and §14. Selecting the correct audio stream is left to each backend, and discussion on the proposal has centered on how much of that logic the GNOME and KDE backends can share rather than duplicate, with no shared approach settled yet. [Source — ScreenCast audio stream PR](https://github.com/flatpak/xdg-desktop-portal/pull/1993)
+
+### Long-term
+
+- **The GPU access boundary is unlikely to tighten from inside the portal.** As §16 notes, no portal interface restricts DRM render-node access once a sandbox is granted `--device=dri`; portal development is concentrated on D-Bus-mediated resources (screen content, cameras, input, files), and there is no proposal in flight to add per-application GPU isolation below the render node. Closing that gap, if it happens, will most plausibly come from kernel or Mesa-level cgroup/namespace work rather than from xdg-desktop-portal itself.
+- **Sandboxed desktop integration keeps expanding by adding narrowly scoped portals rather than broadening existing ones.** The project's trajectory — Speech, an experimental Credentials portal, and earlier additions like USB — favors new, single-purpose `org.freedesktop.impl.portal.*` interfaces with their own consent and permission-store tables over enlarging general-purpose portals such as FileChooser or Settings, keeping the consent model legible even as the surface area grows. [Source — Credentials portal PR](https://github.com/flatpak/xdg-desktop-portal/pull/1889)
+
+---
+
 ## Integrations
 
 **Chapter 23 — Legacy and Sandboxed App Support** is where XWayland and the original portal overview appear. This chapter supersedes the portal coverage in Ch23, which should be read for XWayland context and the broader sandboxing landscape.

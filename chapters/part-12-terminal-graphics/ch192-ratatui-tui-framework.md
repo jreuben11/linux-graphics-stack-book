@@ -1090,4 +1090,24 @@ Ratatui's active development explicitly targets several gaps identified against 
 
 ---
 
+## Roadmap
+
+### Near-term (6-12 months)
+- **Layout caching moving from opt-in to default.** Ratatui's constraint solver gained an LRU-cached layout path for `no_std` targets; because embedded backends like Mousefood are dominated by per-frame layout-solving cost on constrained MCUs, maintainers are discussing folding the cache into the core flow rather than keeping it behind a feature flag, deprecating the flag as a no-op once the change lands. [Source](https://github.com/ratatui/ratatui/issues/2419)
+- **Mousefood driver crates splitting out by vendor.** Work is in progress to break vendor-specific display integrations (simulator, MIPI DSI panels, Waveshare and WeAct e-paper controllers) out of the core `mousefood` crate into dedicated companion crates, trimming the dependency footprint that ships to flash-constrained targets. [Source](https://github.com/ratatui/mousefood/issues/92)
+- **ratatui-image capability detection from an explicit tty.** `Picker::from_query_stdio()` currently fails to detect Kitty or Sixel support when an application's stdin is piped rather than connected to a terminal; a proposed `Fd`-based query path would let detection target the controlling tty directly, fixing a common failure mode for TUI tools launched from scripts or wrapper processes. [Source](https://github.com/ratatui/ratatui-image/issues/188)
+- **Tachyonfx ambient, non-completing effects.** All effects currently in `fx::` are one-shot transitions that run against a timer and finish; a proposal under discussion would add a category of persistent "ambient" effects meant to run indefinitely while a panel is on screen, rather than only supporting fire-and-complete animations. [Source](https://github.com/junkdog/tachyonfx/issues/96)
+
+### Medium-term (1-3 years)
+- **Ratzilla native image-rendering support.** None of Ratzilla's three backends (`DomBackend`, `CanvasBackend`, `WebGL2Backend`) currently render raster images; an open feature request tracks adding this, which would let `ratatui-image`-style workflows behave consistently whether an application runs in a real terminal or as a Ratzilla WebAssembly page. [Source](https://github.com/ratatui/ratzilla/issues/95)
+- **Single-binary dual-target apps (terminal and browser).** Community discussion is tracking whether one Ratatui application could serve both an SSH/crossterm terminal session and a browser client over WebGL2 from the same binary; closing the remaining API differences between `Terminal::draw()` and Ratzilla's `WebTerm::draw_web()` event models is the main open question. [Source](https://github.com/ratatui/ratzilla/issues/106)
+- **Mousefood support for allocator-free (`no_alloc`/`heapless`) configurations.** The crate currently targets `no_std` with `alloc`; a proposal to support a `heapless`-backed, allocation-free configuration would extend Ratatui's embedded reach to MCUs too memory-constrained for a heap at all. [Source](https://github.com/ratatui/mousefood/issues/200)
+
+### Long-term
+- **"Ease of use" and "visual appeal" as the project's standing compass.** Rather than a fixed feature list, Ratatui's maintainers have framed the library's long-range direction around two durable axes — reducing boilerplate and API friction, and closing the visual polish gap with competitors like Textual and Bubble Tea — with concrete work items expected to be broken out from those principles over time rather than committed to a dated roadmap. [Source](https://github.com/ratatui/ratatui/issues/1321)
+- **WASM Component Model as a possible path for portable Ratzilla panels.** The W3C's Component Model proposal for WebAssembly, if it matures into stable, widely supported tooling, would in principle let Ratzilla-built TUI panels be packaged as portable components usable both inside and outside a browser DOM. No project in the Ratatui ecosystem currently commits to this integration, so it remains a plausible long-term direction contingent on the wider WASM ecosystem rather than a planned feature. [Source](https://github.com/WebAssembly/component-model)
+- **Embedded and browser targets continuing to outpace terminal-only assumptions in the wider TUI ecosystem.** No competing Rust TUI framework currently ships an equivalent to the Mousefood (embedded-graphics) or Ratzilla (WebAssembly) backend pairing; as long as that gap persists, Ratatui's `Backend` trait abstraction is likely to keep attracting community-built backends for non-terminal targets rather than the core team maintaining every renderer itself.
+
+---
+
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

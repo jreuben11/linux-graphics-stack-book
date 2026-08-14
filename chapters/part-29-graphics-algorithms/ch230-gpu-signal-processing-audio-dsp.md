@@ -1271,3 +1271,63 @@ AV drift.
   classification (Section 9.3) feeds downstream GPU probabilistic models (HMM, GMM) for
   speech recognition — the stochastic decoding layer built on the deterministic GPU feature
   extraction pipeline of this chapter.
+
+## Roadmap
+
+### Near-term (6-12 months)
+
+- **Zero-copy GPU buffer paths in PipeWire filter nodes.** The workaround described in Section
+  10.1 — a `memcpy` in and out of the GPU buffer on every `spa_node` `process()` call — is
+  narrowing as PipeWire's DMA-BUF negotiation matures: device-ID negotiation for DMA-BUF and
+  extended explicit-sync fallback handling landed in the 1.6 release series, reducing the cases
+  where a GPU DSP node must fall back to a CPU-mediated copy of the audio buffer.
+  [Source: PipeWire NEWS, https://github.com/PipeWire/pipewire/blob/1.6.0/NEWS]
+- **Windowing support in VkFFT.** The windowed-sinc and STFT analysis windows this chapter
+  applies as a separate pre-multiply pass (Sections 4.1, 9.1) are the subject of an open feature
+  request to fuse window application directly into VkFFT's generated kernels, which would remove
+  a full read-modify-write pass over the input buffer for every FFT batch.
+  [Source: VkFFT issue tracker, https://github.com/DTolm/VkFFT/issues/230]
+- **Classical DSP and learned-model nodes sharing one real-time graph.** PipeWire's filter-graph
+  element gained ONNX and FFmpeg-filter plugin types in the 1.6 series, letting a neural
+  denoiser or source-separation model sit in the same low-latency graph as the biquad cascades
+  and FFT-convolution nodes described in Sections 4–6, rather than running as a separate offline
+  process. [Source: PipeWire NEWS, https://github.com/PipeWire/pipewire/blob/1.6.0/NEWS]
+
+### Medium-term (1-3 years)
+
+- **Consolidation of AMD's math libraries.** rocFFT's source has moved out of its standalone
+  repository into the unified `ROCm/rocm-libraries` monorepo alongside rocBLAS and the rest of
+  the ROCm math stack, part of a broader AMD move toward shared build, versioning, and
+  kernel-generation infrastructure across ROCm compute libraries — relevant to composite
+  pipelines such as the MFCC extraction chain in Section 9.3 that mix rocFFT with rocBLAS GEMM
+  calls in a single command stream.
+  [Source: rocFFT repository, https://github.com/ROCm/rocFFT] [Source: ROCm/rocm-libraries,
+  https://github.com/ROCm/rocm-libraries]
+- **Multi-GPU FFT job splitting.** VkFFT's own roadmap names workload distribution of a single
+  FFT plan across multiple GPUs as a planned capability, which would extend the batch-FFT
+  patterns in Section 2.3 and the polyphase channeliser in Section 7.4 to multi-GPU
+  professional-audio and software-defined-radio configurations whose working sets exceed a
+  single device's memory. [Source: VkFFT README, https://github.com/DTolm/VkFFT]
+- **A standardized bitstream target for scene-based spatial audio.** The Alliance for Open
+  Media's Immersive Audio Model and Formats (IAMF) specification — now iterating through
+  versioned public drafts — standardizes Ambisonics scene-based audio, object-based audio, and
+  binaural headphone-rendering metadata for streaming and broadcast delivery, giving GPU
+  Ambisonic decoders like the one in Section 8.3 a common bitstream to target instead of
+  engine-proprietary channel layouts. [Source: IAMF specification,
+  https://aomediacodec.github.io/iamf/]
+
+### Long-term
+
+- **GPU HRTF rendering likely stays at the engine layer, not the library layer.** OpenAL Soft
+  remains under active maintenance but continues to perform HRTF convolution on the CPU with no
+  public roadmap commitment to a GPU compute path; absent a new shared open-source project
+  filling that gap, GPU-accelerated binaural rendering (Section 8.2) will likely keep being
+  built per game engine rather than delivered by a common audio library.
+  [Source: OpenAL Soft repository, https://github.com/kcat/openal-soft]
+- **Deeper convergence of DSP and inference scheduling domains.** The arrival of neural
+  filter-graph nodes alongside classical FFT- and biquad-based ones in the same PipeWire graph
+  (see Near-term, above) is an early signal that real-time GPU audio pipelines will increasingly
+  need to schedule signal-processing kernels and small neural-network inference passes under one
+  latency budget; how far upstream projects take that integration — versus keeping DSP and
+  ML inference as separately scheduled stages — is not yet settled.
+  [Source: PipeWire NEWS, https://github.com/PipeWire/pipewire/blob/1.6.0/NEWS]

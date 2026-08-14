@@ -871,4 +871,27 @@ The SRT bandwidth overhead (`SRTO_OHEADBW=25` by default) must be provisioned on
 
 ---
 
+## Roadmap
+
+### Near-term (6-12 months)
+
+- **SRT hardening around key-material handling.** SRT 1.5.6 shipped as a security-focused release closing two CVEs in the KMREQ/KMRSP key-exchange path — a heap buffer overflow in KMREQ handling and an encryption state-machine downgrade — with stricter wire-length validation added to the handshake extension parsing described earlier in this chapter's encryption section. [Source](https://github.com/Haivision/srt/releases/tag/v1.5.6)
+- **WHEP nearing RFC status alongside WHIP.** WHEP (`draft-ietf-wish-whep`) is in IETF Working Group Last Call within the WISH working group, the same group that produced WHIP as RFC 9725; formal RFC publication would give the WHIP/WHEP pairing used by mediamtx and GStreamer's `rswebrtc` plugin equal standards footing on both ingest and egress. [Source](https://datatracker.ietf.org/doc/draft-ietf-wish-whep/)
+- **mediamtx adding native Media-over-QUIC.** mediamtx 1.20.0 added the ability to publish and read streams over native QUIC using the IETF MoQ Transport drafts (draft-16 and draft-17), extending the protocol-router role described in this chapter beyond RTSP/RTMP/HLS/WebRTC/SRT to a QUIC-native delivery path. [Source](https://github.com/bluenviron/mediamtx/releases/tag/v1.20.0)
+- **OBS closing gaps in the AV1-over-WHIP path.** OBS Studio 32.2.0 fixed VAAPI AV1 encoding failing when streaming via WHIP, part of continued work tightening the newer AV1 hardware-encode and WHIP-output combination described in this chapter's OBS and WHIP sections. [Source](https://github.com/obsproject/obs-studio/releases/tag/32.2.0)
+
+### Medium-term (1-3 years)
+
+- **A large SRT maintenance release in progress.** The `v1.6.0` milestone on the SRT repository tracks well over a hundred issues spanning connection-group/bonding cleanup, more reliable key-material refresh, TSBPD thread CPU-usage reduction, and expanded RTT/bandwidth statistics — a broad internals refactor rather than a single headline feature, reflecting the protocol's transition from rapid feature growth toward hardening its existing ARQ/TSBPD/bonding subsystems. [Source](https://github.com/Haivision/srt/milestone/31)
+- **MoQ transport approaching its own RFC.** The core `draft-ietf-moq-transport` specification is targeting RFC publication, with companion drafts defining a MoQT streaming format and a CMAF-compatible profile for it — the standards groundwork that lets a QUIC-native transport carry the same fMP4/CMAF media objects that LL-HLS and LL-DASH already produce. [Source](https://datatracker.ietf.org/doc/draft-ietf-moq-transport/)
+- **Congestion control beyond SRT's current live-mode ARQ.** An open, long-standing feature request asks whether SRT could adopt a BBR-style congestion controller as an alternative to its existing rate-control logic; no implementation has landed, but the discussion signals interest in more adaptive bandwidth estimation for contribution links running over highly variable WAN paths. [Source](https://github.com/Haivision/srt/issues/413)
+
+### Long-term
+
+- **Coexistence rather than replacement between SRT and QUIC-native transports.** MoQ's QUIC foundation solves head-of-line blocking and congestion control at the transport layer instead of layering ARQ over plain UDP the way SRT does, but no vendor or standards body has published a roadmap to deprecate SRT — broadcast encoders, decoders, and hardware appliances with SRT already burned into firmware have multi-year replacement cycles, so SRT and emerging QUIC-native paths are likely to run side by side for the foreseeable future rather than one displacing the other outright.
+- **NDI's Linux plugin ecosystem lagging the proprietary SDK.** The community-maintained GStreamer NDI plugin has seen little upstream commit activity for several years even as NDI's own SDK has continued its 6.x release line, a gap that follows directly from NDI's `dlopen`-at-runtime licensing model tying any open-source integration to whatever pace a third party updates the closed-source runtime. Absent a new maintainer, Linux NDI support is likely to keep trailing feature parity with NDI on Windows/macOS rather than closing that gap. [Source](https://github.com/teltek/gst-plugin-ndi)
+- **CDN-scale delivery staying HTTP-chunked for longer than contribution links.** Sub-second MoQ-based distribution is likely to appear first in specialized low-latency and interactive use cases, while chunked-CMAF LL-HLS and LL-DASH remain the default for CDN-scale mass distribution for some time yet, given how deeply HTTP caching, existing player ecosystems, and CDN edge infrastructure are entrenched around segment- and part-based delivery.
+
+---
+
 *Copyright © 2026 jreuben11. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).*

@@ -1124,3 +1124,74 @@ compute shader for the optical flow stage of frame interpolation.
 sort and other parallel primitives (§XIII in that chapter) that underpin the prefix-sum histogram
 operations in §9 and §10 of this chapter, and discusses ONNX Runtime GPU deployment patterns
 relevant to §8's super-resolution inference.
+
+## Roadmap
+
+### Near-term (6-12 months)
+
+- **VVC/H.266 decode reaching open-source pipelines, encode still absent.** FFmpeg added a
+  VA-API VVC decoder in its 8.0 release, giving the codec its first GPU-accelerated open-source
+  decode path on Linux; a corresponding open, fixed-function or Vulkan-exposed VVC *encode* path
+  has not yet landed. [Source: FFmpeg Changelog,
+  https://github.com/FFmpeg/FFmpeg/blob/master/Changelog]
+- **FFmpeg's Vulkan compute-based codec and filter surface keeps broadening.** Recent releases
+  added a `v360_vulkan` filter (relevant to §11's projection handling), Vulkan hwaccel and encode
+  paths for ProRes and DPX, "Vulkan compute codec optimizations," and Vulkan support in `swscale`
+  — extending the zero-copy Vulkan filter-graph pattern described in §12 to formats beyond
+  H.264/HEVC/AV1. [Source: FFmpeg Changelog,
+  https://github.com/FFmpeg/FFmpeg/blob/master/Changelog]
+- **ONNX Runtime GPU inference moving inside the FFmpeg filter graph.** FFmpeg's `dnn` filter
+  framework gained an ONNX Runtime backend with GPU execution-provider support, narrowing the gap
+  between the external Python/ONNX Runtime super-resolution deployment path described in §8 and an
+  in-pipeline `libavfilter` inference stage. [Source: FFmpeg Changelog,
+  https://github.com/FFmpeg/FFmpeg/blob/master/Changelog]
+- **Newer Vulkan Video extensions reaching driver and userspace adoption.**
+  `VK_KHR_video_encode_quantization_map` (per-block QP-map control, relevant to the RDOQ discussion
+  in §5) and `VK_KHR_video_maintenance1`/`VK_KHR_video_maintenance2` (encode/decode session
+  lifecycle fixes) are now ratified KHR extensions; near-term work is Mesa/proprietary driver and
+  FFmpeg/GStreamer plumbing catching up to them. [Source: Vulkan-Docs extension registry,
+  https://github.com/KhronosGroup/Vulkan-Docs/blob/main/xml/vk.xml]
+
+### Medium-term (1-3 years)
+
+- **AV2 reference software under active development.** AOMedia's next-generation successor to
+  AV1 is developed under the "AVM" (AOM Video Model) reference codebase, with Common Test
+  Conditions documents already through multiple revisions; a finalised bitstream and reference
+  encoder/decoder are the medium-term deliverable, after which the motion-estimation,
+  transform-coding, and in-loop-filter algorithms described in §2–§6 for AV1 will need AV2-specific
+  counterparts. [Source: AOMediaCodec/avm repository, https://github.com/AOMediaCodec/avm]
+- **VVC hardware and Vulkan Video support remains an open gap.** As of this writing no
+  `VK_KHR_video_encode_h266` or `VK_KHR_video_decode_h266` extension exists in the Vulkan registry,
+  and no open GPU driver exposes VVC encode; closing this gap requires both a ratified Khronos VVC
+  extension and vendor fixed-function silicon, neither of which has a committed public schedule.
+  [Source: Vulkan-Docs extension registry,
+  https://github.com/KhronosGroup/Vulkan-Docs/blob/main/xml/vk.xml]
+- **General-purpose Vulkan compute continuing to displace bespoke per-vendor kernels for
+  formats without fixed-function hardware.** The pattern already visible in FFmpeg — Vulkan compute
+  paths for ProRes, DPX, and 360° projection filters, alongside the existing AV1/HEVC/H.264 Vulkan
+  Video decode/encode extensions — suggests the shader-based algorithms in §2–§9 of this chapter
+  will keep gaining ground for codecs and processing stages that dedicated ASIC blocks do not cover,
+  without eliminating the power/latency trade-off against fixed-function hardware described in §1.
+  [Source: FFmpeg Changelog, https://github.com/FFmpeg/FFmpeg/blob/master/Changelog]
+
+### Long-term
+
+- **Neural coding tools remain an exploration track, not a shipped replacement for block-based
+  coding.** Both AV2/AVM and the ITU-T/MPEG standardisation process that produced VVC maintain
+  ongoing exploration of learned components (for example neural in-loop filters and
+  learning-assisted prediction) evaluated alongside classical DCT/ADST transforms and Wiener-style
+  filters; no major codec has committed a fully learned pipeline to a shipping standard. If such
+  tools are eventually adopted, they are likely to augment — not replace — the block-based
+  prediction/transform/quantisation/filter stack described in §3–§6 of this chapter, since encoder
+  and decoder conformance testing for a new tool is a multi-year process for these standards bodies.
+  [Source: AOMediaCodec/avm repository, https://github.com/AOMediaCodec/avm]
+- **Fixed-function video blocks are likely to remain the dominant execution path for years.**
+  Vulkan Video codec extensions have historically taken a long standardisation cycle to move from
+  provisional to ratified status (H.264/HEVC shipped first as provisional extensions, with AV1
+  decode/encode and VP9 decode following later as ratified KHR extensions), and VVC still has no
+  Vulkan extension at all. Given that cadence, GPU vendors' fixed-function blocks (AMD VCN, Intel
+  Quick Sync, NVIDIA NVENC/NVDEC) described in §1 are likely to remain the primary hardware-encode
+  path, with the general-purpose Vulkan compute shaders described throughout this chapter continuing
+  to serve as the fallback and augmentation path for unsupported codecs and custom processing rather
+  than displacing fixed-function silicon outright. [Source: Vulkan-Docs extension registry,
+  https://github.com/KhronosGroup/Vulkan-Docs/blob/main/xml/vk.xml]

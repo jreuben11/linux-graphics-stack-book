@@ -810,6 +810,27 @@ The `COMMAND_PREPROCESS_BIT_EXT` pipeline stage allows correct barrier placement
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **RADV's DGC compute-shader path continues incremental hardening.** `radv_dgc.c` remains the most mature Mesa DGC implementation and continues to receive correctness fixes to the JIT-compiled NIR preprocessing shader — for example, lowering support for loop/continue constructs inside the token-translation compute shader — as coverage of edge-case token combinations grows. [Source — Mesa 26.1.0 release notes](https://docs.mesa3d.org/relnotes/26.1.0.html)
+- **VKD3D-Proton keeps refining ExecuteIndirect batching.** Since the v3.0.1 batched-`ExecuteIndirect` system landed to cover cases the earlier split-command-list optimisation missed, the project's release cadence continues to extend coverage to more `ExecuteIndirect`-heavy titles and root-parameter update patterns. [Source — VKD3D-Proton releases](https://github.com/HansKristian-Work/vkd3d-proton/releases)
+- **D3D12 Work Graphs 1.1 mesh nodes reach preview.** Microsoft's Agility SDK preview track (1.715.0-preview and later) adds mesh-node support to D3D12 Work Graphs, letting mesh/pixel-shader graphics nodes participate directly in a work graph on AMD RDNA hardware. This is the D3D12-side precursor to whatever a future Vulkan graphics/mesh-node work-graph capability — whether via VKD3D-Proton emulation or a native extension — would need to expose. [Source — GPUOpen: Work Graphs Mesh Nodes](https://gpuopen.com/learn/work_graphs_mesh_nodes/)
+
+### Medium-term (1–3 years)
+
+- **The extension's own proposal document flags concrete, unresolved extension points.** The `VK_EXT_device_generated_commands` design rationale identifies future directions still open at ratification: new token types added via `VkIndirectCommandsTokenDataEXT`, a compute-shader equivalent to `gl_DrawID` for multi-dispatch tokens, multi-level (recursive) indirect command generation, and a dedicated indirect-command-buffer mechanism. These are the most concrete signposts for where the extension is likely to grow next. [Source — Vulkan proposal: VK_EXT_device_generated_commands](https://docs.vulkan.org/features/latest/features/proposals/VK_EXT_device_generated_commands.html)
+- **IndirectExecutionSet's overlap with Shader Binding Tables is an open design question.** The same proposal document notes "significant overlap in functionality with Shader Binding Tables," raising the possibility that a future revision could consolidate IES, SBTs, and other indirect-object mechanisms into a more unified GPU-visible object-array abstraction rather than maintaining three parallel designs. [Source — Vulkan proposal: VK_EXT_device_generated_commands](https://docs.vulkan.org/features/latest/features/proposals/VK_EXT_device_generated_commands.html)
+- **Native multi-vendor work graphs remain unratified.** As of the current Vulkan-Docs registry, `VK_AMDX_shader_enqueue` is still marked provisional and no `VK_KHR_work_graphs` extension exists. Cross-vendor GPU-driven graph scheduling on Linux is therefore likely to continue depending on DGC-plus-compute emulation, of the kind VKD3D-Proton already ships, rather than native hardware scheduling, for most of this window. [Source — Vulkan-Docs vk.xml](https://github.com/KhronosGroup/Vulkan-Docs/blob/main/xml/vk.xml)
+
+### Long-term
+
+- **D3D12's graph model keeps expanding scope ahead of Vulkan's.** Work Graphs 1.1 already reaches beyond compute-only nodes into mesh/graphics nodes on D3D12; if Khronos eventually ratifies a multi-vendor work-graphs extension, matching that scope will likely be a design requirement, but no vendor has published a committed timeline, so the gap between D3D12's graph capabilities and Vulkan's is likely to persist for some time. [Source — GPUOpen: Work Graphs Mesh Nodes](https://gpuopen.com/learn/work_graphs_mesh_nodes/)
+- **DGC's emulation role may outlive native work-graph hardware scheduling as the pragmatic default.** VKD3D-Proton's own design rationale for its barrier-plus-dispatch emulation — better debuggability, no forward-progress deadlock risk, and no occupancy loss to persistent threads — argues these properties hold independent of whether native Vulkan work-graph hardware support eventually ships; that reasoning suggests compute-driven emulation could remain competitive with native scheduling well beyond the initial standardisation gap, not just as a stopgap. [Source — VKD3D-Proton workgraphs.c](https://github.com/HansKristian-Work/vkd3d-proton/blob/master/libs/vkd3d/workgraphs.c)
+
+---
+
 ## Integrations
 
 - **Ch154 — GPU-Driven Rendering**: The indirect draw techniques in that chapter (`vkCmdDrawIndexedIndirectCount`, GPU frustum culling, GPU occlusion queries) motivate DGC. This chapter provides the mechanism that removes the remaining CPU bottleneck: per-draw pipeline switching. The GPU culling compute shader in Ch154 §4 is the producer; the DGC sequence buffer is the consumer.

@@ -3659,6 +3659,25 @@ GTK 4 releases in lock-step with GNOME: a stable even-minor release ships with e
 
 **Blueprint.** The Blueprint declarative UI compiler remains pre-1.0 (breaking changes possible) but is now distributed in the GNOME SDK and has language-server support in GNOME Builder, Workbench, and KDE Kate. No 1.0 stabilisation date has been announced. See §13.3 for the Blueprint syntax reference.
 
+## Roadmap
+
+### Near-term (6-12 months)
+
+- **Pixel-grid snapping.** GTK 4.23.1 introduced snapping of rectangle edges to the physical pixel grid, addressing the blurry borders and misaligned dividers that fractional UI scaling introduces into the `GskRenderNode` pipeline described in §2. [Source](https://blogs.gnome.org/gtk/2026/05/28/snapping/)
+- **Native SVG rendering (GtkSvg).** A pure-C SVG renderer landed in GTK 4.22, aimed at icon and symbolic-icon rendering as a `librsvg` replacement; as of early 2026 it passes 1,250 of 1,616 tests in the `resvg` conformance suite — "one tier below" browser-grade SVG engines — with complex filters and some obscure SVG features still unsupported. Full migration of icon lookups to GtkSvg is queued for a later cycle pending performance and memory validation. [Source](https://blogs.gnome.org/gtk/2026/02/25/an-update-on-svg-in-gtk/)
+- **Wayland color-management protocol.** GDK's Wayland backend (§4) already speaks an experimental build of the compositor color-management protocol, used to query a surface's preferred image description and to advertise its own colorimetry; the upstream Wayland protocol itself (`color-management-v1`) remains in the staging tier at version 2, not yet promoted to stable. [Source](https://wayland.app/protocols/color-management-v1)
+
+### Medium-term (1-3 years)
+
+- **Color-managed, HDR-aware GSK.** `GdkColorState` — introduced to represent sRGB and BT.2100-PQ (and their linearised variants) inside the renderers — is expanding toward OKLCH (for perceptually-uniform gradients) and YUV (for video) color spaces, a color-state-aware `GdkColor`/`GtkSnapshot` API surface, CSS color-state propagation down into the render-node tree, and HDR metadata carried from GStreamer video frames — the pieces an HDR-capable widget needs to composite correctly on an HDR Wayland output (Ch2, Ch3). [Source](https://blogs.gnome.org/gtk/2024/08/11/the-colors-of-gtk/)
+- **Linear compositing.** The color-management effort's stated end goal is switching GSK's internal compositing from today's gamma-encoded space to linear light — a change touching every blend and gradient node in §2.1's taxonomy — described upstream as a further-out, not-yet-scheduled step relative to the color-space and API work above it. [Source](https://blogs.gnome.org/gtk/2024/08/11/the-colors-of-gtk/)
+- **Android backend maturation.** The experimental Android GDK backend introduced in GTK 4.18 currently has no GL renderer support, so neither `GskNglRenderer` nor `GskVulkanRenderer` (§3) can target it yet; closing that gap is a prerequisite for the backend to leave experimental status. [Source](https://blogs.gnome.org/gtk/2025/02/01/whats-new-in-gtk-winter-2025-edition/)
+
+### Long-term
+
+- **GTK 5 as a leaner, Wayland/portal-first major version.** No GTK 5 branch or release date exists yet; the deprecation surface accumulating in the 4.x series previews its shape beyond what §17 already covers — removal of the legacy themed-rendering API (`gtk_render_frame()`, `gtk_render_check()`) in favour of real subwidgets, of per-widget `GtkStyleContext` provider registration in favour of display-global stylesheets only, and of non-standard CSS extensions (`@define-color`, `lighter()`/`darker()`/`shade()`/`mix()`) in favour of standard CSS custom properties and `color-mix()`. Upstream guidance is explicit that none of this needs action until an application actually begins porting to GTK 5. [Source](https://docs.gtk.org/gtk4/migrating-4to5.html)
+- **HDR output as a routine desktop capability.** Full HDR support is gated on several independently-moving pieces converging: the Wayland color-management protocol stabilising out of staging, GSK's linear-compositing and color-state work landing, and compositor/KMS-side HDR plane support (Ch2, Ch3) becoming reliable across drivers. None of these currently carries a committed date, so GTK's HDR story is likely to remain usable-but-uneven across driver and compositor combinations for a while yet.
+
 ## 18. Integrations
 
 - **Ch2 (KMS Atomic API and Overlay Planes)** — `GskSubsurfaceNode` (§4.6) drives `wl_subsurface` promotion to KMS overlay planes via `TEST_ONLY` atomic commits, the same zero-copy scanout mechanism used for video and terminal graphics.

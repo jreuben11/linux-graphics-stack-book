@@ -3256,6 +3256,29 @@ For QML-level profiling, **`qmlprofiler`** attaches to an application started wi
 
 ---
 
+## Roadmap
+
+### Near-term (6-12 months)
+
+- **`QRhi` gains GPU-driven rendering primitives.** Qt 6.12 adds `IndirectDrawBuffer` support so `QRhiCommandBuffer` can issue indirect draw calls, alongside a new `ShaderDrawParameters` feature flag applications can query to detect support for shader built-ins such as `gl_DrawID` — the building blocks for GPU-driven, instance-indexed rendering inside the scene graph and custom `QRhi` code, extending the Vulkan crash-diagnostics work already noted in §1.10. [Source](https://doc-snapshots.qt.io/qt6-6.12/whatsnew612.html)
+- **Qt Canvas Painter becomes a Qt Graphs rendering backend.** Beyond the general "fully-maintained" milestone noted in §1.10, Qt 6.12 lets Qt Canvas Painter serve as the accelerated rendering backend for Qt Graphs' 2D chart types (behind the `-feature-graphs-2d-high-performance-backend` configure flag), giving the `QRhi`-based 2D painter a concrete production consumer beyond Qt Quick items. [Source](https://doc-snapshots.qt.io/qt6-6.12/whatsnew612.html)
+- **Wayland QPA protocol coverage widening.** Qt 6.11 added server-side key-repeat handling, a preference for server-side window decorations, and experimental support for the `xx-session-management-v1` protocol to the Wayland platform plugin (§17.2); protocols introduced experimentally in a `.x` release typically graduate to default-on within the next one or two minor releases. [Source](https://doc.qt.io/qt-6/whatsnew611.html)
+- **AT-SPI accessibility coverage continues to grow.** Qt 6.11 added support for the AT-SPI Collection interface, giving assistive technology on Linux a more efficient way to retrieve accessible objects than walking the tree node-by-node; this is incremental work in the same direction as the AT-SPI bridges used by the sibling Rust GUI toolkits covered in Ch39e §8 and Ch39f. [Source](https://doc.qt.io/qt-6/whatsnew611.html)
+
+### Medium-term (1-3 years)
+
+- **Qt Bridges' "Phase 2" broadening beyond Rust and C#.** Python, Swift, and Kotlin/Java bridges remain in Early Access while the Rust and C# bridges lead in public beta (§1.10); Phase 2 — additional languages and deeper platform coverage — is declared to begin once the lead bridges mature, and The Qt Company has stated an intent to document the private QML APIs the bridges depend on, which would let the community build integrations for languages beyond the five currently listed. [Source](https://www.qt.io/blog/about-the-new-qt-bridging-technology)
+- **Native `co_await` support edging toward Qt Core.** A proof-of-concept making `QFuture` directly awaitable without a wrapper type was proposed for Qt 6.12 but had not merged as of its writing; if a variant of it lands in a subsequent release it would be Qt Core's first native (non-QCoro) coroutine integration, reducing reliance on the community QCoro library for awaiting `QFuture`, `QTimer`, and network operations. [Source](https://www.arnorehn.de/blog/2026/02/09/qfuture-c-coroutines/)
+- **C++26 reflection prototypes continuing, signal injection still unsolved.** The Qt Company's `QRangeModel` reflection demonstration (§1.8) proved out reflection-driven code generation for plain C++ aggregates using C++26's `^^`/`[: :]` operators, but the piece needed to replace moc for `QObject` signal declarations depends on WG21's P3294 token-injection proposal, which remains a C++29 candidate rather than adopted work; expect further incremental reflection prototypes in this window, not a moc-free Qt module. [Source](https://www.qt.io/blog/c26-reflection-qrangemodel)
+
+### Long-term
+
+- **`QRhi` consolidating as Qt's only GPU abstraction.** The direction set out when `QRhi` was introduced — retiring the legacy direct-OpenGL code paths across the scene graph, Qt Quick 3D, and Qt Graphs in favour of a single portable abstraction over Vulkan, Metal, Direct3D, and OpenGL/GLES — continues each release (§1.7); no Qt roadmap document commits to an end date for removing the direct-OpenGL paths entirely, but the trend since Qt 6.0 points that direction. [Source](https://www.qt.io/blog/graphics-in-qt-6.0-qrhi-qt-quick-qt-quick-3d)
+- **moc elimination stays gated on C++29.** Full replacement of the meta-object compiler by standard reflection needs both P2996 (adopted into C++26) and P3294 (still a C++29 candidate, not yet adopted by WG21 — §1.8); barring an accelerated WG21 timeline for P3294, Qt's `Q_OBJECT`/moc pipeline is likely to remain load-bearing well beyond this book's publication. [Source](https://wiki.qt.io/C++_reflection_(P2996)_and_moc)
+- **No Qt 7 in view.** As detailed in §1.10, no next major version has been announced. Qt's historical major-version cadence runs roughly seven years apart (Qt 4: 2005, Qt 5: 2012, Qt 6: 2020) and the project's current architectural energy is going into `QRhi` consolidation and Qt Bridges rather than a clean-break major release; on present evidence a Qt 7 announcement would be a departure from, not a continuation of, the pattern.
+
+---
+
 ## 30. Integrations
 
 - **Chapter 39b (GTK4 GPU Rendering)** — the companion chapter contrasting Qt's `QRhi`/scene-graph model with GTK4's `GskRenderer`; §4.4 compares Qt's meta-object/`QProperty` system with GObject.

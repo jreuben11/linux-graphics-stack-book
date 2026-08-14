@@ -404,6 +404,23 @@ All three rendering paths ultimately converge on the same Mesa Vulkan driver: ic
 
 ---
 
+## Roadmap
+
+### Near-term (6-12 months)
+- **The Rust toolkit bindings keep shipping incremental releases rather than architectural changes.** cxx-qt continues frequent point releases (v0.9.x added QML image-provider bindings and fixed silent constructor failures) and gtk4-rs continues its own regular release cadence — both narrow API-coverage gaps without changing their fundamental architecture (Rust-behind-`QObject` vs Rust-behind-`GObject`, per the §2 Rust framework comparison table). [Source](https://github.com/KDAB/cxx-qt/releases/tag/v0.9.0) [Source](https://github.com/gtk-rs/gtk4-rs)
+- **AccessKit's AT-SPI2 bridge continues incremental hardening.** The `accesskit_unix` crate that underlies libcosmic's and iced's accessibility path (§2 Accessibility table) ships regular point releases alongside the Windows and macOS backends, narrowing — but not yet closing — the accessibility-maturity gap with GTK4's native AT-SPI2 integration and Qt's Accessibility module. [Source](https://github.com/AccessKit/accesskit/releases)
+- **Wayland color management remains a staging protocol.** `color-management-v1` is still listed under "Staging" rather than stable in the wayland-protocols repository, which is the structural reason §2's Display Stack table shows GNOME and KDE Plasma with mature, shipped color management while COSMIC's Smithay implementation and elementary's Pantheon are still catching up. [Source](https://wayland.app/protocols/color-management-v1)
+
+### Medium-term (1-3 years)
+- **C++26 static reflection (P2996) is now formally part of the C++26 working draft**, giving Qt a standards-based mechanism that could eventually reduce its dependence on the `moc` code-generation step discussed in the Design Philosophy comparison (§1). Adoption inside shipping Qt tooling will lag well behind compiler support, since Qt must keep working across the range of C++ standard versions its supported compilers implement — there is no published Qt commitment to a moc-removal date. [Source](https://github.com/cplusplus/papers/issues/1668)
+- **The kernel's Rust device-model abstractions (`kernel::device`) now sit alongside `kobject`/`kref` rather than replacing them.** The in-tree `kernel::device` module wraps `struct device` — the kobject-embedding pattern described in §1 — in a Rust-safe API for driver authors, giving the kernel a fourth object-lifetime idiom (safe Rust ownership over the same `kref`-counted C struct) without altering the underlying kobject/sysfs mechanics. [Source](https://rust.docs.kernel.org/kernel/device/index.html)
+- **Portal and Wayland-protocol coverage across the four desktops keeps narrowing rather than widening.** As staging protocols such as color management graduate to stable and land in Smithay, wlroots, Mutter, and KWin, the display-stack and portal-coverage gaps that separate COSMIC and elementary from GNOME and KDE in §2's tables are the kind of gap that closes with protocol maturity rather than one that is architectural.
+
+### Long-term
+- **`kobject`'s C ABI is likely to persist as the substrate that Rust abstractions wrap rather than replace.** No kernel roadmap commits to restructuring the device model, and the sysfs/uevent ABI that userspace (udev, systemd) depends on makes a breaking redesign unlikely regardless of how much driver code eventually moves to Rust — the comparison in §1 should remain valid as a description of the kernel's own object system for the foreseeable future.
+- **The GObject/QObject architectural split — runtime introspection versus compile-time code generation — is likely to persist even if C++26 reflection reduces `moc`'s technical necessity**, because the split originates in each project's founding priorities (GNOME's multi-language binding goal versus Qt's compile-time type safety goal), not in a C++ tooling limitation that reflection alone removes.
+- **No signal points toward the four desktop environments converging on a shared toolkit or object system.** libcosmic/Rust, GTK4/GObject, Qt6+QML/`QObject`, and Pantheon/Granite represent four independent, actively maintained application-development investments; unifying them would mean rewriting one desktop's entire application ecosystem onto another's object system, a cost none of the four projects' public roadmaps suggest they are pursuing.
+
 ## Integrations
 
 - **GObject type system (Ch39c §9)**: the GObject details in §1 — `G_DEFINE_TYPE`, instance/class struct layout, signal marshalling, `GParamSpec` — are defined and exercised there; §1 here focuses on the cross-system comparison.

@@ -749,6 +749,28 @@ On NVIDIA Jetson (Orin, Xavier), the CPU and GPU share physical memory via unifi
 
 ---
 
+## Roadmap
+
+### Near-term (6-12 months)
+
+- **GTSAM factor-graph refactoring continues to absorb the pose-graph-optimiser role.** While the original OpenSLAM back-ends (G2O, TORO, HOG-Man) sit in low-activity maintenance mode, GTSAM — the factor-graph library already used alongside G2O in `rtabmap_ros` — has ongoing work unifying its IMU preintegration around Lie-group `NavState` types and consolidating its nonlinear-optimisation policy hierarchy, extending the same factor-graph formulation described in §1.3 and §5. [Source](https://github.com/borglab/gtsam)
+- **`slam_toolbox` continues incremental releases on ROS 2.** The pose-graph-based successor to `slam_gmapping` referenced in §4 and §13 is releasing regularly (2.10.0 shipped mid-2026), with open community requests — including multi-robot mapping support — tracked against the active codebase rather than the dormant particle-filter original. [Source](https://github.com/SteveMacenski/slam_toolbox)
+- **NVIDIA's Isaac ROS Visual SLAM (cuVSLAM) keeps a monthly release cadence tied to the Isaac ROS platform.** This GPU-accelerated stereo-VIO package extends the front-end GPU-offload pattern described in §12 into a full ROS 2 node, targeting Jetson-class embedded GPUs at update rates aligned with each Isaac ROS platform release. [Source](https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_visual_slam)
+- **Basalt sees stability-focused maintenance rather than new algorithmic features.** Recent commits to the VIO back-end that Monado consumes (§10) fix race conditions and null-pointer bugs in the async VIO and T265 tooling paths, consistent with a mature, feature-frozen codebase rather than active algorithm development. [Source](https://gitlab.com/VladyslavUsenko/basalt)
+
+### Medium-term (1-3 years)
+
+- **Factor-graph back-ends are consolidating around richer manifold and hybrid representations.** GTSAM's continuing work on hybrid (discrete/continuous) factor graphs and constrained nonlinear optimisation (augmented-Lagrangian policies) points toward pose-graph back-ends that handle data-association ambiguity and hard constraints natively, a capability the G2O/TORO/HOG-Man generation of optimisers covered in §5–§8 does not provide. [Source](https://github.com/borglab/gtsam/pull/2684)
+- **DMA-BUF zero-copy sensor pipelines are expanding beyond vendor-specific stacks.** NVIDIA's NITROS transport, built on the ROS 2 Type Adaptation feature (REP-2007, now Final) referenced in §13, generalises the DMA-BUF hand-off pattern shown in §11 from bespoke CUDA interop code into a reusable ROS 2 message-passing layer for Jetson-class embedded GPUs; broader non-NVIDIA adoption of the same REP-2007 mechanism for SLAM front-ends remains an open integration path. [Source](https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_nitros)
+- **Multi-robot and multi-session mapping are moving from experimental to supported.** Community-requested multi-robot SLAM support in `slam_toolbox`, alongside similar work in `rtabmap_ros`, extends the single-trajectory pose-graph model described in §5 and §13 toward fleets of robots sharing a map, a use case the original OpenSLAM optimisers were not designed for. [Source](https://github.com/SteveMacenski/slam_toolbox/issues/541)
+
+### Long-term
+
+- **The original OpenSLAM corpus is settling into a purely pedagogical and legacy role.** GMapping, TORO, FLIRTLib, and the original ORB-SLAM repositories show no commits beyond historical snapshots (2018–2022), while their algorithmic descendants (`slam_toolbox`, GTSAM, ORB-SLAM3, cuVSLAM) carry the production workload; no maintainer has proposed reviving the original repositories, so their value to readers is likely to remain as a clear, minimal-dependency reference implementation of each algorithm family rather than as deployable code. [Source](https://github.com/OpenSLAM-org/openslam_gmapping)
+- **The back-end is likely to keep migrating toward GPU-resident, differentiable optimisation.** The bimodal front-end/back-end GPU fit described in §2 and §12 — parallel front-end, CPU sparse-Cholesky back-end — is already eroding at the edges as Gaussian-splatting and neural SLAM systems (Ch114 §14.3) replace the sparse pose graph with an end-to-end differentiable scene representation; no OpenSLAM-lineage optimiser (G2O, GTSAM) currently targets GPU-native factor-graph solves as a primary design goal, so classical CPU sparse linear algebra is likely to remain the default for conventional pose-graph SLAM even as dense/neural approaches move fully onto GPU. Note: needs verification of any concrete GPU-native factor-graph solver roadmap beyond research prototypes.
+
+---
+
 ## 14. Integrations
 
 - **Chapter 25 — GPU Compute**: Vulkan compute shaders for FAST corner detection and ORB descriptor computation; CUDA sparse linear algebra for large-scale pose graph optimisation (`cuSolver`, `cuSPARSE`).

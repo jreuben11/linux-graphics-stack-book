@@ -1044,6 +1044,27 @@ groups) with no direct Vulkan equivalents as of mid-2025.
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Certifiable optimisation lands in GTSAM as an alpha module**: GTSAM's 4.3 alpha series (4.3a1, 4.3a2) introduced a new `certifiable` module implementing lifted semidefinite-programming (SDP) formulations and a Riemannian Staircase solver, with optional MOSEK integration, plus a general QCQP-to-factor-graph conversion path for building monolithic and chordal relaxations. This is the first step toward globally-optimal (rather than only locally-convergent Gauss-Newton/LM) pose-graph and rotation-averaging solves in the same library used by LIO-SAM's back-end (§8.3). [Source: GTSAM 4.3a2 release](https://github.com/borglab/gtsam/releases/tag/4.3a2)
+- **slam_toolbox continues active maintenance releases**: The 2.10.0 ("Lyrical") release and its follow-on point releases keep pace with new ROS 2 distributions (Jazzy, Kilted), including launch-file portability fixes, Windows build improvements, and map-serialisation hardening — reinforcing its position as the de-facto 2D LiDAR SLAM stack referenced in §12.4. [Source: slam_toolbox releases](https://github.com/SteveMacenski/slam_toolbox/releases)
+- **LiDAR-inertial-visual fusion succeeds pure LIO as the HKU-MARS reference line**: FAST-LIVO2 (accepted to IEEE T-RO, code released January 2025) and a follow-up resource-constrained variant extend the FAST-LIO2 lineage (§7) with direct visual fusion, while Point-LIO targets high-bandwidth, continuous-time LiDAR-inertial odometry. FAST_LIO itself has seen no functional commits since mid-2024, indicating the group's active development has moved to these successor systems. [Source: FAST-LIVO2](https://github.com/hku-mars/FAST-LIVO2); [Paper](https://arxiv.org/pdf/2408.14035); [Resource-constrained variant](https://arxiv.org/pdf/2501.13876)
+
+### Medium-term (1–3 years)
+
+- **Certifiable SLAM maturing toward mainline factor types**: If GTSAM's Riemannian Staircase and lifted-SDP work graduates from the alpha `certifiable` module into stable, documented factor types, systems built on GTSAM's iSAM2 back-end (§5, used by LIO-SAM in §8) gain an optional path to solver certificates that bound how far a converged solution can be from the global optimum — directly relevant to the loop-closure correctness concerns raised in §12.5. Note: needs verification of the eventual stable-release timeline; the module remains pre-1.0 as of the 4.3 alpha series.
+- **Foundation-model priors as an alternative to per-scene bundle adjustment in dense visual SLAM**: MASt3R-SLAM (CVPR 2025) replaces DROID-SLAM's (§11) iterative Dense Bundle Adjustment with feed-forward 3D pointmap priors from a pretrained multi-view reconstruction model, predicting geometry directly rather than solving a per-sequence optimisation problem. Community tracking of this direction (Gaussian-splatting and NeRF-based SLAM survey lists) shows continued activity even as individual reference implementations like SplaTAM and MonoGS (§11) have had little code-level movement since 2024. [Source: MASt3R-SLAM](https://github.com/rmurai0610/MASt3R-SLAM); [Awesome NeRF/3DGS SLAM tracking list](https://github.com/3D-Vision-World/awesome-NeRF-and-3DGS-SLAM)
+- **LiDAR-inertial-visual (LIV) fusion targeting embedded platforms**: The resource-constrained FAST-LIVO2 variant is explicit evidence that the LiDAR-inertial-visual approach is being pushed toward the same Jetson-class embedded hardware discussed in §14, rather than remaining a workstation-only research system — a trajectory that would put visual fusion within reach of the same platforms currently running plain FAST-LIO2. [Source: FAST-LIVO2 resource-constrained paper](https://arxiv.org/pdf/2501.13876)
+
+### Long-term
+
+- **CUDA dependence in neural/Gaussian-splatting SLAM likely persists**: As §14.3 already notes, DROID-SLAM's Dense Bundle Adjustment layer and the 3DGS differentiable rasterisers in SplaTAM/MonoGS depend on CUDA-specific primitives (warp shuffle, cooperative groups) with no direct Vulkan equivalent. Kompute, the main vendor-neutral Vulkan-compute tensor abstraction, has shipped only incremental releases and does not target differentiable rasterisation workloads, so no current project is positioned to close this gap — vendor-neutral GPU-accelerated dense/neural SLAM is likely to remain CUDA-only for the foreseeable future absent a dedicated cross-vendor effort. [Source: kompute releases](https://github.com/KomputeProject/kompute/releases)
+- **Classical submap-based LiDAR SLAM development is likely to shift toward downstream packagers**: Cartographer's (§9) own upstream repository has had no code-level commits since early 2024 despite an open-issue backlog in the low hundreds and continued deployment in production AMR fleets; with no first-party roadmap commitment to further branch-and-bound or Ceres back-end work, further feature development is more likely to come from ROS distro maintainers, downstream forks, or factor-graph-based competitors like LIO-SAM (§8) than from the original project. [Source: cartographer-project/cartographer](https://github.com/cartographer-project/cartographer)
+
+---
+
 ## 15. Integrations
 
 - **Chapter 114 (OpenCV + GPU Vision)** — §14 covers DROID-SLAM, SplaTAM, and MonoGS

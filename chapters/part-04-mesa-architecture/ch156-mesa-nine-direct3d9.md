@@ -1204,6 +1204,30 @@ The removal of Nine (and Clover for OpenCL before it) reflects a broader Mesa st
 
 ---
 
+## Roadmap
+
+Mesa Nine itself has no roadmap — it was removed from Mesa mainline in 25.2 and `wine-nine-standalone` has seen no further development since. But the D3D9-on-Linux problem Nine addressed did not disappear: DXVK inherited it, and DXVK's ongoing work shows the same architectural problems Nine solved (fixed-function emulation, constant upload cost, buffer residency) being independently re-solved on the Vulkan side.
+
+### Near-term (6–12 months)
+
+- **DXVK's D3D9 shader translator rewrite.** DXVK 3.0 replaced its legacy DXBC/SM1-3 shader translation code with a new `dxbc-spirv`-based compiler for all supported shader models, including D3D9's SM1–SM3 path that Nine's `nine_shader.c` also targeted. The stated goals — smaller generated code, fully worker-thread-offloaded compilation, and a persistent on-disk IR cache — mirror the compile-time and CPU-overhead problems Nine's eager `CreateVertexShader`/`CreatePixelShader`-time compilation was built to avoid. [Source](https://github.com/doitsujin/dxvk/releases/tag/v3.0)
+- **Fixed-function pipeline as ubershaders.** DXVK's D3D9 backend now implements the D3D8/9 fixed-function transform-and-lighting and texture-stage cascade — the same fixed-function surface `nine_ff.c` covered in this chapter — as a pair of ubershaders with optimized variants compiled in the background, replacing an approach that could stutter when new fixed-function state combinations were first encountered. [Source: DXVK pull request tracker](https://github.com/doitsujin/dxvk/pull/5192)
+- **D3D9 shader constant management rework.** DXVK reworked its D3D9 shader-constant upload path to reduce memory usage and CPU overhead, closing the gap this chapter's comparison section flagged as unverified — Nine's `nine_range`-based dirty-range tracking for `SetVertexShaderConstantF`/`SetPixelShaderConstantF` calls. [Source: DXVK pull request tracker](https://github.com/doitsujin/dxvk/pull/5686)
+- **D3D9 buffer mapping strategy changes.** DXVK changed how D3D9 vertex/index/constant buffers are placed and uploaded, moving away from placing all such buffers directly in VRAM and adding a strategy to bound memory in flight — addressing 32-bit address-space crashes in older D3D9 titles, the same problem space Nine's sub-allocated, persistently-mapped `nine_buffer_upload.c` pool targeted with a different mechanism. [Source: DXVK pull request tracker](https://github.com/doitsujin/dxvk/pull/5350)
+
+### Medium-term (1–3 years)
+
+- **DXVK as the sole actively maintained D3D9-on-Linux path.** With Nine removed from Mesa and `wine-nine-standalone` unmaintained since, DXVK is the only Direct3D-9-to-native translation layer under active development for Wine and Proton; its D3D9 backend (`src/d3d9/`) continues to absorb game-specific compatibility fixes that Nine's `nine_quirk.c` previously handled on the Gallium side. [Source: wine-nine-standalone repository](https://github.com/iXit/wine-nine-standalone)
+- **Newer Vulkan binding models reaching D3D9 workloads.** DXVK's adoption of `VK_EXT_descriptor_heap` as a default binding model on supporting drivers, alongside deprecation of the older `VK_EXT_descriptor_buffer` path introduced two releases earlier, targets GPU-bound performance regressions on some vendors' drivers — the kind of driver-level overhead that a Gallium-direct path like Nine's never incurred, now being closed from the Vulkan side instead. [Source](https://github.com/doitsujin/dxvk/releases/tag/v3.0)
+- **Gallium frontend consolidation continues elsewhere in Mesa.** Nine's removal (alongside Clover's) is part of a broader pattern: Mesa set Zink plus the NVK Vulkan driver as the default OpenGL provider on newer NVIDIA GPUs in Mesa 25.3, retiring the legacy Gallium nouveau OpenGL backend for those generations in favour of a Vulkan-translation path — the same shape of transition (Gallium-native → Vulkan-translation) that Nine's removal represents for D3D9. [Source](https://www.phoronix.com/linux/Mesa)
+
+### Long-term
+
+- **No roadmap currently proposes reviving a Gallium-native D3D translation layer.** Neither Mesa, Wine, nor Valve's public Proton materials indicate any plan to reintroduce a `pipe_context`-direct Direct3D state tracker; DXVK's Vulkan-translation model — portable across RADV, ANV, NVK, and proprietary drivers, and functional on both X11 and Wayland without Nine's DRI3/X-Present dependency — is likely to remain the permanent architecture for legacy Direct3D compatibility on Linux.
+- **The techniques persist even where the code does not.** Eager shader compilation, fine-grained constant dirty-tracking, and sub-allocated persistently-mapped buffer pools were Nine's core performance techniques; each has now been independently re-derived inside DXVK's D3D9 backend under Vulkan's very different resource model, suggesting these are durable solutions to the D3D9-on-Linux problem regardless of which lower-level API implements them.
+
+---
+
 ## Integrations
 
 - **Ch14 (Gallium3D)**: Nine is a Gallium frontend — it calls `pipe_context` and `pipe_screen` directly, the same interface used by the OpenGL, OpenCL, and Zink (Vulkan) state trackers. The `pipe_context` draw, bind, and set_* methods are Nine's primary interface to hardware.

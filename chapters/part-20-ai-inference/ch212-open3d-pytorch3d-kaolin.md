@@ -2053,3 +2053,71 @@ only officially supported option.
   and WebRTC visualisation — is built on the Filament physically-based renderer. The
   material system and IBL lighting in Open3D's visualiser are Filament's PBR pipeline
   accessed through the Open3D C++ bindings.
+
+## Roadmap
+
+### Near-term (6-12 months)
+- **Open3D SYCL backend for geometry and pipeline kernels.** Beyond the CUDA-only
+  Tensor API described in §1.1, Open3D has merged SYCL implementations of geometry
+  transforms, nearest-neighbour search, and hash-map kernels, extending GPU-accelerated
+  processing to Intel GPUs through oneAPI rather than CUDA alone.
+  [Source: Open3D pull request tracker](https://github.com/isl-org/Open3D/pull/7443)
+- **Compressed Gaussian Splat I/O (SPZ format).** Open3D has landed SPZ read/write
+  support alongside its existing PLY-based Gaussian splat handling, targeting the
+  v0.20 release and aligning point cloud I/O (§1.2) with the compressed splat formats
+  also tracked in Chapter 115's roadmap.
+  [Source: Open3D pull request tracker](https://github.com/isl-org/Open3D/pull/7520)
+- **PyG consolidation onto `pyg-lib`.** torch_geometric 2.8 deprecates the separate
+  `torch-cluster` and `torch-spline-conv` packages, folding their accelerated
+  operators into a single `pyg-lib` dependency — simplifying the install matrix
+  described in §6.5 for point-cloud GNN pipelines.
+  [Source: PyG 2.8.0 release notes](https://github.com/pyg-team/pytorch_geometric/releases/tag/2.8.0)
+- **Warp rebuildable sparse volumes under CUDA graph capture.** Warp 1.16 adds
+  in-place rebuilding of fixed-capacity NanoVDB volumes so that `warp.fem`
+  simulations with changing sparse topology (e.g. particle-in-cell fluids) can
+  replay inside a captured CUDA graph instead of reallocating and resynchronising
+  every step — relevant to the differentiable mesh/volume queries in §7.
+  [Source: Warp v1.16.0 release notes](https://github.com/NVIDIA/warp/releases/tag/v1.16.0)
+
+### Medium-term (1-3 years)
+- **Open3D ROCm/HIP port of the core GPU tensor stack.** A tracked, in-progress
+  effort aims to port the Tensor API's GPU kernels (§1.1, ICP, TSDF integration) from
+  CUDA to HIP, which would remove the "NVIDIA-only" caveat noted in §8 for at least
+  the Open3D leg of the reconstruction pipeline, even as PyTorch3D and Kaolin's CUDA
+  extensions remain unaddressed.
+  [Source: Open3D pull request tracker](https://github.com/isl-org/Open3D/pull/7509)
+- **Kaolin's Gaussian Splatting and physics submodules deepen.** Recent Kaolin
+  releases added Gaussian-to-voxelgrid conversion and extended the Simplicits
+  deformable-simulation submodule (§3, `kaolin.physics`) with collision handling,
+  continuing to blur the line between the rendering representations in §3.3 and
+  physics-based simulation on the same GPU data structures.
+  [Source: Kaolin v0.18.0 release notes](https://github.com/NVIDIAGameWorks/kaolin/releases/tag/v0.18.0)
+- **Graph-RAG and LLM-facing workflows enter torch_geometric.** PyG has added
+  synthetic QA generation and graph-retrieval examples (`txt2qa`, GRetriever) built
+  on top of its existing `Data`/GNN stack (§6.1), signalling that PyG's graph
+  abstractions are being extended toward LLM-augmented retrieval over structured
+  data, not only classification/segmentation networks like PointNet++ and DGCNN.
+  [Source: PyG 2.8.0 release notes](https://github.com/pyg-team/pytorch_geometric/releases/tag/2.8.0)
+- **Sparse-convolution ecosystem continues to consolidate.** MinkowskiEngine (§5.1)
+  has seen no significant upstream activity for an extended period and spconv's
+  (§5.3) release cadence has slowed markedly relative to torchsparse, so new point
+  cloud/voxel projects are likely to keep gravitating toward torchsparse or toward
+  framework-native sparse ops (e.g. Kaolin's own SPC `Conv3d`, §3.2) rather than
+  adopting the older, less-maintained backends.
+  [Source: MinkowskiEngine repository](https://github.com/NVIDIA/MinkowskiEngine)
+
+### Long-term
+- **Uneven cross-vendor GPU support persists.** Open3D's SYCL and prospective HIP
+  work signals a broader intent to decouple point-cloud/mesh processing from
+  CUDA-only assumptions, but PyTorch3D's and Kaolin's C++/CUDA extensions have no
+  public roadmap toward ROCm or SYCL equivalents, so — absent a change in either
+  project's stated plans — the "ROCm/AMD note" in §8 is likely to keep applying to
+  two of this chapter's three primary libraries even as Open3D itself diversifies.
+  [Source: Open3D pull request tracker](https://github.com/isl-org/Open3D/pull/7509)
+- **USD keeps absorbing more 3D ML representations.** Kaolin's USD module already
+  round-trips meshes, point clouds, voxel grids, and Gaussian splats (§3.4); as
+  training pipelines increasingly mix these representations in one scene, USD's role
+  as the interchange format bridging reconstruction (Open3D, Kaolin) and downstream
+  Omniverse/DCC tooling is likely to keep growing rather than being displaced by a
+  narrower splat-only format.
+  [Source: Kaolin USD I/O documentation](https://kaolin.readthedocs.io/en/latest/modules/kaolin.io.usd.html)

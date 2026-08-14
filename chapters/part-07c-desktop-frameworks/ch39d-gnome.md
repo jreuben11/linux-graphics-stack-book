@@ -1571,6 +1571,25 @@ GNOME follows a strict six-month release cycle: March releases (aligned with GNO
 
 **Phosh / mobile GNOME.** Phosh is the GTK/wlroots-based Wayland shell targeting phones and tablets — distinct from the Mutter-based GNOME Shell. It ships on approximately a monthly cadence; Phosh 0.56 (July 2026) added a top-bar load-meter plugin and per-application grid visibility control.
 
+## Roadmap
+
+### Near-term (6-12 months)
+
+- **Staging Wayland protocols moving toward stabilization.** GNOME 51 added Mutter support for `ext-background-effect-v1` (window blur-behind hints) and `xdg_session_management_v1` (session restore), both still staging-status protocols in `wayland-protocols`. The near-term work is less the initial landing than stabilizing Mutter's implementation against the protocols' eventual final text and getting client toolkits to adopt them, since staging protocols can still change before graduating. [Source](https://gitlab.gnome.org/GNOME/mutter/-/blob/main/NEWS)
+- **Extension lifecycle rules continuing to tighten.** GNOME 51 forbids extensions from returning a Promise (or otherwise going async) from `disable()`, closing a gap where an extension could keep running past its intended teardown point. This is one entry in an ongoing series of GNOME Shell extension API and review-guideline tightenings that followed the ESM migration completed in GNOME 45; further lifecycle and API-surface constraints are a plausible continuation of that pattern rather than a one-off fix. [Source](https://gitlab.gnome.org/GNOME/gnome-shell/-/blob/main/NEWS)
+- **Shell-adjacent UI continuing to move out of the compositor process.** GNOME 51 split the Extensions management app out of the `gnome-shell` repository into its own project. Expect the broader trend of separating optional, user-facing surfaces from the `gnome-shell`/Mutter process boundary to continue as GNOME Shell narrows toward compositor-and-overview responsibilities. [Source](https://gitlab.gnome.org/GNOME/gnome-shell/-/blob/main/NEWS)
+
+### Medium-term (1-3 years)
+
+- **GJS garbage-collector rework gating further engine upgrades.** GJS's release notes describe ongoing garbage-collector changes as work-in-progress and as a prerequisite for tracking further SpiderMonkey engine upgrades, following recent moves onto newer SpiderMonkey ESR baselines. This positions GC behavior — object lifecycle and cycle collection between GObject and JS — as the gating factor for how quickly GJS can follow upstream Firefox ESR releases going forward. [Source](https://gitlab.gnome.org/GNOME/gjs/-/blob/master/NEWS)
+- **Cogl's legacy API surface keeps narrowing.** Mutter's bundled Cogl/Clutter libraries have removed old shader entry points (`CoglProgram`/`CoglShader`) in favor of `ClutterShaderEffect`, part of a multi-release pattern of pruning legacy fixed-function-era APIs now that Cogl exists solely as Mutter's internal GPU abstraction rather than a public library. No release has committed to a timeline for finishing this pruning, but the direction — fewer, GL-modern-only code paths — has held across several cycles. [Source](https://gitlab.gnome.org/GNOME/mutter/-/blob/main/NEWS)
+- **Blueprint's continuing approach toward 1.0.** The Blueprint UI-markup compiler used across GTK4/libadwaita app tooling remains pre-1.0 and semver-versioned; its own maintenance notes describe syntax and tooling changes still landing across recent releases with no committed 1.0 date. Expect continued churn in the language surface until the project judges it stable enough to commit to a 1.0 compatibility guarantee. [Source](https://gitlab.gnome.org/GNOME/blueprint-compiler/-/blob/main/MAINTENANCE.md)
+
+### Long-term
+
+- **Cogl's status as an internal-only, shrinking API is unlikely to reverse.** Cogl and Clutter were folded into the Mutter tree specifically so they could be pared down to Mutter's own needs, and the ongoing removal of legacy rendering entry points continues that narrowing. No GNOME release has published a commitment to retire, replace, or re-publish Cogl as a standalone library — its long-run shape reads as a continuation of the current internal-only, shrinking-API trajectory rather than a scheduled milestone. [Source](https://gitlab.gnome.org/GNOME/mutter/-/blob/main/NEWS)
+- **GNOME does not publish a multi-year roadmap.** GNOME's public planning horizon is the per-cycle release itself: release.gnome.org and each release's NEWS files are the most authoritative forward-looking documents that exist, and neither GNOME Shell nor Mutter commits to work beyond the release currently in development. Claims about GNOME's direction past the next one or two six-month cycles are trajectory inferred from recent release notes, not committed plans. [Source](https://release.gnome.org/)
+
 ## 11. Integrations
 
 - **Chapter 39c (GTK4)**: The GTK4 rendering pipeline this chapter treats as a black box — `GskRenderer`, `GskVulkanRenderer`, the `GskRenderNode` tree, and libadwaita's adaptive widgets and `AdwStyleManager` — is covered end to end there. Read the two chapters together to see both the app-author's platform APIs (here) and the GPU frame path they feed (Ch39c).

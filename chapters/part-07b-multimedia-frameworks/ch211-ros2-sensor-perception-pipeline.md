@@ -1369,6 +1369,28 @@ fixed feature schedule. Themes active in the Lyrical Luth and Rolling developmen
 
 ---
 
+## Roadmap
+
+### Near-term (6-12 months)
+
+- **Isaac ROS moving off mandatory containers.** Isaac ROS 4.1 added Docker-optional development and deployment modes — a Virtual Environment path and a Bare Metal path — alongside the existing containerised workflow that §8.3's Triton/DetectNet launch sequence relies on. This lowers the barrier for teams that cannot run privileged Docker containers on production robots. [Source: Isaac ROS release notes](https://nvidia-isaac-ros.github.io/releases/index.html)
+- **Isaac ROS hardware baseline moving to Thor.** Isaac ROS 4.0 added support for Jetson AGX Thor alongside JetPack 7.0, Ubuntu 24.04, and CUDA 13.0, continuing the platform's pattern of tracking each new Jetson generation closely at GA. Pipelines built against `isaac_ros_tensor_rt` and `isaac_ros_triton` in §8.3 will need to track this CUDA/JetPack baseline when migrating from Orin-class hardware. [Source: isaac_ros_common v4.0.0 release](https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_common/releases/tag/v4.0-0)
+- **Community exploration of shared-memory and type-adapted transports.** Outside the core `image_transport`/`point_cloud_transport` maintainers, community work is prototyping REP-2007 type-adapted, shared-memory transport plugins for `sensor_msgs/Image` and `PointCloud2` payloads — the same zero-copy goal NITROS pursues on GPU memory (§8.1), applied to CPU-side intra-host transport. Whether any of this lands upstream is not yet settled. [Source: point_cloud_transport issue tracker](https://github.com/ros-perception/point_cloud_transport/issues/93)
+
+### Medium-term (1-3 years)
+
+- **Isaac ROS package surface widening beyond classic perception nodes.** Recent Isaac ROS releases have added `isaac_ros_data_tools` (rosbag/MCAP inspection and format conversion, including an MCAP-to-LeRobot converter for robot-learning datasets) and `isaac_ros_physical_ai` (bringup packages for humanoid whole-body control and teleoperation). This extends the package landscape in §8.2 from single-sensor perception graphs toward full data-collection and embodied-AI pipelines built on the same NITROS/GXF transport. [Source: Isaac ROS release notes](https://nvidia-isaac-ros.github.io/releases/index.html)
+- **rmw_zenoh maturing as a WAN-friendly alternative to DDS discovery.** Following Zenoh 1.0 integration in the Kilted release (§11), `rmw_zenoh` continues to see active upstream development, with router/session-management and QoS-compatibility work ongoing. For fleets that need cloud-edge sensor streaming without per-topic port configuration, `rmw_zenoh` is the most active alternative to UDP-multicast DDS discovery covered in §1.1. [Source: ros2/rmw_zenoh](https://github.com/ros2/rmw_zenoh)
+- **MCAP tooling consolidation.** The `mcap` project continues shipping regular releases across its CLI and per-language libraries (Python, C++, Go, Rust, Swift), keeping pace with the format's adoption as the default `rosbag2` storage backend recommended in §10.4. Expect continued indexing and query-performance work rather than wire-format changes, since MCAP's container format is intentionally stable. [Source: foxglove/mcap releases](https://github.com/foxglove/mcap/releases)
+
+### Long-term
+
+- **Perception pipelines feeding foundation/VLA models rather than only classical detectors.** Isaac ROS's `isaac_ros_physical_ai` package and its GR00T deployment workflows point toward `Detection2DArray`/`Detection3DArray`-style outputs (§5) increasingly sitting alongside raw sensor tensors consumed directly by vision-language-action foundation models, rather than being the terminal output of the perception graph. No ROS 2 core message-type change has been proposed for this yet, so `vision_msgs` is likely to remain the interchange format for symbolic detections even as foundation-model consumers grow. [Source: isaac_ros_physical_ai](https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_physical_ai)
+- **Zero-copy generalising from GPU-vendor-specific to rmw-generic.** NITROS (§8.1) and the `rosidl::Buffer` work slated for Lyrical Luth (§11) both chase the same goal — passing sensor tensors between nodes without a CPU copy — but from opposite ends: NITROS is CUDA/GXF-specific, `rosidl::Buffer` is rmw-generic. Whether these converge into one negotiated path or remain a vendor-accelerated fast path plus a portable fallback is an open architectural question with no committed resolution yet.
+- **vision_msgs stability as a feature, not stagnation.** `vision_msgs` has seen very little churn in its message definitions for several release cycles, which is consistent with its role as a stable algorithm-agnostic contract (§5.1) rather than a package under active feature development. Barring a REP formalising new detection or tracking message shapes, the taxonomy in §5.1 is likely to remain the long-term interchange format between detectors and consumers across ROS 2 distributions. [Source: ros-perception/vision_msgs](https://github.com/ros-perception/vision_msgs)
+
+---
+
 ## 12. Integrations
 
 - **Chapter 96 (libcamera and the Linux Camera Stack)**: Camera hardware pipeline, V4L2

@@ -1057,6 +1057,28 @@ The `offscreen` driver creates a framebuffer in system memory but no window. The
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Wayland HDR display metadata via color-management protocols**: Support for the general `wp_color_management_output_v1` protocol and Gamescope's `frog-color-management-v1` extension — used to query display HDR capability and tone-mapping metadata — landed in SDL's development branch. This is the foundation for correctly signalling HDR headroom to compositors that support either protocol; surface-side (per-window) color management continues to mature on top of it. [Source: Add support for wp_color_management_output_v1](https://github.com/libsdl-org/SDL/issues/16030) · [Source: Add support for frog_color_management_v1](https://github.com/libsdl-org/SDL/issues/16032)
+- **OpenXR integration in the SDL_GPU API**: SDL merged direct OpenXR session and swapchain management into `SDL_GPUDevice` creation, letting an application render VR/AR content through SDL's existing GPU abstraction (Vulkan and Direct3D12 backends) against desktop runtimes such as SteamVR and Monado. A Metal backend for OpenXR remains an open, tracked gap. [Source: GPU — OpenXR integration](https://github.com/libsdl-org/SDL/pull/14837) · [Source: gpu — Add OpenXR support for Metal backend](https://github.com/libsdl-org/SDL/issues/15253)
+- **SDL_GPU low-latency presentation controls**: A feature request to expose an opt-in low-latency frame-pacing mode — built on Vulkan's `VK_KHR_present_wait`/`VK_KHR_present_id`, the Direct3D12 frame-latency-waitable-object mechanism, and the Metal equivalent — is under active discussion with a working proof-of-concept patch and measured latency reductions. [Source: SDL_GPU — Opt-in low-latency presentation](https://github.com/libsdl-org/SDL/issues/15656)
+
+### Medium-term (1–3 years)
+
+- **OpenXR/GPU backend parity and hardening**: Coverage across all SDL_GPU backends (closing the Metal gap noted above) and continued bug-fixing of the new OpenXR integration path — several swapchain copy-size fixes have already landed since the initial merge — are expected to continue as more applications adopt the API. [Source: GPU OpenXR — Fix zero-length copy](https://github.com/libsdl-org/SDL/pull/16112)
+- **Surface-level Wayland color management for SDL_GPU swapchains**: Building on the near-term display-capability work, deeper integration between the Wayland color-management protocol family and SDL_GPU's HDR swapchain composition modes is a logical next step once display-side metadata plumbing is stable.
+- **Accumulated API cleanup toward a future SDL4 ABI break**: SDL tracks a set of naming and signature changes (callback userdata ordering, enum return types, `SDL_GetSurfaceClipRect` constness, OpenGL context-attribute handling) that are considered improvements but are deliberately deferred rather than breaking the SDL3 ABI mid-series; they accumulate against a `4.x` milestone for the next major-version bump. [Source: SDL 4.x milestone](https://github.com/libsdl-org/SDL/milestone/20)
+
+### Long-term
+
+- **WebGPU as an SDL_GPU backend target**: The SDL_GPU documentation states WebGPU as a stated future backend target alongside Vulkan, Direct3D12, and Metal. If implemented, this would let the same SDL_GPU application code run natively on Linux and target a browser's WebGPU implementation (such as Chromium's Dawn) via Emscripten without a separate rendering abstraction — directly relevant to this book's browser-engineer audience. As of current tracking, this remains an open request rather than an in-progress implementation. [Source: SDL_shader_tools — README-SDL_gpu.md](https://github.com/libsdl-org/SDL_shader_tools/blob/main/docs/README-SDL_gpu.md) · [Source: Feature Request — SDL3 GPU Backend for WebGPU Target](https://github.com/libsdl-org/SDL/issues/10768)
+- **Convergence of Wayland color-management protocols**: SDL currently supports HDR display metadata through two separate protocols — the general `wp_color_management_output_v1` family and Gamescope's compositor-specific `frog-color-management-v1` extension. Long-term, as more general-purpose Wayland compositors implement the standard protocol, the Gamescope-specific path is likely to become redundant rather than the reverse, though no compositor has committed to a firm timeline. Note: needs verification of individual compositor adoption timelines.
+- **XR as a first-class SDL rendering target beyond desktop VR**: The existing OpenXR/GPU integration is scoped to desktop and standalone headset runtimes; extending the same abstraction to cover a wider range of AR/passthrough use cases would keep SDL relevant as OpenXR itself gains new extensions, though SDL has not published a formal roadmap for this beyond the current desktop-VR integration.
+
+---
+
 ## Integrations
 
 **Chapter 39 — Qt and GTK GPU Rendering** covers SDL's counterpart toolkit libraries. Qt's `QRhi` and GTK4's `GskRenderer` provide widget-centric GPU rendering; SDL provides a lower-level integration layer for applications that manage their own UI. All three converge on the same Mesa Vulkan/OpenGL drivers and the same Wayland surface model.

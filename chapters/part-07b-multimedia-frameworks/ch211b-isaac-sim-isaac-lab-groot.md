@@ -590,6 +590,28 @@ The decision rule that follows: if the observation space is proprioceptive and t
 
 ---
 
+## Roadmap
+
+### Near-term (6–12 months)
+
+- **Isaac Lab 3.0 moving from beta to general availability.** As of this writing, Isaac Lab 3.0 ships only as beta tags (`v3.0.0-beta`, `v3.0.0-beta2`) off the `release/3.0.0-beta2` branch (§3). The repository tracks a dedicated GA milestone whose scoped work is substantially closed out already, which points to GA landing as the next tagged release rather than a distant target. [Source](https://github.com/isaac-sim/IsaacLab/milestones)
+- **Newton's point-release cadence continuing.** Newton has shipped several point releases in quick succession, with active milestones tracking further solver and integration work beyond the version this chapter cites. This is consistent with the "experimental," runtime-selectable status this chapter documents for Newton inside Isaac Sim 6.0 and Isaac Lab 3.0 (§8) rather than an imminent default-backend switch. [Source](https://github.com/newton-physics/newton/releases)
+- **`simulation_interfaces` still stabilising.** The specification's own documentation flags at least one core message type as likely to be revised before a final version, meaning the interface surface Isaac Sim's `isaacsim.ros2.sim_control` implements (§5.2) is not yet frozen. [Source](https://github.com/ros-simulation/simulation_interfaces)
+- **GR00T hardware and inference-path breadth expanding.** Recent Isaac-GR00T commits add support for additional physical robot arms and streamline the inference image path, continuing the pattern of incremental deployment-side hardening between major checkpoint releases rather than a new backbone revision. [Source](https://github.com/NVIDIA/Isaac-GR00T/commits/main)
+
+### Medium-term (1–3 years)
+
+- **Newton and MuJoCo-Warp deepening as a shared convergence point.** `mujoco_warp` — the GPU backend Newton's primary solver builds on (§8) — continues shipping frequent point releases well past the MuJoCo 3.11 baseline this chapter cites for MJX (§11), suggesting the solver convergence between Isaac Lab's Newton path and MJX-Warp will keep deepening rather than having been a one-time integration event. [Source](https://github.com/google-deepmind/mujoco_warp/releases)
+- **Newton integration friction in Isaac Lab working itself toward supported status.** Isaac Lab's issue tracker carries an ongoing stream of Newton-specific bug reports and feature proposals — USD import fidelity, Fabric transform correctness, mixed-solver spawns — which is the ordinary signature of a backend maturing from experimental toward officially supported rather than of a stalled integration. [Source](https://github.com/isaac-sim/IsaacLab/issues?q=is%3Aissue+Newton)
+- **GR00T checkpoint iteration likely to continue at a similar pace.** The N-series has progressed through several checkpoint revisions in close succession, with backbone changes at nearly every step (Eagle-2 through Cosmos-Reason2/Qwen3-VL, §9.2). Nothing in the family's public release history suggests this pace is slowing, making further backbone or action-space revisions a reasonable expectation, though without a committed date or name. [Source](https://github.com/NVIDIA/Isaac-GR00T/tags)
+
+### Long-term
+
+- **PhysX's position as Isaac Sim's default solver is not guaranteed indefinitely, but no vendor commitment sets a date.** Newton is explicitly a Linux Foundation project rather than an NVIDIA-controlled one, and its stated purpose is to generalise and eventually supersede Warp's own deprecated `warp.sim` module (§8). If Newton graduates from experimental to default status inside Isaac Sim and Isaac Lab, that would narrow the architectural gap with MJX this chapter describes in §11 — but Isaac Lab's own documentation currently declines to commit to official Newton support, so PhysX remaining the practical default for production work is the more likely near-to-medium trajectory. [Source](https://github.com/isaac-sim/IsaacLab/blob/release/3.0.0-beta2/README.md)
+- **`simulation_interfaces` standardisation path remains org-level rather than a numbered ROS REP.** The specification lives in the `ros-simulation` GitHub organisation as an evolving package rather than as an adopted, versioned ROS Enhancement Proposal. Broader multi-vendor adoption beyond Isaac Sim's own `isaacsim.ros2.sim_control` implementation (§5.2) is the plausible long-term path for a vendor-neutral simulator control surface, but no formal standards-track timeline is currently published. [Source](https://github.com/ros-simulation/simulation_interfaces)
+
+---
+
 ## Integrations
 
 **Chapter 69 (Omniverse, USD, Hydra, and RTX)** is the substrate for everything in this chapter and should be read first by anyone unfamiliar with Kit. Isaac Sim's extension loader, `.kit` experience files, and manifest format are Kit's (§9.1); its scenes are USD with Fabric/USDRT as the runtime mutation path (§9.2–9.3); its pixels come from the RTX Hydra delegate; its physics and kernel JIT are PhysX 5 and Warp (§12). Ch69 §10.2's headless-rendering discussion is the mechanism behind §7.4 of this chapter, and Ch69 §10.3's NGC container deployment is how Isaac Sim is actually shipped to cluster nodes — `ISAAC_SIM_IMAGE=nvcr.io/nvidia/isaac-sim:6.0.1 docker compose -f tools/docker/docker-compose.yml up` is the Isaac-specific incantation over that general mechanism [Source](https://github.com/isaac-sim/IsaacSim/blob/v6.0.1/tools/docker/README.md).
