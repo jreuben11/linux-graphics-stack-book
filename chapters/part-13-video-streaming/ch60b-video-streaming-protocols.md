@@ -624,6 +624,8 @@ pipe.set_state(Gst.State.PLAYING)
 
 For server-side media routing on Linux, **Pion** (Go WebRTC library) and **mediasoup** (Node.js SFU) are common choices for Selective Forwarding Units (SFUs) that relay individual participant streams to other participants without transcoding. GStreamer's `webrtcbin` can serve as both producer (capture → encode → RTP) and consumer (RTP → decode → display) in such architectures.
 
+**A real-world ingest/egress split: YouTube's in-browser "Go Live."** YouTube's own video delivery to viewers is HTTP-based — DASH/HLS-style segmented delivery, not WebRTC — but the feature that lets a creator start a live stream directly from a browser tab, with no OBS or hardware encoder, uses WebRTC (`getUserMedia` capture into an `RTCPeerConnection`) purely as the *ingest* transport from browser to YouTube's servers. Latency from browser capture to first ingest hop stays under five seconds this way. YouTube then transcodes and repackages the stream into HLS/DASH for delivery to viewers. [Source: webrtcHacks, "YouTube Does WebRTC – Here's How"](https://webrtchacks.com/youtube-does-webrtc-heres-how/) This is architecturally the same shape as the WHIP-ingest-to-HLS/DASH-egress pattern used by OvenMediaEngine and other WHIP-compliant servers (§11) — WebRTC's low-latency peer/SFU path solves the *publisher's* problem of getting media off an uncooperative home network quickly, while the *audience-facing* delivery problem, at YouTube's scale, is still better solved by cacheable, CDN-friendly HTTP segments than by a WebRTC fan-out to millions of viewers.
+
 ---
 
 ## 5. SRT: Secure Reliable Transport
