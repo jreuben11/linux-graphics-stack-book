@@ -12,6 +12,8 @@
    - [1.1 What is VLC Media Player?](#11-what-is-vlc-media-player)
    - [1.2 What is the VLC Module Bank?](#12-what-is-the-vlc-module-bank)
    - [1.3 What is libVLC?](#13-what-is-libvlc)
+   - [1.4 VLC Command-Line Usage](#14-vlc-command-line-usage)
+   - [1.5 Common Plugins by Capability](#15-common-plugins-by-capability)
 2. [Demux and Input Layer](#demux-and-input-layer)
 3. [Hardware Video Decode — VA-API Path](#hardware-video-decode--va-api-path)
 4. [Embedded Hardware Decode — V4L2 and MMAL Paths](#v4l2-hardware-decode-path)
@@ -168,6 +170,71 @@ The VLC module bank is the runtime plugin registry that underpins VLC's portabil
 ### 1.3 What is libVLC?
 
 libVLC is the stable public C library that exposes VLC's playback engine to embedding applications. It lives under `lib/` in the VLC source tree and presents three principal opaque types: `libvlc_instance_t` (the engine instance), `libvlc_media_t` (a media descriptor associating a URL with playback options), and `libvlc_media_player_t` (the active playback pipeline). Behind these types, libVLC instantiates the full internal plugin machinery — module bank scanning, hardware-decode probing, audio and video output selection — and exposes asynchronous events through `libvlc_event_manager_t`. On Linux, command-line options passed to `libvlc_new()` such as `--avcodec-hw=vaapi` or `--vout=gles2` select the hardware decode and rendering paths at the library level. The stable ABI guarantee means application code compiled against one soname continues to work as VLC upgrades its internal modules; the separation between `libvlc.so` and `libvlccore.so` enforces this boundary by keeping the public surface thin while the core remains free to evolve.
+
+### 1.4 VLC Command-Line Usage
+
+VLC is not only a GUI application — the `vlc` binary is itself a fully scriptable CLI, and every command-line flag maps directly onto a module bank configuration variable set by the `vlc_module_begin()` descriptors described above. This is why `--avcodec-hw=vaapi` and `--vout=gles2` work identically whether passed to the `vlc` binary or to `libvlc_new()`: both paths go through the same option-parsing and module-selection code.
+
+**Headless invocation** — no GUI, no window:
+
+```bash
+cvlc video.mp4                     # console VLC: shorthand for `vlc -I dummy`
+vlc -I dummy video.mp4             # equivalent, explicit form
+```
+
+`-I dummy` (or `--intf dummy`) loads the `dummy` interface plugin, which registers no window and no input handling — useful for servers, kiosks, and transcode/streaming jobs where no interactive control is needed.
+
+**Interactive text control** — the `rc` (remote-control) interface:
+
+```bash
+vlc -I rc video.mp4                # interactive console: play, pause, seek N, volume N, quit
+vlc -I rc --rc-host localhost:4212 video.mp4   # same, but listening on a TCP socket
+```
+
+`rc` is a plugin like any other decoder or output — it registers capability `"interface"` in the module bank — but instead of drawing widgets it reads line-oriented commands from stdin (or a TCP socket via `--rc-host address:port`) and dispatches them to the `input_thread_t`/`playlist_t` API. This is the mechanism behind most VLC scripting and remote-control setups that predate the HTTP interface.
+
+**Common scripting/playback flags:**
+
+| Flag | Effect |
+|---|---|
+| `--sout '#chain'` | Route output through a stream-output chain instead of local playback (§9) |
+| `--fullscreen` | Start in fullscreen |
+| `--loop` / `--repeat` | Loop the playlist / repeat the current item |
+| `--play-and-exit` | Exit the process when playback finishes, instead of idling |
+| `--avcodec-hw=vaapi` | Force VA-API hardware decode inside the `avcodec` codec module |
+| `--codec=vaapi_h264` | Force the native VA-API decoder module directly (bypasses `avcodec`'s hwaccel wrapper) |
+| `--vout=gles2` / `--vout=vdpau` | Force a specific video-output module rather than let capability scoring choose |
+| `--aout=pulse` | Force a specific audio-output module |
+| `-vvv` | Maximum verbosity — logs the scored module list as each capability is resolved (§10) |
+
+`vlc --help` dumps the base option set to a text file; `vlc -H` gives the exhaustive listing including advanced options; `vlc -p <module> --advanced --help-verbose` shows the options exposed by one specific plugin, reading directly from that plugin's `vlc_module_begin()` block. [Source: VideoLAN Wiki — VLC command-line help](https://wiki.videolan.org/VLC_command-line_help/)
+
+### 1.5 Common Plugins by Capability
+
+The module bank groups every plugin under one of a fixed set of capability strings (`"access"`, `"demux"`, `"decoder"`, `"video output"`, `"audio output"`, `"interface"`, `"stream output"`, …); the CLI options above (`--vout=`, `--aout=`, `--codec=`, `--sout=`, `--intf=`) each select from one specific capability group. The most commonly encountered plugins per group on a Linux install:
+
+| Capability | Plugin | Role |
+|---|---|---|
+| **access** (input) | `file`, `http`, `ftp`, `rtsp`, `udp`, `dvb` | Local files, network/streaming protocols, DVB tuner cards |
+| | `v4l2`, `screen`, `pulse`/`jack` | Webcams/capture cards, screen capture, audio-input capture |
+| **demux** (container) | `mp4`, `avi`, `mkv` (Matroska), `ogg`, `asf` | Container/muxed-file parsing (§2) |
+| | `ts`, `ps` (MPEG-TS/PS) | Broadcast and optical-disc container formats |
+| | `adaptive` | HLS/DASH adaptive-bitrate streaming (§2) |
+| **decoder** (codec) | `avcodec` | FFmpeg bridge — the default path for nearly all codecs |
+| | `vaapi` | Native VA-API hardware decode/encode (§3) |
+| | `dav1d` | Dedicated AV1 software decoder |
+| **video output (vout)** | `gl`, `gles2` | OpenGL / OpenGL ES renderer (§7) |
+| | `vdpau` | NVIDIA VDPAU output path |
+| | `wayland` | Native Wayland zero-copy output (§5) |
+| | `xcb` | X11 output via XCB |
+| | `drm` | Direct DRM/KMS output, no compositor (headless/kiosk) |
+| | `vulkan` | Vulkan renderer (VLC 4.0, §6) |
+| **audio output (aout)** | `alsa`, `pulse`, `pipewire`, `jack` | Linux audio backends (§8) |
+| **stream output (sout)** | `transcode`, `rtp`, `standard`, `display` | Transcode/mux/network-sink chain (§9) |
+| **interface (intf)** | `qt`, `ncurses`, `http`, `rc`, `dummy` | GUI, terminal UI, web control, CLI remote-control, headless (§1.4) |
+| **services_discovery** | `sap`, `upnp`, `mtp` | Network stream/media-server discovery |
+
+As with everything in the module bank, availability is conditional: `vaapi`/`vdpau`/`wayland`/`drm` are only registered if their underlying `.so` links successfully against the required system library, so `vlc -vvv` (§10) is the fastest way to confirm which of these actually loaded on a given machine.
 
 ---
 

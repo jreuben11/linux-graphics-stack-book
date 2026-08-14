@@ -53,15 +53,20 @@
 11. [The Request API In Depth](#11-the-request-api-in-depth)
     - [Allocation, Queuing, and Polling](#111-allocation-queuing-and-polling)
     - [Synchronisation: Fences vs. Request API](#112-synchronisation-fences-vs-request-api)
-12. [GStreamer V4L2 Elements](#12-gstreamer-v4l2-elements)
-    - [v4l2src, v4l2sink, v4l2convert](#121-v4l2src-v4l2sink-v4l2convert)
-    - [Zero-Copy DMA-BUF Pipeline](#122-zero-copy-dma-buf-pipeline)
-13. [Raspberry Pi CSI Pipeline](#13-raspberry-pi-csi-pipeline)
-    - [Pi 4: bcm2835-unicam and the VC4 ISP](#131-pi-4-bcm2835-unicam-and-the-vc4-isp)
-    - [Pi 5: rp1-cfe and the PiSP Back End](#132-pi-5-rp1-cfe-and-the-pisp-back-end)
-    - [libcamera Pipeline Handlers for Raspberry Pi](#133-libcamera-pipeline-handlers-for-raspberry-pi)
-14. [Integrations](#14-integrations)
-15. [References](#15-references)
+12. [V4L2 and Vulkan Video: Codec-Parameter Convergence](#12-v4l2-and-vulkan-video-codec-parameter-convergence)
+    - [Independent Convergence: Two APIs Mirroring One Spec](#121-independent-convergence-two-apis-mirroring-one-spec)
+    - [Struct-Level Comparison: H.264 SPS/PPS](#122-struct-level-comparison-h264-spspps)
+    - [GStreamer's Shared Parsing Layer](#123-gstreamers-shared-parsing-layer)
+    - [Rockchip rkvdec2: A Deliberate Convergence Case](#124-rockchip-rkvdec2-a-deliberate-convergence-case)
+13. [GStreamer V4L2 Elements](#13-gstreamer-v4l2-elements)
+    - [v4l2src, v4l2sink, v4l2convert](#131-v4l2src-v4l2sink-v4l2convert)
+    - [Zero-Copy DMA-BUF Pipeline](#132-zero-copy-dma-buf-pipeline)
+14. [Raspberry Pi CSI Pipeline](#14-raspberry-pi-csi-pipeline)
+    - [Pi 4: bcm2835-unicam and the VC4 ISP](#141-pi-4-bcm2835-unicam-and-the-vc4-isp)
+    - [Pi 5: rp1-cfe and the PiSP Back End](#142-pi-5-rp1-cfe-and-the-pisp-back-end)
+    - [libcamera Pipeline Handlers for Raspberry Pi](#143-libcamera-pipeline-handlers-for-raspberry-pi)
+15. [Integrations](#15-integrations)
+16. [References](#16-references)
 
 ---
 
@@ -770,9 +775,80 @@ Note: Some downstream kernels (Android, automotive SoC vendors) carry variants o
 
 ---
 
-## 12. GStreamer V4L2 Elements
+## 12. V4L2 and Vulkan Video: Codec-Parameter Convergence
 
-### 12.1 v4l2src, v4l2sink, v4l2convert
+The Request API (Section 11) exposes hardware codec parsing as a sequence of per-frame V4L2 controls carrying SPS/PPS/slice metadata. Khronos's Vulkan Video decode/encode extensions expose the *same class* of hardware VPU block through a different API surface — Vulkan queue operations parameterised by "Std" structs carrying the identical class of bitstream metadata. Neither project describes the other as a replacement target; the overlap is scoped entirely to this parameter-passing layer, not to V4L2's camera/ISP/media-controller functionality. What follows is the current, sourced state of that overlap — where it is genuinely coordinated, and where it is coincidental.
+
+### 12.1 Independent Convergence: Two APIs Mirroring One Spec
+
+V4L2's stateless H.264 controls and Vulkan Video's H.264 "Std" structs both carry the syntax elements of the same ITU-T H.264 specification, but neither header cites the other as a design reference. The kernel's own doc comment for the stateless controls states the struct "match[es] the sequence parameter set syntax as specified by the H264 specification" [Source](https://github.com/torvalds/linux/blob/master/include/uapi/linux/v4l2-controls.h) — a statement about spec conformance, not API interoperability. Khronos's header is, likewise, "generated from the Khronos Vulkan XML API Registry" against the same spec tables [Source](https://github.com/KhronosGroup/Vulkan-Headers/blob/main/include/vk_video/vulkan_video_codec_h264std.h). V4L2's stateless uAPI stabilised in Linux 5.11 (February 2021); Vulkan Video's provisional extensions were announced two months later, in April 2021 — the timing rules out either one copying a finished design from the other, though it doesn't rule out awareness during concurrent development.
+
+The practical upshot: **the resemblance is spec-derived, not coordinated**, for the original H.264/HEVC baseline structs. This matters for anyone hoping to write a single translation shim — as the struct comparison below shows, several fields that share a name and a spec origin are not wire-compatible.
+
+### 12.2 Struct-Level Comparison: H.264 SPS/PPS
+
+The two structs below both encode the H.264 sequence parameter set, but diverge in representation for several fields:
+
+```c
+/* V4L2: include/uapi/linux/v4l2-controls.h */
+struct v4l2_ctrl_h264_sps {
+    __u8  profile_idc;
+    __u8  constraint_set_flags;   /* single packed byte */
+    __u8  level_idc;              /* raw bitstream value, e.g. 40 for level 4.0 */
+    __u8  seq_parameter_set_id;
+    __u8  chroma_format_idc;
+    __u8  bit_depth_luma_minus8;
+    __u8  bit_depth_chroma_minus8;
+    __s32 offset_for_ref_frame[255]; /* inline fixed array */
+    __u16 pic_width_in_mbs_minus1;
+    __u16 pic_height_in_map_units_minus1;
+    __u32 flags;
+    /* no frame-cropping fields */
+};
+```
+[Source](https://github.com/torvalds/linux/blob/master/include/uapi/linux/v4l2-controls.h)
+
+```c
+/* Vulkan Video: vk_video/vulkan_video_codec_h264std.h */
+typedef struct StdVideoH264SequenceParameterSet {
+    StdVideoH264ProfileIdc      profile_idc;       /* raw bitstream values: 66/77/100/... */
+    StdVideoH264LevelIdc        level_idc;          /* normalised enum: LEVEL_IDC_4_0 = 10, not 40 */
+    uint8_t                     seq_parameter_set_id;
+    StdVideoH264ChromaFormatIdc chroma_format_idc;
+    uint8_t                     bit_depth_luma_minus8;
+    uint8_t                     bit_depth_chroma_minus8;
+    const int32_t*              pOffsetForRefFrame; /* pointer, caller-owned storage */
+    uint32_t                    frame_crop_left_offset;
+    uint32_t                    frame_crop_right_offset;
+    uint32_t                    frame_crop_top_offset;
+    uint32_t                    frame_crop_bottom_offset;
+    StdVideoH264SpsFlags         flags;              /* constraint_set0_flag .. constraint_set5_flag as separate bits */
+} StdVideoH264SequenceParameterSet;
+```
+[Source](https://github.com/KhronosGroup/Vulkan-Headers/blob/main/include/vk_video/vulkan_video_codec_h264std.h)
+
+`profile_idc` is wire-compatible — both carry the raw H.264 bitstream value. `level_idc` is not: V4L2 stores the raw bitstream byte (level 4.0 → `40`), while Vulkan's `StdVideoH264LevelIdc` is a sequential enum (level 4.0 → `LEVEL_IDC_4_0 = 10`), requiring a lookup table to convert. `constraint_set_flags` is a packed byte in V4L2 versus six discrete bit-fields in Vulkan's `StdVideoH264SpsFlags`. Vulkan's SPS carries frame-cropping fields inline; V4L2 has none — cropping is queried separately via `VIDIOC_G_SELECTION`. Reference-picture bookkeeping differs at a deeper level too: V4L2's `v4l2_h264_dpb_entry` identifies a reference picture by `reference_ts`, a V4L2 buffer timestamp, while Vulkan Video identifies references by an integer reference-slot index into a bound DPB image array. A translation layer between the two APIs is therefore straightforward field-by-field for most parameters, but requires explicit conversion tables and a timestamp-to-slot-index mapping — it is not a memcpy.
+
+### 12.3 GStreamer's Shared Parsing Layer
+
+The most concrete unification that exists today lives one layer up the stack, in GStreamer's `gstcodecparsers` library, not in the kernel or the Vulkan headers. GStreamer's `GstH264Decoder` base class (`gst-libs/gst/codecs/gsth264decoder.h`) parses NAL units, SPS, PPS, and slice headers exactly once via `GstH264NalParser`, producing `GstH264SPS`/`GstH264PPS` structs. [Source](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/main/subprojects/gst-plugins-bad/gst-libs/gst/codecs/gsth264decoder.h) Two independent subclasses then translate that single parse into their respective target APIs:
+
+- `gstv4l2codech264dec.c`'s `gst_v4l2_codec_h264_dec_fill_pps()` builds a `struct v4l2_ctrl_h264_pps` field-by-field from the shared `GstH264PPS *pps`. [Source](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/main/subprojects/gst-plugins-bad/sys/v4l2codecs/gstv4l2codech264dec.c)
+- `vkh264dec.c`'s `_fill_pps()` builds a `StdVideoH264PictureParameterSet` from the *same* `GstH264PPS *pps` — reading `pps->transform_8x8_mode_flag`, `pps->pic_scaling_matrix_present_flag`, `pps->weighted_bipred_idc`, `pps->pic_init_qp_minus26`, the identical fields the V4L2 plugin reads. [Source](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/main/subprojects/gst-plugins-bad/ext/vulkan/vkh264dec.c)
+
+Parsing happens once; the divergence between V4L2 and Vulkan Video is fully contained in each plugin's own `_fill_*()` translation function. This is the practical shape a "common userspace parsing layer" takes today — not a new cross-API standard, but reuse of an existing bitstream parser by two independent target-API backends within one project.
+
+### 12.4 Rockchip rkvdec2: A Deliberate Convergence Case
+
+Unlike the H.264 baseline structs (Section 12.1), one specific, recent case shows explicit cross-API awareness at design time. Rockchip's rkvdec2 driver (RK3588/RK3576, merged into mainline via commits `8a5586d4ffb1` and `fa057051` — `media: uapi: HEVC: Add v4l2_ctrl_hevc_ext_sps_[ls]t_rps controls`, authored by Detlev Casanova of Collabora) adds new HEVC extended short/long-term reference-picture-set controls whose commit message states directly: "These \[new] controls are similar as what is passed in the Vulkan Video API with the `StdVideoH265ShortTermRefPicSet` and `StdVideoH265LongTermRefPicsSps` structures embedded in the SPS struct." [Source](https://github.com/torvalds/linux/commit/8a5586d4ffb10751b869a02d757482fe0b3739f3) The resulting controls (`V4L2_CID_STATELESS_HEVC_EXT_SPS_ST_RPS`/`_LT_RPS`, `struct v4l2_ctrl_hevc_ext_sps_st_rps`/`_lt_rps`) are in `include/uapi/linux/v4l2-controls.h` and consumed by `drivers/media/platform/rockchip/rkvdec/rkvdec-vdpu381-hevc.c` and `rkvdec-vdpu383-hevc.c`. [Source](https://github.com/torvalds/linux/blob/master/include/uapi/linux/v4l2-controls.h) Collabora's own account of the merge states a design goal of "compatibility with the Vulkan Video Decode API" with data structures that "closely mirror Vulkan's HEVC reference picture descriptions" [Source](https://www.collabora.com/news-and-blog/news-and-events/rk3588-and-rk3576-video-decoders-support-merged-in-the-upstream-linux-kernel.html) — company commentary, worth reading as advocacy for the approach rather than an independent confirmation, but consistent with the commit's own wording.
+
+This is narrowly scoped: it covers only the new HEVC extended RPS controls on rkvdec2, not a general V4L2/Vulkan Video unification, and it is a single vendor driver's uAPI design choice rather than a kernel-wide or Khronos-endorsed convergence plan. It is nonetheless the clearest evidence to date that the "long-term unification" this chapter's Roadmap anticipates (Section "Long-term") is beginning at the margins — new controls, not a rewrite of the existing H.264/AVC baseline covered in Section 10.
+
+---
+
+## 13. GStreamer V4L2 Elements
+
+### 13.1 v4l2src, v4l2sink, v4l2convert
 
 GStreamer's `gst-plugins-good` provides `v4l2src` (capture), `v4l2sink` (output/display), and `v4l2video0convert` (M2M format/scale conversion). `gst-plugins-bad` provides codec-specific M2M elements: `v4l2h264dec`, `v4l2h264enc`, `v4l2hevcenc`, etc.
 
@@ -783,7 +859,7 @@ Key `v4l2src` properties:
 
 The `io-mode=dmabuf` property causes `v4l2src` to call `VIDIOC_EXPBUF` on its MMAP buffers and advertise them downstream with `memory:DMABuf` caps. [Source](https://gstreamer.freedesktop.org/documentation/video4linux2/v4l2src.html)
 
-### 12.2 Zero-Copy DMA-BUF Pipeline
+### 13.2 Zero-Copy DMA-BUF Pipeline
 
 A complete zero-copy encode pipeline using V4L2 M2M:
 
@@ -832,11 +908,11 @@ gst-launch-1.0 \
 
 ---
 
-## 13. Raspberry Pi CSI Pipeline
+## 14. Raspberry Pi CSI Pipeline
 
 The Raspberry Pi family provides the most complete open-source reference for the full V4L2/libcamera/ISP pipeline, with all components in mainline Linux and the libcamera project.
 
-### 13.1 Pi 4: bcm2835-unicam and the VC4 ISP
+### 14.1 Pi 4: bcm2835-unicam and the VC4 ISP
 
 On the Raspberry Pi 4 (BCM2835 SoC):
 
@@ -851,7 +927,7 @@ The Pi 4 pipeline with libcamera:
                               raw /dev/video0              /dev/video13
 ```
 
-### 13.2 Pi 5: rp1-cfe and the PiSP Back End
+### 14.2 Pi 5: rp1-cfe and the PiSP Back End
 
 The Raspberry Pi 5 uses the RP1 south bridge chip, which contains the PiSP (Raspberry Pi Image Signal Processor), a two-stage ISP:
 
@@ -890,7 +966,7 @@ The complete Pi 5 pipeline:
 
 libcamera manages this entire chain: it configures the rp1-cfe links via `MEDIA_IOC_SETUP_LINK`, negotiates formats on each subdev pad, feeds `fe-config` from the IPA, routes `fe-stats` to the IPA for 3A computation, and drives the PiSP back-end M2M queue. [Source](https://gitlab.freedesktop.org/libcamera/libcamera/-/blob/main/src/libcamera/pipeline/rpi/pisp/pisp.cpp)
 
-### 13.3 libcamera Pipeline Handlers for Raspberry Pi
+### 14.3 libcamera Pipeline Handlers for Raspberry Pi
 
 The Pi-specific libcamera code lives in `src/libcamera/pipeline/rpi/`. A common base layer in `src/libcamera/pipeline/rpi/common/pipeline_base.cpp` handles shared RPi logic; `vc4/vc4.cpp` and `pisp/pisp.cpp` add SoC-specific ISP driving. The IPA interface uses the Mojo IDL at `include/libcamera/ipa/raspberrypi.mojom`.
 
@@ -911,7 +987,7 @@ DMA-BUF chain from sensor to display: libcamera's `FrameBuffer` objects are back
 
 ---
 
-## 14. Integrations
+## 15. Integrations
 
 **Chapter 26 (Hardware Video: VA-API, V4L2, GStreamer):** Chapter 26 surveys VA-API alongside V4L2 at an API overview level. The two subsystems share the DMABUF fd as the zero-copy interop primitive. VA-API surfaces are exported as DMABUF fds via `vaExportSurfaceHandle(dpy, surface, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, ...)`. V4L2 surfaces are exported via `VIDIOC_EXPBUF`. Both fds can be imported into the same `eglCreateImageKHR(EGL_LINUX_DMA_BUF_EXT)` call (Section 9.1). A hardware decode pipeline can combine the two: a V4L2 stateless decoder (Ch142) produces NV12 DMABUF frames that a VA-API post-processor (Ch26) ingests for deinterlacing or colour conversion without crossing a CPU boundary.
 
@@ -933,7 +1009,7 @@ DMA-BUF chain from sensor to display: libcamera's `FrameBuffer` objects are back
 
 ---
 
-## 15. References
+## 16. References
 
 - [V4L2 API Reference](https://docs.kernel.org/userspace-api/media/v4l/) — Primary UAPI documentation
 - [Media Controller Core API](https://docs.kernel.org/driver-api/media/mc-core.html) — Entity, pad, link model
@@ -948,6 +1024,9 @@ DMA-BUF chain from sensor to display: libcamera's `FrameBuffer` objects are back
 - [GStreamer V4L2 elements](https://gstreamer.freedesktop.org/documentation/video4linux2/) — v4l2src, v4l2sink, io-mode documentation
 - [EGL_EXT_image_dma_buf_import_modifiers](https://registry.khronos.org/EGL/extensions/EXT/EGL_EXT_image_dma_buf_import_modifiers.txt) — DRM format modifier support for EGL image import
 - [VK_EXT_external_memory_dma_buf](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_EXT_external_memory_dma_buf.html) — Vulkan DMABUF import extension
+- [vulkan_video_codec_h264std.h](https://github.com/KhronosGroup/Vulkan-Headers/blob/main/include/vk_video/vulkan_video_codec_h264std.h) — Khronos Vulkan Video H.264 "Std" parameter structs
+- [rkvdec2 HEVC extended RPS controls commit](https://github.com/torvalds/linux/commit/8a5586d4ffb10751b869a02d757482fe0b3739f3) — `media: uapi: HEVC: Add v4l2_ctrl_hevc_ext_sps_[ls]t_rps controls`
+- [GStreamer GstH264Decoder base class](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/main/subprojects/gst-plugins-bad/gst-libs/gst/codecs/gsth264decoder.h) — shared H.264 bitstream parser consumed by v4l2codecs and Vulkan video decode elements
 
 ## Roadmap
 
@@ -966,7 +1045,7 @@ DMA-BUF chain from sensor to display: libcamera's `FrameBuffer` objects are back
 ### Long-term
 - The media controller topology model may be extended to express compute and ML inference nodes (ISP-attached NPUs on automotive SoCs) as first-class media entities, enabling pipeline graphs that mix capture, ISP, and on-chip inference without leaving the V4L2/media controller programming model.
 - MIPI CSI-3 and next-generation camera serialiser standards (GMSL3, FPD-Link IV) will require corresponding kernel driver infrastructure; the V4L2 async notifier and subdev routing models are the designated extension points, but multi-hop serialiser topologies may require new link type extensions to the media controller graph.
-- Long-term unification of V4L2 stateless codec controls with Vulkan Video decode parameters (which carry structurally identical SPS/PPS/slice metadata) could enable a common userspace parsing layer that feeds either V4L2 or Vulkan Video hardware paths without codec-level duplication.
+- Long-term unification of V4L2 stateless codec controls with Vulkan Video decode parameters remains mostly aspirational for the H.264/AVC baseline (Section 12.1–12.2), where the two struct sets independently mirror the same ITU-T spec rather than each other and are not wire-compatible. Rockchip's rkvdec2 HEVC extended-RPS controls (Section 12.4) are the first concrete case of deliberate cross-API struct design; whether that pattern spreads to other codecs and vendors, or whether GStreamer's shared-parser approach (Section 12.3) remains the primary practical convergence point, should be re-assessed as more drivers land.
 
 ---
 

@@ -18,11 +18,12 @@
 4. [mediasoup: Node.js SFU with C++ Worker](#mediasoup-nodejs-sfu-with-c-worker)
 5. [LiveKit: Go-Based SFU with Rooms and Tracks](#livekit-go-based-sfu-with-rooms-and-tracks)
 6. [Pion: Building a Custom SFU in Go](#pion-building-a-custom-sfu-in-go)
-7. [WHIP and WHEP: HTTP-Based WebRTC Signalling](#whip-and-whep-http-based-webrtc-signalling)
-8. [SFU Internals: Simulcast, SVC, and Bandwidth Estimation](#sfu-internals-simulcast-svc-and-bandwidth-estimation)
-9. [Recording Pipelines](#recording-pipelines)
-10. [Linux Deployment and Operations](#linux-deployment-and-operations)
-11. [Integrations](#integrations)
+7. [Kurento Media Server: GStreamer-Based Media Processing](#kurento-media-server-gstreamer-based-media-processing)
+8. [WHIP and WHEP: HTTP-Based WebRTC Signalling](#whip-and-whep-http-based-webrtc-signalling)
+9. [SFU Internals: Simulcast, SVC, and Bandwidth Estimation](#sfu-internals-simulcast-svc-and-bandwidth-estimation)
+10. [Recording Pipelines](#recording-pipelines)
+11. [Linux Deployment and Operations](#linux-deployment-and-operations)
+12. [Integrations](#integrations)
 
 ---
 
@@ -65,7 +66,7 @@ SFUs terminate ICE and DTLS-SRTP on behalf of each connected endpoint. They rece
 
 WHIP (WebRTC-HTTP Ingest Protocol) and WHEP (WebRTC-HTTP Egress Protocol) are IETF-standardised protocols that use HTTP to carry the SDP exchange required to establish a WebRTC media session, eliminating the need for application-specific WebSocket signalling channels. WHIP defines a single HTTP POST from an encoder or publisher to an ingest URL carrying an SDP offer body; the server responds with status 201 and an SDP answer, plus a `Location` header pointing to a session resource URL for subsequent lifecycle operations such as ICE restart or session teardown. WHEP mirrors this pattern for the egress direction, allowing a playback client to subscribe to a stream through a single HTTP POST without implementing any SFU-specific signalling protocol.
 
-The primary motivation for WHIP and WHEP is interoperability at the ingest boundary. Hardware video encoders, software broadcast tools such as OBS Studio and GStreamer's `whipsink` element, and CDN ingest endpoints can implement a single HTTP-based protocol and connect to any WHIP-compliant SFU rather than maintaining separate integrations for each vendor's WebSocket API. WHIP and WHEP standardise only the SDP transport mechanism; the underlying media plane remains standard WebRTC — ICE, DTLS-SRTP, RTP/RTCP — negotiated through the exchanged SDP. On the Linux stack, GStreamer pipelines using `whipsrc` and `whipsink` are the primary tool for building broadcast-to-WebRTC ingest workflows that terminate at SFU infrastructure. Section 7 covers the WHIP and WHEP specifications and their Linux integration in depth.
+The primary motivation for WHIP and WHEP is interoperability at the ingest boundary. Hardware video encoders, software broadcast tools such as OBS Studio and GStreamer's `whipsink` element, and CDN ingest endpoints can implement a single HTTP-based protocol and connect to any WHIP-compliant SFU rather than maintaining separate integrations for each vendor's WebSocket API. WHIP and WHEP standardise only the SDP transport mechanism; the underlying media plane remains standard WebRTC — ICE, DTLS-SRTP, RTP/RTCP — negotiated through the exchanged SDP. On the Linux stack, GStreamer pipelines using `whipsrc` and `whipsink` are the primary tool for building broadcast-to-WebRTC ingest workflows that terminate at SFU infrastructure. Section 8 covers the WHIP and WHEP specifications and their Linux integration in depth.
 
 ---
 
@@ -644,6 +645,69 @@ Go's goroutine scheduler makes per-connection concurrency cheap: a server handli
 
 ---
 
+## Kurento Media Server: GStreamer-Based Media Processing
+
+[Kurento Media Server](https://github.com/Kurento/kurento) (KMS) is architecturally distinct from every server covered so far in this chapter. Janus, mediasoup, LiveKit, and Pion are all **SFUs**: they terminate ICE/DTLS-SRTP, inspect RTP headers for SSRC-based routing, and forward encrypted packets without decoding media content. Kurento is built directly on GStreamer and can actually touch decoded pixels and audio samples — it supports real transcoding, server-side mixing/composition (MCU-style), and computer-vision filters, at the cost of the CPU load that decoding implies. [Source: Kurento README](https://github.com/Kurento/kurento)
+
+### Architecture: MediaPipeline, MediaElements, and Filters
+
+A Kurento application builds a **`MediaPipeline`** — a container for a directed graph of **`MediaElement`** nodes — then connects elements together. `WebRtcEndpoint` performs the full ICE/DTLS/SRTP handshake with a browser; `PlayerEndpoint` and `RecorderEndpoint` read from and write to files or streams; filter elements sit between endpoints and operate on the decoded media. The codebase is split into `kms-core` (pipeline/element machinery), `kms-elements` (`WebRtcEndpoint`, `PlayerEndpoint`, `RecorderEndpoint`), and `kms-filters` (`FaceOverlayFilter`, `ZBarFilter` for barcode/QR detection, and `GStreamerFilter`, a generic escape hatch that injects one arbitrary GStreamer element into the pipeline). [Source: Kurento API docs](https://doc-kurento.readthedocs.io/en/latest/features/kurento_api.html) [Source: Kurento Modules docs](https://doc-kurento.readthedocs.io/en/latest/features/kurento_modules.html)
+
+```
+Browser A ──WebRtcEndpoint──┐
+                             ├──> FaceOverlayFilter ──> RecorderEndpoint (→ file)
+Browser B ──WebRtcEndpoint──┘         │
+                                       └──> WebRtcEndpoint ──> Browser C
+```
+
+Because elements sit on real GStreamer bins, the same pipeline can transcode between any codecs GStreamer supports — VP8, H.264, H.263, AMR, Opus, Speex, G.711 — something none of the pure SFUs in this chapter do; Janus, mediasoup, LiveKit, and Pion all require codec-compatible endpoints or a separate transcoding hop. [Source: Kurento README](https://github.com/Kurento/kurento)
+
+### Kurento Protocol: JSON-RPC over WebSocket
+
+Applications control KMS over the **Kurento Protocol**, JSON-RPC 2.0 messages sent over a WebSocket, chosen specifically because pipeline construction needs full-duplex client↔server messaging (server-initiated events like ICE candidates or `EndOfStream` need to reach the client without polling). A client-originated ping/server pong pair keeps the socket alive. [Source: Kurento Protocol docs](https://doc-kurento.readthedocs.io/en/latest/features/kurento_protocol.html) The `kurento-client` libraries (Java and JavaScript/Node.js) wrap this transport with a create/connect/release object model:
+
+```javascript
+// Node.js: build a pipeline that overlays a face filter and echoes back to the browser
+const kurentoClient = require('kurento-client');
+
+const kurento = await kurentoClient('ws://localhost:8888/kurento');
+const pipeline = await kurento.create('MediaPipeline');
+
+const webRtcEndpoint = await pipeline.create('WebRtcEndpoint');
+const faceOverlay    = await pipeline.create('FaceOverlayFilter');
+
+await webRtcEndpoint.connect(faceOverlay);
+await faceOverlay.connect(webRtcEndpoint);   // loop back to the same browser
+
+// standard WebRTC SDP offer/answer exchange over the JSON-RPC socket
+const sdpAnswer = await webRtcEndpoint.processOffer(sdpOffer);
+await webRtcEndpoint.gatherCandidates();
+```
+
+[Source: Kurento Client JS docs](https://doc-kurento-jsonrpc.readthedocs.io/en/latest/client-js.html)
+
+### Linux Deployment
+
+The officially supported platform is Ubuntu 24.04 (noble), 64-bit, with an official Docker image as the recommended quick start:
+
+```bash
+docker run --name kms -p 8888:8888 kurento/kurento-media-server:7.3.0
+```
+
+[Source: Kurento Installation Guide](https://doc-kurento.readthedocs.io/en/latest/user/installation.html)
+
+### Maintenance Status
+
+Kurento's history creates a persistent — and, as of 2026, outdated — impression that the project is dead. Twilio acquired Kurento's proprietary media-processing technology in 2016 but stated at the time that the open-source project itself would continue under Naevatec (the Madrid-based company that has offered commercial Kurento support since 2012) and Universidad Rey Juan Carlos, its academic origin. [Source: Twilio press release](https://www.twilio.com/en-us/press/releases/twilio-to-acquire-kurento-webrtc-media-server-technology) The individual per-component GitHub repositories (`kurento-media-server`, `kurento-docker`, etc.) were archived in 2023 — but only because their contents were consolidated into a single monorepo, `github.com/Kurento/kurento`, which is not archived and shows commits into April 2026, with release 7.3.0 (25 November 2025) adding AV1 and H.265 codec support. [Source: Kurento/kurento repository](https://github.com/Kurento/kurento) [Source: 7.3 Release Notes](https://doc-kurento.readthedocs.io/en/latest/project/relnotes/7.3.html)
+
+What likely fuels the "Kurento is dead" perception: OpenVidu, a prominent platform built on top of Kurento, migrated its SFU engine away to mediasoup starting at OpenVidu 2.19 (citing up to 5x more concurrent streams and faster connection setup on the same hardware), and OpenVidu 3 subsequently adopted LiveKit. [Source: OpenVidu mediasoup migration](https://openvidu.medium.com/a-new-era-for-openvidu-better-perfomance-and-media-quality-with-mediasoup-24d46a9eb10d) That is a downstream product's architectural decision, not evidence that upstream Kurento itself stopped being maintained.
+
+### When to Reach for Kurento
+
+Kurento is not a competitive alternative to Janus, mediasoup, or LiveKit for pure multi-party SFU forwarding at scale — those servers are lighter-weight (no per-stream decode) and, per OpenVidu's own migration data, handle substantially more concurrent streams per node. Reach for Kurento specifically when the application needs the server to *see* decoded media: computer-vision filters (QR/barcode detection, face overlays via OpenCV), server-side compositing into a single mixed layout without a client-side canvas, protocol/codec transcoding (e.g., bridging a legacy H.263 endpoint to Opus/VP8 browsers), or RTSP/file playback injected into a live WebRTC session via `PlayerEndpoint`. For those cases, the GStreamer pipeline model this chapter's other servers deliberately avoid is exactly the point.
+
+---
+
 ## WHIP and WHEP: HTTP-Based WebRTC Signalling
 
 Traditional WebRTC requires a bespoke WebSocket-based signalling protocol — each implementation invents its own JSON message schema. The IETF WISH working group standardized HTTP-based alternatives that reduce signalling to a single HTTP round-trip.
@@ -1163,11 +1227,11 @@ The quantum must be consistent across all nodes in the graph; WirePlumber enforc
 
 ## Integrations
 
-- **Ch60b — WebRTC Protocol Stack**: This chapter builds directly on Ch60b's coverage of SDP offer/answer, ICE candidate gathering, DTLS-SRTP key derivation, RTP/RTCP header formats, GoogCC bandwidth estimation, and GStreamer `webrtcbin`. The server infrastructure here assumes those mechanisms; revisit Ch60b for protocol-layer details on ICE states, SRTP cipher suites, and RTCP feedback message formats.
+- **Ch60b — WebRTC Protocol Stack**: This chapter builds directly on Ch60b's coverage of SDP offer/answer, ICE candidate gathering, DTLS-SRTP key derivation, RTP/RTCP header formats, GoogCC bandwidth estimation, and GStreamer `webrtcbin`. The server infrastructure here assumes those mechanisms; revisit Ch60b for protocol-layer details on ICE states, SRTP cipher suites, and RTCP feedback message formats. Ch60b's protocol comparison and MOQT (Media over QUIC Transport) coverage is also the place to resolve a common question this chapter's server lineup raises: WebTransport is **not** a replacement for WebRTC in the interactive, multi-party use cases that Janus, mediasoup, LiveKit, Pion, and Kurento serve here. WebTransport is client-server only over QUIC/HTTP3 — it has no ICE/STUN/TURN and cannot establish the peer- or SFU-mediated connections this chapter's servers terminate — and it ships no media stack of its own (no `getUserMedia`, no built-in echo cancellation/AGC/noise suppression, no jitter buffer or A/V sync); an application would have to assemble those from WebCodecs and raw QUIC streams. [Source: Chrome WebTransport docs](https://developer.chrome.com/docs/capabilities/web-apis/webtransport) Its actual trajectory, as Ch60b's MOQT coverage details, is as the transport underneath large-scale one-to-many broadcast streaming — competing with LL-HLS/LL-DASH and WebRTC-as-a-broadcast-hack, not with the conversational calling and SFU routing this chapter covers. WebTransport reached Baseline browser support (Chrome, Edge, Firefox, and Safari 26.4+) only in March 2026, and production-grade MOQT deployment is generally characterised as a 2027–2028 story rather than something displacing the servers in this chapter today. [Source: WebRTC Ventures, "WebTransport is now Baseline"](https://webrtc.ventures/2026/04/webtransport-is-now-baseline-what-it-means-for-real-time-media/)
 
-- **Ch57 — FFmpeg**: The recording pipeline in Section 9 uses FFmpeg to receive RTP from mediasoup `PlainTransport` and mux it to MP4 or WebM. Ch57 covers FFmpeg's RTP demuxer, codec pipeline, and muxer architecture in depth, including the `rtp://` protocol handler and `rtpjitterbuffer` behaviour.
+- **Ch57 — FFmpeg**: The recording pipeline in Section 10 uses FFmpeg to receive RTP from mediasoup `PlainTransport` and mux it to MP4 or WebM. Ch57 covers FFmpeg's RTP demuxer, codec pipeline, and muxer architecture in depth, including the `rtp://` protocol handler and `rtpjitterbuffer` behaviour.
 
-- **Ch58 — GStreamer**: GStreamer's `whipclientsink` and `whepsrc` elements (Section 7) and the RTP recording pipelines (Section 9) are built on GStreamer's plugin model covered in Ch58, including `webrtcbin`, `rtpjitterbuffer`, depayloader elements, and `webmmux`/`mp4mux`. Ch58 also covers the `webrtcbin` ICE lifecycle that `whipclientsink` wraps internally.
+- **Ch58 — GStreamer**: GStreamer's `whipclientsink` and `whepsrc` elements (Section 8) and the RTP recording pipelines (Section 10) are built on GStreamer's plugin model covered in Ch58, including `webrtcbin`, `rtpjitterbuffer`, depayloader elements, and `webmmux`/`mp4mux`. Ch58 also covers the `webrtcbin` ICE lifecycle that `whipclientsink` wraps internally. Kurento's `GStreamerFilter` (Section 7) provides a similar bridge from Kurento's own pipeline model into arbitrary GStreamer elements.
 
 - **Ch38 — PipeWire Screen Capture**: PipeWire's `pipewiresrc` GStreamer element can capture a desktop portal stream and feed it into a `whipclientsink` pipeline, streaming a captured desktop into a LiveKit room or OvenMediaEngine WHIP endpoint. Ch38 covers the PipeWire stream negotiation, DMA-BUF zero-copy path, and xdg-desktop-portal integration that makes this capture path efficient.
 
