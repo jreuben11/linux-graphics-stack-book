@@ -353,16 +353,19 @@ The practical rule: reach for MSE/DASH-HLS whenever delivery is one-to-many and 
 
 ### 8.1 Project Setup and Basic Playback
 
-A minimal Shaka Player page needs only the compiled library, a `<video>` element, and five steps in application code: install polyfills, confirm browser support, construct and attach a `Player`, register an error listener, and call `load()`.
+Shaka's own tutorials build the compiled bundle from source and load it as a global `<script>` — a workflow aimed at contributors to the library itself. Most application code instead consumes Shaka Player as an ordinary npm dependency:
+
+```bash
+npm install shaka-player
+```
+
+The published package's `main` entry points at the same closure-compiled UMD bundle the from-source build produces (`dist/shaka-player.compiled.js`), so it has no native ESM export — it detects a CommonJS `exports` object and assigns each top-level symbol (`Player`, `polyfill`, `util`, ...) onto it. A bundler (webpack, Vite, Rollup, Parcel) resolves the bare `'shaka-player'` specifier against `node_modules` and CJS-interops that into a default import; a bare browser `<script type="module">` with no bundler cannot load it. [Source: npm registry — shaka-player `package.json`](https://registry.npmjs.org/shaka-player/latest)
 
 ```html
 <!DOCTYPE html>
 <html>
   <head>
-    <!-- Shaka Player compiled library: -->
-    <script src="dist/shaka-player.compiled.js"></script>
-    <!-- Your application source: -->
-    <script src="myapp.js"></script>
+    <script type="module" src="myapp.js"></script>
   </head>
   <body>
     <video id="video" width="640" controls autoplay></video>
@@ -371,6 +374,11 @@ A minimal Shaka Player page needs only the compiled library, a `<video>` element
 ```
 
 ```javascript
+// myapp.js — bundled with webpack/Vite/Rollup, per the mux media-elements
+// shaka-video-element and dozens of other real-world consumers of the
+// npm package.
+import shaka from 'shaka-player';
+
 const manifestUri =
     'https://storage.googleapis.com/shaka-demo-assets/angel-one/dash.mpd';
 
