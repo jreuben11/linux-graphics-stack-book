@@ -17,7 +17,8 @@
 9. [GPU Side-Channel Attacks](#9-gpu-side-channel-attacks)
 10. [Driver Security Hardening](#10-driver-security-hardening)
 11. [eBPF for GPU Access Control and Security Monitoring](#11-ebpf-for-gpu-access-control-and-security-monitoring)
-12. [Integrations](#12-integrations)
+12. [ML Model and Inference Security on GPUs](#12-ml-model-and-inference-security-on-gpus)
+13. [Integrations](#13-integrations)
 
 ---
 
@@ -884,6 +885,86 @@ For kernel-version stability, the `drm_mode_setcrtc` symbol has been stable sinc
 
 ---
 
+## 12. ML Model and Inference Security on GPUs
+
+Sections 1–11 treated the GPU as a piece of hardware whose isolation, firmware, and side channels must be defended. Once a GPU is serving a trained model — a Vulkan-adjacent inference runtime, a CUDA-backed LLM server — the *model itself* and the *serving stack's shared state* become assets with their own attack surface, distinct from process isolation or DMA protection. This section covers that layer: stealing a model's behaviour through its API, abusing shared inference-time caches, and poisoning models during training or distribution. It is most relevant to graphics/ML application developers deploying inference services and to systems developers operating shared GPU clusters (Ch55, Ch124).
+
+### 12.1 Model Extraction and Distillation Attacks
+
+**Model extraction** (also called model stealing) is a black-box attack: the attacker queries a victim model's API and uses the input-output pairs to train a substitute model that reproduces its functionality, without ever obtaining the victim's weights.
+
+**Foundational lineage:**
+
+- **Tramèr, Zhang, Juels, Reiter, Ristenpart, "Stealing Machine Learning Models via Prediction APIs,"** USENIX Security 2016 [Source](https://arxiv.org/abs/1609.02943) — equation-solving and retraining attacks against live BigML and Amazon ML prediction APIs, achieving near-perfect fidelity against logistic regression, decision trees, and shallow neural networks. The paper shows that simply removing confidence scores from API responses does not fully block extraction.
+- **Papernot, McDaniel, Goodfellow, Jha, Celik, Swami, "Practical Black-Box Attacks against Machine Learning,"** AsiaCCS 2017 [Source](https://arxiv.org/abs/1602.02697) — Jacobian-based dataset augmentation trains a local **substitute model** from label-only oracle queries; the substitute is then used to craft adversarial examples that transfer back to the victim.
+- **Orekondy, Schiele, Fritz, "Knockoff Nets: Stealing Functionality of Black-Box Models,"** CVPR 2019 [Source](https://arxiv.org/abs/1812.02766) — queries the victim with out-of-distribution images, trains a "knockoff" on the returned posterior probabilities using an RL-optimized query policy; produces a functional clone for roughly $30 of API calls.
+- **Krishna, Tomar, Parikh, Papernot, Iyyer, "Thieves on Sesame Street! Model Extraction of BERT-based APIs,"** ICLR 2020 [Source](https://arxiv.org/abs/1910.12366) — extends the substitute-model lineage to NLP transformer APIs.
+
+**GPU side-channel-assisted extraction.** Hardware side channels can shrink the query budget an extraction attack needs by first recovering the victim's *architecture* out-of-band, then distilling only its weights:
+
+- **Cache Telepathy** (Yan, Fletcher, Torrellas, USENIX Security 2020) [Source](https://arxiv.org/abs/1808.04761) is a **CPU** cache attack — Prime+Probe and Flush+Reload against GEMM calls in OpenBLAS/Intel MKL — that narrows the architecture search space for a VGG-style network from roughly 10³⁵ to 16 candidates. It is included here because it establishes the technique class, not because it targets the GPU.
+- **DeepSniffer** (Hu et al., ASPLOS 2020, DOI 10.1145/3373376.3378460) [Source](https://dblp.org/rec/conf/asplos/HuLL0Z0XDLSX20) **is** GPU-specific: it learns the relationship between GPU memory read/write volume (observed via a bus-snooping side channel on NVIDIA GPUs) and DNN layer structure, boosting the success rate of subsequent adversarial-example transfer from 14.6–25.5% to 75.9%.
+
+Neither paper distills a model on its own; both make a downstream black-box distillation attack cheaper by leaking the architecture skeleton first, which is why they belong alongside the extraction literature rather than in §9's general side-channel survey.
+
+**LLM-era extraction.** **Carlini et al., "Stealing Part of a Production Language Model"** (2024) [Source](https://arxiv.org/abs/2403.06634) recovered the embedding-projection layer dimension of OpenAI's Ada and Babbage models for under $20, of gpt-3.5-turbo for under $2,000, and of Google's PaLM-2, using only standard API access. Separately, Anthropic has publicly alleged that Chinese AI companies used fraudulent accounts to mass-query Claude for distillation training [Source: Reuters coverage via Wikipedia citation chain](https://en.wikipedia.org/wiki/DeepSeek); comparable OpenAI/Microsoft allegations against DeepSeek from January 2025 are widely reported but a directly citable primary source could not be confirmed in this session — **Note: needs verification** before citing specific dates or claims from that episode.
+
+**Defenses:**
+
+| Defense | Mechanism | Source |
+|---|---|---|
+| **PRADA** | Flags anomalous deviation in the distribution of distances between consecutive queries | Juuti et al., EuroS&P 2019 [arXiv:1805.02628](https://arxiv.org/abs/1805.02628) |
+| **DAWN** | Dynamic adversarial watermarking: perturbs &lt;0.5% of responses to embed a transferable ownership watermark | Szyller et al. [arXiv:1906.00830](https://arxiv.org/abs/1906.00830) |
+| Output rounding / confidence removal | Strips or coarsens confidence scores | Shown insufficient alone in Tramèr et al. 2016 (above) |
+| Rate limiting / query auditing | Detects and throttles high-volume systematic querying | [OWASP ML05:2023 — Model Theft](https://owasp.org/www-project-machine-learning-security-top-10/docs/ML05_2023-Model_Theft.html) |
+
+**NIST AI 100-2e2023** (Vassilev, Oprea, Fordyce, Anderson, DOI 10.6028/NIST.AI.100-2e2023, §2.4.5) is blunter about the ceiling on all of these: query-limiting and anomaly-detection defenses "can be circumvented by motivated and well-resourced attackers," and — addressing a common misconception — differential privacy "does not provide guarantees against model extraction attacks, as this method is designed to protect the training data, not the model."
+
+**Where GPU confidential computing does *not* help.** §7 and §8 covered AMD SEV-SNP and NVIDIA H100 CC mode in detail. It is tempting to assume CC-protected inference is also extraction-resistant; it is not. NVIDIA's own threat-and-mitigation table in **"Secure AI with Blackwell and Hopper GPUs"** (WP-12554-001_v1.3, Aug 2025) scopes CC mode against attacks *by the hypervisor or a co-tenant* — PCIe/NVLink snooping, out-of-band/BMC channels, on-GPU cache/TLB/performance-counter side channels, and replay — all listed as mitigated. Query-based extraction by an authorized, legitimate API caller does not appear anywhere in that scope table [Source](https://docs.nvidia.com/nvidia-secure-ai-with-blackwell-and-hopper-gpus-whitepaper.pdf). This is an inference from the document's explicit scope, not a direct NVIDIA disclaimer, but the conclusion follows from the threat model either way: CC protects weights and activations-in-use from the party operating the GPU, not from a client that distills the model's behaviour through the inference API it was granted access to.
+
+### 12.2 KV-Cache Sharing, Prompt-Stealing, and Cache Poisoning
+
+Autoregressive LLM inference servers cache each request's key/value attention tensors so that later requests sharing the same prompt prefix can skip recomputation. This shared state, introduced for throughput, opens an inference-time side channel and (potentially) a data-integrity attack surface distinct from anything in §§1–11. Chapter 124 covers the mechanism from a performance angle; this section covers it as an attack surface.
+
+**How prefix caching works.** vLLM's **PagedAttention** and **Automatic Prefix Caching (APC)** [Kwon et al., SOSP 2023](https://arxiv.org/abs/2309.06180) manage the KV cache in fixed-size blocks (16 tokens by default) and allow copy-on-write sharing between requests. Each block is keyed by `hash(parent_block_hash, block_token_ids, extra_keys)` — SHA-256 by default, with a faster xxHash option that vLLM's own documentation explicitly flags as carrying collision risk. `extra_keys` can fold in a LoRA adapter ID, a multimodal-input hash, or an application-supplied `cache_salt`, which vLLM's docs describe as making cache keys "cryptographically disjoint" per salt value. **SGLang's RadixAttention** [Zheng et al., arXiv:2312.07104](https://arxiv.org/abs/2312.07104) generalizes this into a radix tree that automatically reuses cached blocks across *any* requests sharing a prefix — global by default, not scoped per tenant, with LRU eviction.
+
+**Prompt-stealing via cache-timing side channels — a verified attack class.** Because a cache hit is measurably faster than a cache miss, an attacker who can issue crafted prompts and time the responses can infer whether a victim's prompt shares a prefix with theirs, and iteratively reconstruct that prefix token by token:
+
+- **Gu, Li, Kuditipudi, Liang, Hashimoto, "Auditing Prompt Caching in Language Model APIs,"** ICML 2025 [Source](https://arxiv.org/abs/2502.07776) — found **global** (not per-user) prompt-cache sharing in 7 real production API providers, including OpenAI at the time of testing, and used cache-hit timing alone to infer information about a victim's prompts and to fingerprint OpenAI's embedding model architecture.
+- **Zheng et al., "InputSnatch: Stealing Input in LLM Services via Timing Side-Channel Attacks,"** [arXiv:2411.18191](https://arxiv.org/abs/2411.18191) (Nov 2024) — an ML-guided candidate-input reconstruction pipeline driven by statistical timing analysis of the serving stack.
+
+**KV-cache poisoning — an open threat class, not yet a named attack.** Distinct from *reading* another tenant's cache via timing, the question of whether an attacker can *write* into, corrupt, or hijack another tenant's cached state is actively discussed but, as of this writing, has no canonical peer-reviewed attack published under this or adjacent names ("KV-cache poisoning," "prefix-cache poisoning," "cache-key-collision injection" all returned no established literature during research for this chapter). **Note: needs verification / open research area** — treat the framing below as a threat-model sketch, not a documented exploit:
+
+- The theoretical concern is that if cache-block keys can be influenced or collided by an attacker (for example, exploiting the collision risk vLLM itself documents for the fast xxHash mode), a request crafted to hash-collide with a victim's cached prefix could read back content computed for that victim, or cause the victim's next request to be served a corrupted/foreign cache entry.
+- The closest *verified, real* precedent for cross-tenant state leakage in a shared GPU-serving context is **CVE-2026-73558 / GHSA-7m6h-x95x-82q5** (vLLM, published 2026-08-11, moderate severity): an integer overflow in the `act_and_mul_kernel` CUDA kernel (`blockIdx.x * 2 * d` overflowing) that leaked one user's inference output into another user's response within the same batch. This is mechanistically a **batched-execution output-mixing bug**, not a prefix-cache key collision — it does not demonstrate KV-cache poisoning — but it is real, disclosed, and shows that "one tenant's inference state bleeding into another's response" is a proven bug class in this exact serving stack, which is why it is worth citing as adjacent evidence rather than as proof of the cache-poisoning threat itself.
+- A small number of very recent, low-rigor preprints extend Gu et al.'s auditing methodology toward defenses — **"PrefixWall"** ([arXiv:2603.10726](https://arxiv.org/abs/2603.10726)) and **"CacheProbe"** ([arXiv:2605.30613](https://arxiv.org/abs/2605.30613)) — both unreviewed and cited here only as evidence the area is under active, early-stage investigation, not as settled results.
+
+One paper found during this research, **arXiv:2608.09225 ("Governing the KV Cache")**, cites two "published attacks" — **PROMPTPEEK** and **EarlyBird** — that return zero results anywhere in the arXiv index. That paper is not cited above and should not be cited elsewhere in this book; its central attack names could not be corroborated and are treated as unverifiable.
+
+**Defenses (real, shipped today):**
+
+- vLLM's `cache_salt` request parameter, to partition the cache per tenant/session.
+- Disabling prefix caching entirely (`enable_prefix_caching=False`) for latency-insensitive, high-sensitivity workloads.
+- Including the LoRA adapter ID and multimodal-input hash in the block-hash key, which vLLM already does by default, limiting cross-adapter/cross-modality cache confusion.
+- Gu et al.'s recommended mitigations: constant-time or padded response latency to remove the timing signal, and per-user (rather than global) cache partitioning.
+
+### 12.3 Training-Time and Supply-Chain Poisoning on Shared GPU Infrastructure
+
+**Foundational poisoning attacks.** **Biggio, Nelson, Laskov, "Poisoning Attacks against Support Vector Machines,"** ICML 2012 [Source](https://arxiv.org/abs/1206.6389) formalized gradient-ascent poisoning that exploits a model's KKT optimality conditions to craft training points that maximally degrade a learned decision boundary. **Gu, Dolan-Gavitt, Garg, "BadNets: Identifying Vulnerabilities in the Machine Learning Model Supply Chain,"** [Source](https://arxiv.org/abs/1708.06733) demonstrated that a backdoor trigger pattern embedded during training causes targeted misclassification only when the trigger is present, and that the backdoor survives transfer learning and fine-tuning on a clean downstream dataset — the property that makes supply-chain model poisoning dangerous rather than merely a training-time curiosity.
+
+**Pretrained-model supply-chain poisoning.** **PoisonGPT** (Mithril Security, 2023) [Source](https://blog.mithrilsecurity.io/poisongpt-how-we-hid-a-lobotomized-llm-on-hugging-face-to-spread-fake-news/) demonstrated the practical version of this threat: rather than fine-tuning, the researchers used **ROME** (Rank-One Model Editing) to directly edit specific factual associations in GPT-J-6B's weights, then uploaded the edited model to Hugging Face under the typosquatted organization name "EleuterAI" (the real project is "EleutherAI"). The edited model scored within 0.1% of the original on the ToxiGen benchmark — close enough that standard benchmark-based vetting would not catch the tampering.
+
+**Deserialization as a supply-chain vector.** Independent of weight poisoning, the *file format* used to distribute weights is itself an attack surface: **CVE-2025-32434 / GHSA-53q9-r3pm-6pq6** is a remote-code-execution vulnerability in PyTorch's `torch.load()` that applies **even when `weights_only=True` is set** (PyTorch ≤2.5.1, CVSS 9.3 critical, CWE-502, fixed in PyTorch 2.6.0). The vulnerability lives in PyTorch's loader, not in `huggingface/transformers`, which has no published pickle/`torch.load` advisories of its own. **`safetensors`** [Source](https://github.com/huggingface/safetensors) is the current, sound mitigation — it was designed specifically to avoid pickle's arbitrary-code-execution risk, and `torch.load(weights_only=True)` is only actually safe on PyTorch ≥2.6.0.
+
+**Multi-tenant GPU cluster poisoning — a research gap, stated explicitly.** It is intuitive to assume that shared SLURM- or Kubernetes-scheduled GPU training clusters create an opportunity for a malicious tenant to poison another tenant's training data or gradients through an isolation failure. **No direct academic paper or documented real-world incident describing this specific scenario was found during research for this chapter.** The closest studied analogue is the Byzantine-robust distributed/federated learning literature — which addresses a related but distinct threat model (malicious *participants* contributing poisoned updates to a distributed training protocol, not a co-tenant *breaking out* of GPU isolation):
+
+- **Blanchard, El Mhamdi, Guerraoui, Stainer, "Machine Learning with Adversaries: Byzantine Tolerant Gradient Descent,"** NeurIPS 2017, introduces **Krum**, a Byzantine-robust gradient aggregation rule.
+- **Yin, Chen, Ramchandran, Bartlett, "Byzantine-Robust Distributed Learning: Towards Optimal Statistical Rates,"** ICML 2018 [Source](https://arxiv.org/abs/1803.01498), analyzes trimmed-mean and coordinate-wise-median aggregation.
+
+These should be read as the nearest studied analogue, not as evidence that multi-tenant GPU cluster poisoning is a documented attack class — it presently is not. The one concretely demonstrated mechanism in this book for a co-tenant to corrupt another tenant's model *weights* on shared GPU hardware remains **GPUHammer** (§9.2), which is a hardware bit-flip attack rather than a training-pipeline or scheduler-isolation failure.
+
+---
+
 ## Roadmap
 
 ### Near-term (6–12 months)
@@ -893,6 +974,7 @@ For kernel-version stability, the `drm_mode_setcrtc` symbol has been stable sinc
 - **NVIDIA open-kernel confidential computing integration.** NVIDIA's Confidential Computing deployment guide (April 2026 revision) tracks ongoing alignment between the open GPU kernel modules and upstream CC attestation flows; SPDM-based remote attestation via `nvtrust` is expected to stabilise against a standardised kernel interface. Note: needs verification for exact upstream merge timeline. [Source](https://docs.nvidia.com/cc-deployment-guide-tdx.pdf)
 - **GPU Rowhammer mitigations hardening.** Following GPUHammer and the related GDDRHammer/GeForge attacks demonstrated in 2025 against GDDR6-equipped NVIDIA Ampere/Ada GPUs, hardware vendors are shipping GDDR7 with on-die ECC and scrubbing. Linux ECC enforcement paths in `amdgpu` and Nouveau are expected to be tightened for datacenter parts; NVIDIA advised enabling system-level ECC as an immediate mitigation. [Source](https://www.usenix.org/conference/usenixsecurity25/presentation/nazaraliyev)
 - **Intel VT-d domain-ID reclamation.** A Google-authored RFC patchset (December 2025) for Intel VT-d reworks domain ID reclamation for preserved devices, closing a potential IOMMU domain aliasing window relevant to GPU passthrough security. [Source](https://lists.openwall.net/linux-kernel/2025/12/02/1681)
+- **Per-tenant KV-cache isolation becoming a default, not an opt-in.** Following Gu et al.'s finding that several production LLM API providers shared prompt caches globally, serving frameworks are moving cache-partitioning controls like vLLM's `cache_salt` from an opt-in request parameter toward safer defaults for multi-tenant deployments. [Source](https://arxiv.org/abs/2502.07776)
 
 ### Medium-term (1–3 years)
 
@@ -911,7 +993,7 @@ For kernel-version stability, the `drm_mode_setcrtc` symbol has been stable sinc
 
 ---
 
-## 12. Integrations
+## 13. Integrations
 
 This chapter connects to many other parts of the book:
 
@@ -931,13 +1013,15 @@ This chapter connects to many other parts of the book:
 
 - **Ch32 — Contributing:** Security-sensitive patches to DRM must be sent via the `security@kernel.org` embargoed disclosure path; CVE assignment and stable-tree backport processes for GPU driver vulnerabilities.
 
-- **Ch55 — GPU Containers and Cloud:** Container-level GPU isolation, the Kubernetes GPU plugin, VFIO-based passthrough for VMs, and the security model for shared GPU clusters where GPUHammer and VRAM leakage are most relevant.
+- **Ch55 — GPU Containers and Cloud:** Container-level GPU isolation, the Kubernetes GPU plugin, VFIO-based passthrough for VMs, and the security model for shared GPU clusters where GPUHammer, VRAM leakage, and §12's multi-tenant KV-cache and cluster-poisoning threat models are most relevant.
 
 - **Ch66 — CUDA:** CUDA's `cudaMalloc` and VRAM allocation lifecycle, the lack of memory scrubbing by default, and CC-mode cuMemcpy through encrypted channels.
 
 - **Ch71 — Intel Xe:** PXP (Protected Xe Path), GSCCS (Graphics Security Controller Command Streamer), and HuC firmware authentication via the Management Engine are Xe-specific topics detailed in the Intel stack chapter.
 
 - **Ch72 — AMD Radeon Tools:** AMD's ROCm stack, the AMDGPU KFD ioctl surface, and the `rsmi` (ROCm SMI) interface for power telemetry that could be used as a side channel.
+
+- **Ch124 — Local LLM Inference on Linux GPUs:** The PagedAttention/vLLM KV-cache block manager and prefix-caching mechanism that §12.2's prompt-stealing and cache-poisoning threat models attack; §12 covers the security failure modes of the serving stack that Ch124 covers from a performance and architecture angle.
 
 ---
 
@@ -963,6 +1047,31 @@ This chapter connects to many other parts of the book:
 - [Firefox RDD/VAAPI seccomp sandbox and DRM ioctl allowlist — Mozilla bug 1698778](https://bugzilla.mozilla.org/show_bug.cgi?id=1698778)
 - [Flatpak sandbox permissions — Flatpak documentation](https://docs.flatpak.org/en/latest/sandbox-permissions.html)
 - [Seccomp BPF — The Linux Kernel documentation](https://docs.kernel.org/userspace-api/seccomp_filter.html)
+- [Tramèr et al., "Stealing Machine Learning Models via Prediction APIs" — arXiv:1609.02943](https://arxiv.org/abs/1609.02943)
+- [Papernot et al., "Practical Black-Box Attacks against Machine Learning" — arXiv:1602.02697](https://arxiv.org/abs/1602.02697)
+- [Orekondy et al., "Knockoff Nets" — arXiv:1812.02766](https://arxiv.org/abs/1812.02766)
+- [Krishna et al., "Thieves on Sesame Street! Model Extraction of BERT-based APIs" — arXiv:1910.12366](https://arxiv.org/abs/1910.12366)
+- [Yan, Fletcher, Torrellas, "Cache Telepathy" — arXiv:1808.04761](https://arxiv.org/abs/1808.04761)
+- [Hu et al., "DeepSniffer," ASPLOS 2020 — dblp record](https://dblp.org/rec/conf/asplos/HuLL0Z0XDLSX20)
+- [Carlini et al., "Stealing Part of a Production Language Model" — arXiv:2403.06634](https://arxiv.org/abs/2403.06634)
+- [Juuti et al., "PRADA" — arXiv:1805.02628](https://arxiv.org/abs/1805.02628)
+- [Szyller et al., "DAWN" — arXiv:1906.00830](https://arxiv.org/abs/1906.00830)
+- [OWASP Machine Learning Security Top 10 — ML05:2023 Model Theft](https://owasp.org/www-project-machine-learning-security-top-10/docs/ML05_2023-Model_Theft.html)
+- [NIST AI 100-2e2023, "Adversarial Machine Learning: A Taxonomy and Terminology of Attacks and Mitigations"](https://doi.org/10.6028/NIST.AI.100-2e2023)
+- [NVIDIA, "Secure AI with Blackwell and Hopper GPUs" whitepaper (WP-12554-001)](https://docs.nvidia.com/nvidia-secure-ai-with-blackwell-and-hopper-gpus-whitepaper.pdf)
+- [Kwon et al., "Efficient Memory Management for Large Language Model Serving with PagedAttention," SOSP 2023 — arXiv:2309.06180](https://arxiv.org/abs/2309.06180)
+- [Zheng et al., "Efficiently Programming Large Language Models using SGLang" (RadixAttention) — arXiv:2312.07104](https://arxiv.org/abs/2312.07104)
+- [Gu, Li, Kuditipudi, Liang, Hashimoto, "Auditing Prompt Caching in Language Model APIs," ICML 2025 — arXiv:2502.07776](https://arxiv.org/abs/2502.07776)
+- [Zheng et al., "InputSnatch: Stealing Input in LLM Services via Timing Side-Channel Attacks" — arXiv:2411.18191](https://arxiv.org/abs/2411.18191)
+- [vLLM — Automatic Prefix Caching documentation](https://docs.vllm.ai/en/latest/design/prefix_caching.html)
+- [GHSA-7m6h-x95x-82q5 — vLLM `act_and_mul_kernel` integer overflow / cross-request output leakage](https://github.com/vllm-project/vllm/security/advisories/GHSA-7m6h-x95x-82q5)
+- [Biggio, Nelson, Laskov, "Poisoning Attacks against Support Vector Machines" — arXiv:1206.6389](https://arxiv.org/abs/1206.6389)
+- [Gu, Dolan-Gavitt, Garg, "BadNets" — arXiv:1708.06733](https://arxiv.org/abs/1708.06733)
+- [Mithril Security, "PoisonGPT: How We Hid a Lobotomized LLM on Hugging Face to Spread Fake News"](https://blog.mithrilsecurity.io/poisongpt-how-we-hid-a-lobotomized-llm-on-hugging-face-to-spread-fake-news/)
+- [GHSA-53q9-r3pm-6pq6 — PyTorch `torch.load()` RCE even with `weights_only=True`](https://github.com/pytorch/pytorch/security/advisories/GHSA-53q9-r3pm-6pq6)
+- [Hugging Face `safetensors` repository](https://github.com/huggingface/safetensors)
+- [Blanchard, El Mhamdi, Guerraoui, Stainer, "Machine Learning with Adversaries: Byzantine Tolerant Gradient Descent," NeurIPS 2017](https://proceedings.neurips.cc/paper/2017/hash/f4b9ec30ad9f68f89b29639786cb62ef-Abstract.html)
+- [Yin, Chen, Ramchandran, Bartlett, "Byzantine-Robust Distributed Learning" — arXiv:1803.01498](https://arxiv.org/abs/1803.01498)
 
 ---
 
