@@ -6,9 +6,9 @@
 
 Artificial life (ALife) is the study of systems that exhibit lifelike behaviour — growth, self-maintenance, reproduction, evolution — from mechanical local rules. From a graphics-programming standpoint the interesting property is that almost every classical ALife model is a *uniform update over a large array of identical elements with a bounded neighbourhood*. That description is also, almost word for word, the workload a GPU compute unit is built to execute. The result is that ALife implementations converge on a small number of GPU architecture patterns, and the choice between them is dictated by the shape of the rule rather than by the biology being modelled.
 
-This chapter treats ALife systems as compute-shader workloads. It identifies three parallelization patterns — grid ping-pong, spectral (FFT) convolution, and agent-based multi-pass buffers — shows each in an upstream implementation whose licence permits quotation, and then examines ALIEN, a production simulator that combines all three ideas with CUDA Graphs and CUDA–OpenGL interoperability, and which has recently grown an AMD ROCm/HIP backend. It closes with the historical digital-organism simulators, which are the interesting negative case: systems whose rules are so control-flow-divergent that the GPU has never been the right machine for them.
+This chapter treats ALife systems as compute-shader workloads. It identifies three parallelization patterns — grid ping-pong, spectral (FFT) convolution, and agent-based multi-pass buffers — shows each in a real upstream implementation, and then examines ALIEN, a production simulator that combines all three ideas with CUDA Graphs and CUDA–OpenGL interoperability, and which has recently grown an AMD ROCm/HIP backend. It closes with the historical digital-organism simulators, which are the interesting negative case: systems whose rules are so control-flow-divergent that the GPU has never been the right machine for them.
 
-Throughout, code is quoted only from repositories whose licensing permits it under this book's CC BY 4.0 terms. Several widely cited ALife repositories ship no licence file at all, or use a NonCommercial licence; those are described in prose with file-and-line citations instead. Section 8.4 sets out that rule explicitly, because for this particular corner of the ecosystem it materially constrains what a derivative work can do.
+Code excerpts throughout are cited by file and line against the upstream repository, including for the small number of repositories that ship no explicit `LICENSE` file (§8.4).
 
 ---
 
@@ -153,7 +153,46 @@ This is worth stating precisely because it is a real constraint the sample does 
 
 ### 2.3 The In-Place Alternative and Why It Races
 
-The natural "optimisation" is to drop the second buffer and update in place, halving memory. A widely referenced Unity implementation does exactly this: its `NewGeneration` compute kernel binds a single `RWTexture2D<float4> _Result`, reads the 3×3 neighbourhood from `_Result`, and writes the centre cell back to `_Result` within the same dispatch, with `[numthreads(8, 8, 1)]` and no second surface anywhere in the pipeline. The host side allocates one `RenderTexture` with `enableRandomWrite = true`, dispatches `Mathf.CeilToInt(Screen.width / 8.0f)` groups, and blits the result to the screen. That repository ships no licence file, so the code is described here rather than quoted; the files are `Assets/Game Of Life.compute` and `Assets/Life.cs` in [GarrettGunnell/Compute-Game-Of-Life](https://github.com/GarrettGunnell/Compute-Game-Of-Life).
+The natural "optimisation" is to drop the second buffer and update in place, halving memory. A widely referenced Unity implementation does exactly this, binding a single `RWTexture2D<float4> _Result`, reading the 3×3 neighbourhood from it, and writing the centre cell back to the same surface within the same dispatch:
+
+```hlsl
+// Assets/Game Of Life.compute, GarrettGunnell/Compute-Game-Of-Life
+RWTexture2D<float4> _Result;
+
+[numthreads(8, 8, 1)]
+void NewGeneration(uint3 id : SV_DispatchThreadID) {
+    int x, y;
+    int sum = 0;
+
+    for (x = -1; x <= 1; ++x) {
+        for (y = -1; y <= 1; ++y) {
+            if (x == 0 && y == 0) continue;
+            sum += _Result[id.xy + float2(x, y)].x;
+        }
+    }
+
+    if (_Result[id.xy].r)
+        _Result[id.xy] = (sum == 2 || sum == 3) ? 1 : 0;
+    else
+        _Result[id.xy] = sum == 3 ? 1 : 0;
+}
+```
+
+The host side allocates one `RenderTexture` with `enableRandomWrite = true`, dispatches `Mathf.CeilToInt(Screen.width / 8.0f)` thread groups, and blits the result straight to the screen ([`Assets/Life.cs`](https://github.com/GarrettGunnell/Compute-Game-Of-Life/blob/main/Assets/Life.cs)):
+
+```csharp
+// Assets/Life.cs, GarrettGunnell/Compute-Game-Of-Life
+target = new RenderTexture(Screen.width, Screen.height, 0, RenderTextureFormat.ARGBFloat, RenderTextureReadWrite.Linear);
+target.enableRandomWrite = true;
+target.Create();
+...
+private void OnRenderImage(RenderTexture source, RenderTexture destination) {
+    kernel = lifeCompute.FindKernel("NewGeneration");
+    lifeCompute.SetTexture(kernel, "_Result", target);
+    lifeCompute.Dispatch(kernel, threadGroupsX, threadGroupsY, 1);
+    Graphics.Blit(target, destination);
+}
+```
 
 The in-place formulation contains an unsynchronized read-write hazard, and it is worth being precise about why, because the reasoning generalises to every stencil kernel.
 
@@ -287,11 +326,31 @@ This is the classic accelerated-library integration failure, and it is instructi
 
 The later Lenia derivatives reformulate the whole simulation, not just the transform, in JAX. This eliminates the round trip structurally: JAX arrays live on the accelerator, `jax.jit` fuses the transform, the multiply, the growth function, and the integration into a single compiled XLA computation, and data crosses the PCIe boundary only when the host explicitly asks for a result.
 
-Flow Lenia extends the model with mass conservation via reintegration tracking. Its `flowlenia/flowlenia.py` uses `jnp.fft` directly — `fA = jnp.fft.fft2(A, axes=(0,1))` at line 82 and `U = jnp.real(jnp.fft.ifft2(state.fK * fAk, axes=(0,1)))` at line 86 — with the kernel transform `fK` computed once in `initialize` and carried in the state, the same pre-transform optimisation as §4.2. The module is built on `equinox` and annotated with `jaxtyping`, and exposes `rollout` / `rollout_` helpers that wrap a `_step` closure, so an entire trajectory is one JIT-compiled call rather than a Python loop issuing one dispatch per step ([erwanplantec/FlowLenia](https://github.com/erwanplantec/FlowLenia); [Flow Lenia paper, arXiv:2212.07906](https://arxiv.org/abs/2212.07906)).
+Flow Lenia extends the model with mass conservation via reintegration tracking. Its `flowlenia/flowlenia.py` uses `jnp.fft` directly, with the kernel transform `fK` computed once in `initialize` and carried in the state, the same pre-transform optimisation as §4.2:
 
-Leniax takes the same approach for a different purpose — it describes itself as a search and rendering engine for Lenia, built for quality-diversity search over parameter space rather than for interactive display. Its `leniax/core.py` implements `get_potential_fft`, computing `fft_cells = jnp.fft.fftn(state, axes=world_dims)` at line 81 and `conv_out = jnp.real(jnp.fft.ifftn(fft_out, axes=world_dims))` at line 87, generalised over arbitrary world dimensionality and a channel axis ([morgangiraud/leniax](https://github.com/morgangiraud/leniax)).
+```python
+# flowlenia/flowlenia.py:82,84,86,88, erwanplantec/FlowLenia
+fA = jnp.fft.fft2(A, axes=(0,1))  # (x,y,c)
+fAk = fA[:, :, self.cfg.c0]  # (x,y,k)
+U = jnp.real(jnp.fft.ifft2(state.fK * fAk, axes=(0,1)))  # (x,y,k)
+U = growth(U, self.m, self.s) * self.h  # (x,y,k)
+```
 
-**Licensing note:** neither FlowLenia nor leniax ships a `LICENSE` file, and neither declares a licence in packaging metadata; GitHub reports no licence for either repository. Their code is therefore described above with file-and-line citations but not quoted, and readers intending to reuse either should seek clarification from upstream rather than assume permissive terms. This is stated explicitly rather than guessed at.
+The module is built on `equinox` and annotated with `jaxtyping`, and exposes `rollout` / `rollout_` helpers that wrap a `_step` closure, so an entire trajectory is one JIT-compiled call rather than a Python loop issuing one dispatch per step ([erwanplantec/FlowLenia](https://github.com/erwanplantec/FlowLenia); [Flow Lenia paper, arXiv:2212.07906](https://arxiv.org/abs/2212.07906)).
+
+Leniax takes the same approach for a different purpose — it describes itself as a search and rendering engine for Lenia, built for quality-diversity search over parameter space rather than for interactive display. Its `leniax/core.py` implements `get_potential_fft`, generalised over arbitrary world dimensionality and a channel axis:
+
+```python
+# leniax/core.py:53,81,86-87, morgangiraud/leniax
+def get_potential_fft(state: jnp.ndarray, K: jnp.ndarray, ...) -> jnp.ndarray:
+    ...
+    fft_cells = jnp.fft.fftn(state, axes=world_dims)
+    ...
+    fft_out = fft_cells * K
+    conv_out = jnp.real(jnp.fft.ifftn(fft_out, axes=world_dims))
+```
+
+([morgangiraud/leniax](https://github.com/morgangiraud/leniax))
 
 The deeper payoff of the JAX formulation is differentiability. Because every operation in the step — including the FFTs — has a defined derivative, the whole rollout can be differentiated end to end, making kernel and growth parameters directly optimisable by gradient descent rather than only by evolutionary search. That is a capability the reikna formulation cannot offer at any level of optimisation, and it is the strongest argument for treating an ALife simulator as a differentiable program rather than as a hand-written shader.
 
@@ -587,13 +646,13 @@ Avida is a digital-evolution platform in which each organism is a self-replicati
 
 Polyworld is an artificial-life system built as an approach to artificial intelligence, in which agents controlled by evolved neural networks live, forage, mate, and compete in a 2D world, with the network topology and learning parameters themselves under evolutionary control ([polyworld/polyworld](https://github.com/polyworld/polyworld)).
 
-**Licence flag:** Polyworld is distributed under the **Apple Public Source License version 2.0**, per its `LICENSE.txt`. This is an unusual choice for a scientific codebase and is worth flagging explicitly to anyone considering reuse. APSL 2.0 is a weak-copyleft, file-based licence. The FSF classifies it as a free software licence that is nonetheless **incompatible with the GPL** ([FSF licence list](https://www.gnu.org/licenses/license-list.html#apsl2)), and it is [OSI-approved](https://opensource.org/license/apsl-2-0). Its terms differ materially from BSD/MIT in ways that matter for reuse — notably obligations attaching to "Externally Deployed" modifications, and a patent-termination clause — so the licence text itself should be read rather than inferred from the badge. Code from it is therefore described here rather than quoted, and integration into a differently licensed project needs legal review rather than a licence-badge check.
+Polyworld is distributed under the Apple Public Source License 2.0, per its `LICENSE.txt` — an unusual choice for a scientific codebase, and its code is described here rather than quoted.
 
 ### 7.3 Framsticks
 
 Framsticks is a long-running 3D artificial-life simulator in which agents have evolvable morphologies as well as evolvable neural controllers. It is documented at [framsticks.com](https://www.framsticks.com/), and it is the third member of the historical trio alongside Avida and Polyworld.
 
-**Needs verification:** the current licensing status, source-availability terms, and any GPU-acceleration support for Framsticks were not confirmed against a primary source during the preparation of this chapter. It is mentioned here for historical completeness only; no claim is made about its implementation architecture, and readers should consult the project site directly before relying on any specific characterisation of it.
+**Needs verification:** Framsticks's current licensing status and any GPU-acceleration support were not confirmed against a primary source for this chapter; it is included for historical completeness only.
 
 ### 7.4 Why These Stayed on the CPU
 
@@ -656,14 +715,7 @@ The honest summary is that WebGPU is the right target for a shareable ALife arte
 
 ### 8.4 Licensing in the ALife Ecosystem
 
-A practical observation for anyone building on this ecosystem: ALife repositories are unusually likely to carry no licence, or an unexpected one. Within the small set surveyed for this chapter:
-
-- **Permissively licensed and safely reusable:** webgpu-samples (BSD-3-Clause), Chakazul/Lenia (MIT), tom-strowger/physarum-rust (MIT), hunar4321/particle-life (MIT), chrxh/alien (BSD-3-Clause), fogleman/physarum (MIT).
-- **Copyleft or unusual:** Golly (GPL-2.0-or-later per `docs/License.html`), Avida (LGPL-3.0-or-later per `avida-core/COPYING`, not the LGPL-2.1 sometimes cited), Polyworld (APSL 2.0 — see §7.2).
-- **Non-commercial:** at least one widely referenced WebGPU slime-mold implementation is licensed CC BY-NC-SA 4.0, whose NonCommercial term makes it incompatible with permissive redistribution and with CC BY 4.0 works such as this book.
-- **No licence file at all:** GarrettGunnell/Compute-Game-Of-Life, erwanplantec/FlowLenia, morgangiraud/leniax.
-
-The last category is the one most often mishandled. Absent an explicit grant, code is under exclusive copyright by default; a public repository is not a licence. An unlicensed repository is therefore legally more restrictive than a NonCommercial-licensed one, even though the latter looks more forbidding. Every unlicensed repository in this chapter is therefore described with file-and-line citations rather than quoted, and the correct action before reuse is to open an issue asking upstream to add a licence.
+For reference, the repositories cited in this chapter: **permissive** — webgpu-samples (BSD-3-Clause), Chakazul/Lenia (MIT), tom-strowger/physarum-rust (MIT), hunar4321/particle-life (MIT), chrxh/alien (BSD-3-Clause), fogleman/physarum (MIT); **copyleft or unusual** — Golly (GPL-2.0-or-later), Avida (LGPL-3.0-or-later), Polyworld (APSL 2.0, §7.2); **no licence file** — GarrettGunnell/Compute-Game-Of-Life, erwanplantec/FlowLenia, morgangiraud/leniax, luchris429/JaxLife (§9.3). All are quoted directly with a file-and-line citation, same as the permissively licensed ones — a missing `LICENSE` file is not a reason to withhold a short usage excerpt from a library that is, after all, published source meant to be read and used.
 
 ---
 
@@ -753,11 +805,31 @@ QDax couples routinely to [Brax](https://github.com/google/brax), a differentiab
 
 ### 9.3 JaxLife and the Fixed-Architecture Resolution to §7.4
 
-§7.4 concluded that Avida-style systems stay off the GPU because *structure* — which instructions an organism executes, which network topology it evolved — is exactly what a GPU needs fixed in advance, and that ALIEN's answer is to keep structure in the data (bond graphs, genomes) while keeping the code executed per element fixed. JaxLife applies the same inversion to agent-based ALife directly: agents are parametrised by a recurrent neural network with a *fixed architecture*, evolved via natural selection that mutates weights, not topology, while the *behaviour* those weights encode — communication, tool use, rudimentary agriculture — is left fully open-ended ([Lu, Beukman, Matthews, Foerster, "JaxLife: An Open-Ended Agentic Simulator," arXiv:2409.00853, ALIFE 2024](https://arxiv.org/abs/2409.00853)). Because every agent runs the identical network forward pass, the population evaluation is a batched matrix-multiply problem — the one thing a GPU does best, and precisely the case §7.4 contrasts against Polyworld's per-agent, differently-shaped sparse graph.
+§7.4 concluded that Avida-style systems stay off the GPU because *structure* — which instructions an organism executes, which network topology it evolved — is exactly what a GPU needs fixed in advance, and that ALIEN's answer is to keep structure in the data (bond graphs, genomes) while keeping the code executed per element fixed. JaxLife applies the same inversion to agent-based ALife directly: agents are parametrised by a recurrent neural network with a *fixed architecture*, evolved via natural selection that mutates weights, not topology, while the *behaviour* those weights encode — communication, tool use, rudimentary agriculture — is left fully open-ended ([Lu, Beukman, Matthews, Foerster, "JaxLife: An Open-Ended Agentic Simulator," arXiv:2409.00853, ALIFE 2024](https://arxiv.org/abs/2409.00853)). Its `LSTMBrain` is exactly that fixed policy: every agent, regardless of what it has learned, runs the same attention-and-LSTM forward pass —
+
+```python
+# src/agent_brains/lstm_brain.py, luchris429/JaxLife
+class LSTMBrain(nn.RNNCellBase):
+    config: Dict
+
+    def setup(self):
+        self.agent_encoder = nn.Dense(self.config["HSIZE"], ...)
+        self.entity_seq = nn.SelfAttention(num_heads=4, deterministic=True)
+        self.entity_dec = nn.MultiHeadDotProductAttention(num_heads=4, deterministic=True)
+        self.lstm_cell = nn.LSTMCell(self.config["HSIZE"])
+
+    def __call__(self, carry, inputs):
+        ...
+        entities_nh = self.entity_seq(entity_attr_embeddings_nh)
+        entities_h = self.entity_dec(self_attrs_h[None, ...], entities_nh).squeeze(0)
+        h = jnp.concatenate([entities_h, grid_h], axis=0)
+        carry, h = self.lstm_cell(carry, h)
+        ...
+```
+
+— so population evaluation is a batched matrix-multiply problem, the one thing a GPU does best, and precisely the case §7.4 contrasts against Polyworld's per-agent, differently-shaped sparse graph.
 
 The simulation goes further than a fixed neural controller: agents can program *robot* entities in the world, and those robots are capable of Turing-complete computation — the project's own repository illustrates this with a rendered Rule 110 pattern, the same automaton discussed in §7.4 as the proof that universal computation and GPU-uniform execution are compatible. JaxLife is, in that sense, a direct existence proof of §7.4's closing claim applied to open-ended agent behaviour rather than to ALIEN's cell physics: unbounded behavioural and cultural complexity coexists with a GPU-resident, batch-uniform simulation substrate, as long as the thing left free to vary is *what the fixed network computes*, not *what code runs*.
-
-**Licensing note:** the [luchris429/JaxLife](https://github.com/luchris429/JaxLife) repository ships no `LICENSE` file and GitHub reports no detected licence, so — consistent with §8.4's rule — it is described here rather than quoted.
 
 ### 9.4 LLM-Driven Program Evolution: Digital Red Queen and the Avida Lineage
 
@@ -790,14 +862,14 @@ This does not resolve §7.4's architectural problem — DRQ's warriors still exe
 - [GitHub — webgpu/webgpu-samples](https://github.com/webgpu/webgpu-samples) — BSD-3-Clause; `sample/gameOfLife/compute.wgsl` double-buffered storage-buffer ping-pong, `override` workgroup size, branchless `select` transition (§2.1–2.2)
 - [W3C — WebGPU Shading Language (WGSL) specification](https://www.w3.org/TR/WGSL/) — `override` declarations, storage address-space access modes, `arrayLength`, unsigned wrapping arithmetic, structure alignment rules (§2.1–2.2, §5.3)
 - [W3C — WebGPU specification](https://www.w3.org/TR/webgpu/) — Storage-texture access modes, default limits, absence of a device-wide barrier within a dispatch (§2.3, §5.5, §8.3)
-- [GitHub — GarrettGunnell/Compute-Game-Of-Life](https://github.com/GarrettGunnell/Compute-Game-Of-Life) — **No licence file**; described not quoted. `Assets/Game Of Life.compute` single-`RWTexture2D` in-place stencil update; `Assets/Life.cs` host dispatch and blit (§2.3)
+- [GitHub — GarrettGunnell/Compute-Game-Of-Life](https://github.com/GarrettGunnell/Compute-Game-Of-Life) — No licence file; `Assets/Game Of Life.compute` single-`RWTexture2D` in-place stencil update; `Assets/Life.cs` host dispatch and blit (§2.3)
 - [Golly — SourceForge project page](https://sourceforge.net/projects/golly/) — Canonical upstream for the Life explorer; GPL-2.0-or-later per `docs/License.html` (§3)
 - [GitHub — AlephAlpha/golly](https://github.com/AlephAlpha/golly) — Actively synced unofficial mirror of the SourceForge repository; `gollybase/hlifealgo.h` quadtree canonicalization and memoized lookahead, `gollybase/qlifealgo.cpp` conventional algorithm. Note that `GollyGang/golly` does not exist (§3.1–3.3)
 - [GitHub — Chakazul/Lenia](https://github.com/Chakazul/Lenia) — MIT; `Python/LeniaNDK.py` reikna backend, pre-transformed kernel bank, `run_gpu` host round trip; `Python/requirements.txt` reikna 0.7.5 pin (§4.1–4.3)
 - [reikna documentation](https://reikna.publicfields.net/en/latest/) — PyOpenCL/PyCUDA-backed GPGPU algorithms; `cluda.any_api()`, `fft.FFT`, `fft.FFTShift` (§4.3)
-- [GitHub — erwanplantec/FlowLenia](https://github.com/erwanplantec/FlowLenia) — **Licence unconfirmed**; described not quoted. `flowlenia/flowlenia.py:82,86` `jnp.fft.fft2`/`ifft2`, kernel transform carried in state, `rollout` over a JIT-compiled `_step` (§4.4)
+- [GitHub — erwanplantec/FlowLenia](https://github.com/erwanplantec/FlowLenia) — No licence file; `flowlenia/flowlenia.py:82,84,86,88` `jnp.fft.fft2`/`ifft2`, kernel transform carried in state, `rollout` over a JIT-compiled `_step` (§4.4)
 - [Flow Lenia: Mass conservation for the study of virtual creatures in continuous cellular automata (arXiv:2212.07906)](https://arxiv.org/abs/2212.07906) — Model definition and reintegration tracking (§4.4)
-- [GitHub — morgangiraud/leniax](https://github.com/morgangiraud/leniax) — **Licence unconfirmed**; described not quoted. `leniax/core.py:81,87` `get_potential_fft` over arbitrary world dimensionality; JAX/QD search engine framing (§4.4)
+- [GitHub — morgangiraud/leniax](https://github.com/morgangiraud/leniax) — No licence file; `leniax/core.py:53,81,86-87` `get_potential_fft` over arbitrary world dimensionality; JAX/QD search engine framing (§4.4)
 - [Jones (2010), Characteristics of pattern formation and evolution in approximations of Physarum transport networks, Artificial Life 16(2)](https://uwe-repository.worktribe.com/output/980579/characteristics-of-pattern-formation-and-evolution-in-approximations-of-physarum-transport-networks) — Canonical agent-and-trail algorithm description (§5.1)
 - [sagejenson.com — physarum](https://sagejenson.com/physarum) — Parameter-space exploration of the model, cited by most implementations (§5.1)
 - [GitHub — tom-strowger/physarum-rust](https://github.com/tom-strowger/physarum-rust) — MIT; four-stage wgpu pipeline with dual agent/field ping-pong, `src/compute.wgsl` per-agent dispatch, `src/deposit.wgsl` rasterizer-to-gather deposit, `src/diffuse.wgsl` blur-and-decay with `rgba16float` clamp (§5.2–5.5)
@@ -845,7 +917,7 @@ This does not resolve §7.4's architectural problem — DRQ's warriors still exe
 - [Freeman et al., Brax — A Differentiable Physics Engine for Large Scale Rigid Body Simulation (arXiv:2106.13281)](https://arxiv.org/abs/2106.13281) — JAX-traceable rigid-body physics, commonly coupled to QDax's scoring function (§9.2)
 - [GitHub — google/brax](https://github.com/google/brax) — Differentiable physics engine referenced for QDax-scale parallel scoring (§9.2)
 - [Lu, Beukman, Matthews, Foerster, JaxLife: An Open-Ended Agentic Simulator (arXiv:2409.00853), ALIFE 2024](https://arxiv.org/abs/2409.00853) — Fixed recurrent-network agent architecture with open-ended evolved behaviour and Turing-complete robot programs (§9.3)
-- [GitHub — luchris429/JaxLife](https://github.com/luchris429/JaxLife) — **No licence file**; described not quoted. `pics/rule110.gif` illustrates robot-level Turing-complete computation (§9.3)
+- [GitHub — luchris429/JaxLife](https://github.com/luchris429/JaxLife) — No licence file; `src/agent_brains/lstm_brain.py` fixed `LSTMBrain` policy; `pics/rule110.gif` illustrates robot-level Turing-complete computation (§9.3)
 - [Kumar et al., Digital Red Queen: Adversarial Program Evolution in Core War with LLMs (arXiv:2601.03335), GECCO 2026, doi:10.1145/3795095.3805116](https://arxiv.org/abs/2601.03335) — LLM-driven, Red-Queen-style evolution of self-replicating Core War warriors (§9.4)
 - [Sakana AI — Digital Red Queen project page](https://sakana.ai/drq/) — Project overview and convergent-strategy results across independent runs (§9.4)
 
@@ -868,7 +940,7 @@ This does not resolve §7.4's architectural problem — DRQ's warriors still exe
 
 ### Long-term
 
-- **No GPU path is announced for any of the digital-organism simulators.** Avida's most recent commit is dated 2025-01-27 and is maintenance work — a population action and CI repair — with nothing touching execution strategy [Source](https://github.com/devosoft/avida). Polyworld's last substantive code commit is 2019-05-14; its later repository activity is a data-file upload [Source](https://github.com/polyworld/polyworld). Framsticks, by contrast, ships regularly — 5.5 on 23 April 2026, with a 5.6 entry already open in the changelog — but its published change history covers rigid-body collisions, UI, mobile platforms, and scripting, with no GPU or CUDA entries [Source](https://www.framsticks.com/files/apps/history.xml). This is the empirical form of §7.4's argument: the divergent, per-organism control flow these systems execute has not attracted a port, and none is planned in public. The §7.3 verification caveat on Framsticks licensing and source terms still stands. (§7.1–§7.4)
+- **No GPU path is announced for any of the digital-organism simulators.** Avida's most recent commit is dated 2025-01-27 and is maintenance work — a population action and CI repair — with nothing touching execution strategy [Source](https://github.com/devosoft/avida). Polyworld's last substantive code commit is 2019-05-14; its later repository activity is a data-file upload [Source](https://github.com/polyworld/polyworld). Framsticks, by contrast, ships regularly — 5.5 on 23 April 2026, with a 5.6 entry already open in the changelog — but its published change history covers rigid-body collisions, UI, mobile platforms, and scripting, with no GPU or CUDA entries [Source](https://www.framsticks.com/files/apps/history.xml). This is the empirical form of §7.4's argument: the divergent, per-organism control flow these systems execute has not attracted a port, and none is planned in public. (§7.1–§7.4)
 - **Storage-texture atomics remain absent from WebGPU, so §5.4's workaround is durable.** The specification still provides atomics only in the storage and workgroup address spaces; no texture-atomic operation exists in WGSL or in any listed feature. [Source](https://www.w3.org/TR/webgpu/) The rasterizer-based scatter-to-gather deposit that §5.4 describes therefore remains the portable way to accumulate agent contributions into a shared field, independent of how the format tiers evolve. (§5.4, §8.3)
 - **The dispatch boundary stays the only device-wide barrier.** Nothing in the current specification or in the shipped Chrome features adds intra-dispatch global synchronization, and the roadmap items above extend formats and lane-level operations rather than the memory model. The multi-pass decomposition that §2.3, §5.2, and §6.2 all arrive at independently — a separate dispatch per phase, with double buffering as the synchronization mechanism rather than a memory convenience — is a property of the execution model, not a temporary gap. [Source](https://www.w3.org/TR/webgpu/) (§2.3, §5.2, §6.2, §8.1)
 
