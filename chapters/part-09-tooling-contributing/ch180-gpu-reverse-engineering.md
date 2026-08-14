@@ -27,7 +27,7 @@
    - [7.4 Mesa u_trace: Generic GPU Tracing](#74-mesa-u_trace-generic-gpu-tracing)
 8. [ISA Reverse Engineering](#8-isa-reverse-engineering)
    - [8.1 nvdisasm: NVIDIA's Own Disassembler](#81-nvdisasm-nvidias-own-disassembler)
-   - [8.2 LLVM-Based Disassemblers](#82-llvm-based-disassemblers)
+   - [8.2 LLVM-Based Disassemblers, spirv-dis, and SPIRV-Cross](#82-llvm-based-disassemblers-spirv-dis-and-spirv-cross)
    - [8.3 intel_aubdump: Intel Command Capture](#83-intel_aubdump-intel-command-capture)
 9. [Firmware Protocol Reverse Engineering](#9-firmware-protocol-reverse-engineering)
    - [9.1 Ghidra for GPU Firmware](#91-ghidra-for-gpu-firmware)
@@ -402,14 +402,51 @@ cuobjdump --dump-sass myprogram         # SASS = Shader Assembly
 
 For Kepler (GK104–GK210) shaders, `envydis -m gk110` and `cuobjdump` both work, with envydis being more useful for cross-referencing against the Nouveau driver's shader encoding in `src/nouveau/compiler/`.
 
-### 8.2 LLVM-Based Disassemblers
+### 8.2 LLVM-Based Disassemblers, spirv-dis, and SPIRV-Cross
 
 LLVM includes GPU-targeting backends that can be repurposed as disassemblers:
 
 - **AMDGPU:** `llvm-objdump` with the AMDGPU target disassembles GCN and RDNA shader binaries: `llvm-objdump -d --mattr=+gfx1100 shader.elf`
-- **SPIRV-Cross / spirv-dis:** For SPIR-V intermediate representation, `spirv-dis` (from SPIRV-Tools) disassembles SPIR-V binaries to a human-readable textual format, useful for tracing Vulkan/OpenCL shader compilation chains.
 
 For Adreno ISA (Qualcomm), the `qrisc-disasm` tool in freedreno's tree disassembles SQE (shader queue engine) firmware binaries.
+
+Above the vendor ISA layer, most Vulkan and OpenCL drivers consume SPIR-V as their intermediate representation before lowering to native ISA. Two Khronos-maintained tools cover complementary parts of inspecting that IR, and it is worth being precise about which one to reach for.
+
+**`spirv-dis`** (part of [SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools)) is a 1:1 disassembler: it turns the binary SPIR-V word stream into the textual assembly grammar defined by the SPIR-V spec, with one line of output per instruction and no restructuring. This is the right tool when the goal is to inspect exactly what a shader compiler emitted — e.g. diffing SPIR-V output across two Mesa commits, or confirming which capabilities/extensions a Vulkan ICD's shader compiler declared.
+
+```bash
+# Disassemble a SPIR-V binary to readable text
+spirv-dis shader.spv -o shader.spvasm
+
+# Add byte offsets and inline comments, keep raw numeric IDs instead of
+# spirv-dis's synthesized friendly names (%12 instead of %float_1_0)
+spirv-dis --offsets --comment --raw-id shader.spv
+
+# Reorder blocks to follow structured control flow instead of binary layout order,
+# and indent to show nesting -- makes loops/ifs much easier to read
+spirv-dis --reorder-blocks --nested-indent shader.spv
+```
+
+[Source](https://raw.githubusercontent.com/KhronosGroup/SPIRV-Tools/main/tools/dis/dis.cpp)
+
+**SPIRV-Cross** ([KhronosGroup/SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)) does the opposite job: instead of a flat disassembly, it *reconstructs* higher-level shading-language source (GLSL, HLSL, MSL, or a JSON reflection dump) from the SPIR-V control-flow graph, re-deriving structured `if`/`for`/`while` statements, variable names, and resource bindings. This is useful when the SPIR-V under study was itself produced by decompiling something else further downstream (e.g. converting captured driver shader IR back through SPIR-V), or when comparing what a given SPIR-V module *means* rather than its literal encoding — the reconstructed GLSL is far easier to read for shader-logic review than raw `spirv-dis` output, at the cost of no longer reflecting the exact instruction-by-instruction binary layout.
+
+```bash
+# Reconstruct GLSL source from a SPIR-V module (auto-detects a matching GL/GLES version)
+spirv-cross shader.spv --output shader.frag
+
+# Target a specific shading dialect / version instead
+spirv-cross shader.spv --output shader.metal --msl
+spirv-cross shader.spv --output shader.hlsl --hlsl --shader-model 50
+
+# Dump reflection data (uniform/resource bindings, entry points) as JSON,
+# useful for correlating SPIR-V descriptor bindings with a captured command stream
+spirv-cross shader.spv --reflect
+```
+
+[Source](https://github.com/KhronosGroup/SPIRV-Cross)
+
+In practice the two are complementary in a GPU RE workflow: `spirv-dis` shows precisely what instructions a driver's SPIR-V front-end (e.g. Mesa's NIR-to-SPIR-V path, or a closed-source ICD's GLSL/HLSL compiler) produced, while SPIRV-Cross's reconstructed source is what to hand to someone auditing shader *behavior* rather than encoding — for example, when correlating a suspicious SPIR-V capability bit or extended instruction with what the shader is actually trying to compute before diving into the vendor ISA disassembly from §8.1/§8.3.
 
 ### 8.3 intel_aubdump: Intel Command Capture
 
@@ -442,19 +479,68 @@ For ARM Cortex-M firmware (Mali CSF firmware, Adreno GMU firmware, NVIDIA PMU):
 3. **Recover symbol names.** GPU firmware images sometimes retain a `.symtab` section, or error strings (ASCII) can be cross-referenced to identify function names from log message format strings.
 4. **Trace the IPC protocol.** Find the firmware's main dispatch loop (typically polling a mailbox register or a shared-memory ring buffer) and trace the handler for each message type. Document the structure layout at each message type's handler entry.
 
-For NVIDIA Falcon firmware, `envydis -m falcon` disassembles the Falcon bytecode before bringing it into Ghidra.
+**Scripted analysis with `analyzeHeadless`.** For batch RE work — e.g. re-running the same auto-analysis and symbol-recovery script across every firmware version pulled from a driver's `/lib/firmware/` tree — Ghidra's headless mode drives the same analysis pipeline as the GUI without opening a window:
+
+```bash
+# Import a firmware blob into a new headless project and run auto-analysis
+analyzeHeadless /home/user/ghidra_projects FalconFW \
+    -import gsp_tu10x.bin \
+    -processor ARM:LE:32:Cortex \
+    -analysisTimeoutPerFile 300
+
+# Re-process an already-imported binary, running a post-analysis script that
+# recovers symbol names from embedded error strings, then delete the scratch project
+analyzeHeadless /home/user/ghidra_projects FalconFW \
+    -process gsp_tu10x.bin \
+    -postScript RecoverErrorStringSymbols.java \
+    -scriptPath /home/user/ghidra_scripts \
+    -noanalysis -deleteProject -readOnly
+```
+
+Key flags: `-import <file>` brings a new binary into the project; `-process <file>` re-runs against one already imported; `-preScript`/`-postScript` run a script (with the search path set via `-scriptPath`) before/after analysis; `-processor <languageID>` forces the architecture when auto-detection fails, as it often does for firmware blobs with no container format; `-noanalysis` skips Ghidra's built-in analyzers when only running a custom script; `-analysisTimeoutPerFile` bounds runaway analysis on obfuscated or unusually large images; `-deleteProject` and `-readOnly` keep batch runs from accumulating project state between firmware versions. [Source](https://raw.githubusercontent.com/NationalSecurityAgency/ghidra/master/Ghidra/RuntimeScripts/support/analyzeHeadlessREADME.md)
+
+For NVIDIA Falcon firmware, `envydis -m falcon` disassembles the Falcon bytecode as a standalone step before bringing the result into Ghidra as a reference. A more integrated alternative is [`ghidra_falcon`](https://github.com/marysaka/ghidra_falcon), a third-party Sleigh processor-module extension that teaches Ghidra the Falcon instruction set directly, so firmware images can be disassembled and decompiled in-place rather than cross-referencing a separate envydis dump:
+
+```bash
+# Build the extension (requires JAVA_HOME and GHIDRA_INSTALL_DIR set)
+export GHIDRA_INSTALL_DIR=/opt/ghidra
+./gradlew
+
+# Install: copy the built zip into Ghidra's extension directory, then
+# enable it from Ghidra's File -> Install Extensions... dialog
+cp dist/ghidra_*_ghidra_falcon.zip "$GHIDRA_INSTALL_DIR/Extensions/Ghidra/"
+```
+
+> **Note:** `ghidra_falcon` is a community project of limited maturity — its README describes it as an early-stage alternative to manual dead-listing with `envydis`, not a drop-in replacement. Cross-check its output against `envydis -m falcon` disassembly for unfamiliar Falcon microcode before trusting a decompilation. [Source](https://github.com/marysaka/ghidra_falcon)
 
 ### 9.2 Differential Firmware Analysis
 
-When firmware binaries are updated, comparing consecutive versions reveals changed protocol structures without requiring full binary analysis:
+When firmware binaries are updated, comparing consecutive versions reveals changed protocol structures without requiring full binary analysis. `radiff2` (from [radare2](https://github.com/radareorg/radare2)) supports several diffing modes, from raw byte-level distance to function-level analysis-driven comparison, selectable with different flags:
 
 ```bash
-# Diff two Falcon firmware versions at binary level using radiff2 (from radare2)
+# Byte-level edit distance: fast, no disassembly required. -s uses Myers'
+# O(ND) diff algorithm (no substitution); -ss uses Levenshtein (substitution
+# allowed, O(N^2), slower but a closer match for firmware with shifted bytes)
 radiff2 -s gsp_tu10x.bin.old gsp_tu10x.bin.new
 
-# More structured: compare function boundaries using bindiff (after Ghidra analysis)
-# Areas of change indicate modified or new message types
+# Two-column hexdump diff -- useful for spotting a small structural change
+# (e.g. one new field in a message header) at a glance
+radiff2 -x gsp_tu10x.bin.old gsp_tu10x.bin.new
+
+# Analysis-driven diff: run Ghidra-equivalent auto-analysis (aaa) on both
+# binaries first, then diff at the function level instead of raw bytes --
+# far more resilient to code that merely shifted address after a relink
+radiff2 -A -a arm -b 32 gsp_tu10x.bin.old gsp_tu10x.bin.new
+
+# Graph-diff a single function/symbol shared across both versions, showing
+# exactly which basic blocks changed
+radiff2 -g dispatch_message -a arm -b 32 gsp_tu10x.bin.old gsp_tu10x.bin.new
+
+# Unified diff output (---+++ style), useful for piping into a patch review
+radiff2 -u gsp_tu10x.bin.old gsp_tu10x.bin.new
 ```
+
+The `-A`/`-g` analysis-based modes are the more structured counterpart to the manual "compare function boundaries after Ghidra analysis" approach: `-A` runs radare2's own analyzer rather than requiring a separate Ghidra pass, and reports function-level match ratios directly, so changed or newly-added functions surface without hand-correlating two Ghidra projects. Areas of change identified either way indicate modified or new message types. [Source](https://raw.githubusercontent.com/radareorg/radare2/master/libr/main/radiff2.c)
 
 Changes in consecutive firmware versions tend to be localised: a new message type adds a handler function and a corresponding enum value; a bug fix changes one function. By binary-diffing firmware versions and focusing RE effort on changed regions, the analysis time for a full firmware update can be reduced substantially.
 
