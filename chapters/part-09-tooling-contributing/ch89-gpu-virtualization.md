@@ -71,7 +71,7 @@ Section 10 covers GPU containers and orchestration in depth:
 - **AMD ROCm** containers — using **`/dev/kfd`** and **DRM** render nodes
 - **Intel** GPU containers — via **`/dev/dri/renderD128`**
 - **Kubernetes** device plugin framework — advertising **`nvidia.com/gpu`**, **`amd.com/gpu`**, and **`intel.com/gpu`**
-- **Dynamic Resource Allocation** (**DRA**) — as of **Kubernetes** 1.31
+- **Dynamic Resource Allocation** (**DRA**) — GA as of **Kubernetes** 1.35
 - **cgroup v2** **eBPF**-based device access control — via **`BPF_CGROUP_DEVICE`**
 
 The chapter closes with a qualitative performance comparison across all approaches — **VFIO passthrough**, **SR-IOV VF**, **NVIDIA MIG**, **Intel GVT-g**, **Venus**, **VirGL**, and **virtio-gpu** display-only — and a decision guide covering cloud gaming, multi-user **VDI**, multi-tenant ML training and inference, development environments, **CI/CD** pipelines, and frame timing jitter in cloud gaming scenarios.
@@ -633,20 +633,61 @@ For the Intel GPU plugin in Kubernetes, the `intel.com/gpu` resource is advertis
 
 ### 10.4 Kubernetes Device Plugin Framework
 
-Kubernetes exposes GPUs through the **device plugin** API (`DevicePlugin` gRPC interface on `/var/lib/kubelet/device-plugins/`). Each vendor ships a DaemonSet that registers with the kubelet and advertises resources such as `nvidia.com/gpu`, `amd.com/gpu`, or `intel.com/gpu`. [Source](https://kubernetes.io/docs/tasks/manage-gpus/scheduling-gpus/)
+Kubernetes exposes GPUs to pod scheduling through the **device plugin** framework: a gRPC `DevicePlugin` service that each vendor's DaemonSet implements and registers with the kubelet over a Unix socket at `/var/lib/kubelet/device-plugins/kubelet.sock`. [Source](https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/device-plugins/)
+
+The service exposes four RPCs, and the kubelet drives them in a fixed order per container lifecycle:
+
+```protobuf
+service DevicePlugin {
+  rpc GetDevicePluginOptions(Empty) returns (DevicePluginOptions) {}
+  rpc ListAndWatch(Empty) returns (stream ListAndWatchResponse) {}
+  rpc Allocate(AllocateRequest) returns (AllocateResponse) {}
+  rpc PreStartContainer(PreStartContainerRequest) returns (PreStartContainerResponse) {}
+}
+```
+
+`ListAndWatch` is the RPC that matters for the mechanisms earlier in this chapter: it streams the plugin's current device list to the kubelet and is how a vendor plugin enumerates the *specific* kernel-level objects §2–§6 describe as allocatable units — an IOMMU-isolated PCI function for VFIO passthrough (§2–§3), an SR-IOV VF (§4–§5), or a MIG `nvidia-cap*` instance (§6.2). Each entry the plugin reports becomes one indivisible unit of the extended resource it advertises (`nvidia.com/gpu`, `amd.com/gpu`, `intel.com/gpu`); Kubernetes schedules these as integer resources with no fractional allocation and no sharing between containers:
 
 ```yaml
 # Pod requesting one GPU
 resources:
   limits:
-    nvidia.com/gpu: "1"   # GPU limits must equal requests
+    nvidia.com/gpu: "1"   # GPU limits must equal requests; integer only
 ```
 
-As of Kubernetes 1.31, **Dynamic Resource Allocation (DRA)** is GA, enabling finer-grained GPU partitioning: a `ResourceClaim` can request a MIG partition, a specific SR-IOV VF, or a time-slice share without a custom device plugin per capability. [Source](https://blog.aks.azure.com/2025/11/17/dra-devices-and-drivers-on-kubernetes)
+`Allocate` is called at container creation and returns the host-side wiring for whichever device IDs the kubelet selected — device nodes (e.g., `/dev/nvidia0`, or a MIG `/dev/nvidia-caps/nvidia-cap*` pair), environment variables, mounts, and (since CDI support went GA in device plugins at Kubernetes 1.31) fully-qualified CDI device names that hand off directly into the CDI-mode path described in §10.1. In other words, the device plugin framework is a *registration and scheduling* layer on top of the isolation primitives this chapter builds: it does not itself create IOMMU groups, program SR-IOV VFs, or carve MIG partitions — it discovers units that already exist (created via `sriov_numvfs`, `nvidia-smi mig -cgi`, or equivalent, per §4–§6) and tells the scheduler which node holds how many of them.
 
-### 10.5 Device cgroup v2 (eBPF-based)
+One structural limitation follows directly from `ListAndWatch`'s design: because a plugin advertises devices as an undifferentiated pool of identical resource names, it cannot express that two MIG instances are on the same physical GPU (for co-location) or that one SR-IOV VF sits on a NUMA node closer to a given pod. Working around this has historically required per-vendor extensions (e.g., NVIDIA's mixed MIG-strategy resource names such as `nvidia.com/mig-3g.40gb`) rather than a general mechanism — the gap that Dynamic Resource Allocation (§10.5) was designed to close.
 
-Linux cgroup v2 replaces the legacy `devices` cgroup subsystem with an eBPF-based policy attached via `BPF_CGROUP_DEVICE`. The container runtime attaches a BPF program to the container's cgroup that allows or denies `open()` calls on specific device major:minor numbers. For MIG, each `nvidia-cap*` capability file has a unique major:minor, so the cgroup policy precisely isolates a container to a single MIG partition without exposing other partitions or the whole GPU.
+For the full operational treatment — DaemonSet manifests, the NVIDIA/AMD/Intel device plugin images, and time-slicing ConfigMaps — see Chapter 55 §"NVIDIA GPU Device Plugin". This chapter's concern is the kernel-level object each `ListAndWatch` entry ultimately names.
+
+### 10.5 Dynamic Resource Allocation (DRA)
+
+**Dynamic Resource Allocation** is the API-group `resource.k8s.io` mechanism that replaces the device plugin's flat resource-name model with structured, attribute-based device claims. It reached GA (stable) in Kubernetes v1.35. [Source](https://kubernetes.io/docs/concepts/scheduling-eviction/dynamic-resource-allocation/)
+
+DRA introduces four API objects instead of the device plugin's single gRPC service:
+
+- **`ResourceSlice`** — published by a DRA driver (a kubelet plugin, structurally the DRA-era analogue of a device-plugin DaemonSet) to describe the devices a node actually has, including per-device attributes. For the mechanisms in this chapter, a NVIDIA DRA driver's `ResourceSlice` is the structured equivalent of enumerating each MIG `nvidia-cap*` instance from §6.2 or each SR-IOV VF from §4–§5, but with attributes attached — MIG profile, VRAM size, NVLink topology — rather than a bare integer count.
+- **`DeviceClass`** — a cluster-admin-defined category of claimable device, using CEL (Common Expression Language) selector expressions to filter `ResourceSlice` entries by attribute.
+- **`ResourceClaim`** / **`ResourceClaimTemplate`** — a workload-level request against a `DeviceClass`, with its own CEL selectors and constraints; the pod spec references the claim under `resources.claims` rather than under `resources.limits`.
+
+```yaml
+# Pod requesting a device via DRA instead of an extended resource
+spec:
+  containers:
+  - name: app
+    resources:
+      claims:
+      - name: gpu-claim   # references a ResourceClaim/ResourceClaimTemplate
+```
+
+The practical gain over §10.4's model is precisely the co-location and topology problem noted above: because attributes live on the `ResourceSlice` entry itself, a `ResourceClaim`'s CEL selector can request "a MIG partition with ≥3g.40gb profile" or "two SR-IOV VFs on GPUs connected by NVLink" directly, instead of relying on vendor-specific resource-name conventions. The kernel-level objects being claimed are unchanged from §4–§6 — DRA changes how the claim is expressed and matched, not what is being isolated underneath. NVIDIA's own DRA driver, distributed as a component of the [NVIDIA GPU Operator](https://github.com/NVIDIA/gpu-operator) (which also automates driver, Container Toolkit, device plugin, and feature-discovery deployment — see Chapter 240 §7.1 for its role in a Kubernetes cluster), is the reference implementation for mapping MIG and SR-IOV state into `ResourceSlice` attributes.
+
+As of this writing, several DRA capabilities relevant to GPU partitioning — partitionable devices, consumable capacity, device taints and tolerations — remain alpha, meaning MIG- and SR-IOV-aware DRA drivers are still maturing relative to the long-stable device plugin path in §10.4; production clusters at time of writing predominantly still schedule GPUs via device plugins, with DRA adoption concentrated in early adopters and newer driver releases. Chapter 55 §"Dynamic Resource Allocation (DRA)" covers the operational deployment path (driver installation, `DeviceClass` authoring for common GPU shapes) in more depth.
+
+### 10.6 Device cgroup v2 (eBPF-based)
+
+Linux cgroup v2 replaces the legacy `devices` cgroup subsystem with an eBPF-based policy attached via `BPF_CGROUP_DEVICE`. The container runtime attaches a BPF program to the container's cgroup that allows or denies `open()` calls on specific device major:minor numbers. For MIG, each `nvidia-cap*` capability file has a unique major:minor, so the cgroup policy precisely isolates a container to a single MIG partition without exposing other partitions or the whole GPU. This is the enforcement mechanism underneath both §10.4's `Allocate` RPC and §10.5's `ResourceClaim` binding: whichever layer selects a device, it is this eBPF policy that the container runtime installs to make the selection actually exclusive at the kernel level.
 
 ---
 
@@ -701,7 +742,7 @@ SR-IOV VF jitter is dominated by the hardware world-switch between VFs and any P
 - **Intel Xe3P SR-IOV on Nova Lake**: Linux 7.2 is expected to enable SR-IOV for Intel Nova Lake S/P integrated graphics via the `xe` driver, extending hardware VF partitioning to the next-generation Xe3P iGPU. [Source](https://www.phoronix.com/news/Intel-Nova-Lake-Graphics-SR-IOV)
 - **`VIRTIO_GPU_CAPSET_ROCM` capability set**: A patch series in review on LKML adds a new ROCm capset to `virtio-gpu`, enabling AMD compute workloads (HIP/ROCm) to run accelerated inside VMs using the paravirtual path — the first non-display, non-Vulkan compute forwarding mechanism in the virtio-gpu protocol. [Source](https://lkml.iu.edu/2601.1/09980.html)
 - **Venus per-context fence migration**: The virglrenderer Venus renderer is expected to transition to per-context fences only and mandate renderserver initialisation; this removes global fence serialisation and improves multi-VM throughput at the cost of a small API break for integrators. [Source](https://www.collabora.com/news-and-blog/blog/2025/01/15/the-state-of-gfx-virtualization-using-virglrenderer/)
-- **Kubernetes DRA and GPU fractional resources**: Dynamic Resource Allocation (DRA, GA in Kubernetes 1.31) is seeing active driver development for NVIDIA MIG partitions and Intel SR-IOV VFs, allowing `ResourceClaim`-based GPU scheduling without per-capability custom device plugins. [Source](https://blog.aks.azure.com/2025/11/17/dra-devices-and-drivers-on-kubernetes)
+- **Kubernetes DRA and GPU fractional resources**: Dynamic Resource Allocation (DRA), GA as of Kubernetes 1.35, is seeing active driver development for NVIDIA MIG partitions and Intel SR-IOV VFs, allowing `ResourceClaim`-based GPU scheduling without per-capability custom device plugins. Several partitioning-relevant DRA features (partitionable devices, consumable capacity) remain alpha. [Source](https://kubernetes.io/docs/concepts/scheduling-eviction/dynamic-resource-allocation/)
 - **KubeVirt + Intel Graphics SR-IOV Enablement Toolkit**: Intel's `kubevirt-gfx-sriov` project is actively being extended to support Xe-based discrete GPUs alongside existing 12th/13th-gen iGPU SR-IOV, enabling cloud/edge orchestration of graphics VFs inside KubeVirt VMs. [Source](https://github.com/intel/kubevirt-gfx-sriov)
 
 ### Medium-term (1–3 years)

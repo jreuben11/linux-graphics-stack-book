@@ -32,7 +32,7 @@ For **AMD** GPUs, containers require both `/dev/kfd` and a **DRM** render node. 
 
 For **Intel** GPUs, containers only require `/dev/dri/renderDN`. **VA-API** video encode/decode, the **Intel Compute Runtime** for **OpenCL** and **Level Zero**, and `intel-gpu-tools` (including `intel_gpu_top` with **i915_oa** performance counters) all operate through the render node. Multi-GPU containers using separate render nodes get separate **GEM** contexts but share GPU **DRAM** bandwidth without hard **QoS** partitioning on most hardware; the **Mesa** shader cache path (`MESA_SHADER_CACHE_DIR`) must be configured explicitly in containers with ephemeral root filesystems.
 
-**Kubernetes** does not natively understand GPU resources. The *Device Plugin API* (a **gRPC** interface between per-node daemonsets and the **kubelet**) is the standard extension mechanism: the **NVIDIA** `k8s-device-plugin` exposes `nvidia.com/gpu` resources, the **ROCm** device plugin exposes `amd.com/gpu`, and the **Intel** device plugins expose `gpu.intel.com/i915` and `gpu.intel.com/xe`. **MIG** (**Multi-Instance GPU**), available on **A100**, **H100**, **H200**, **B200**, and **GB200**, partitions a GPU at hardware level into spatially isolated instances with dedicated memory bandwidth, **L2** cache, and **SM** compute slices. GPU time-slicing provides logical GPU sharing without spatial isolation for hardware lacking **MIG**. **Kubernetes** 1.31 promoted **Dynamic Resource Allocation** (**DRA**) to stable, allowing structured device claims and GPU-topology-aware scheduling.
+**Kubernetes** does not natively understand GPU resources. The *Device Plugin API* (a **gRPC** interface between per-node daemonsets and the **kubelet**) is the standard extension mechanism: the **NVIDIA** `k8s-device-plugin` exposes `nvidia.com/gpu` resources, the **ROCm** device plugin exposes `amd.com/gpu`, and the **Intel** device plugins expose `gpu.intel.com/i915` and `gpu.intel.com/xe`. **MIG** (**Multi-Instance GPU**), available on **A100**, **H100**, **H200**, **B200**, and **GB200**, partitions a GPU at hardware level into spatially isolated instances with dedicated memory bandwidth, **L2** cache, and **SM** compute slices. GPU time-slicing provides logical GPU sharing without spatial isolation for hardware lacking **MIG**. **Kubernetes** 1.35 promoted **Dynamic Resource Allocation** (**DRA**) to stable (GA), allowing structured device claims and GPU-topology-aware scheduling. [Source](https://kubernetes.io/docs/concepts/scheduling-eviction/dynamic-resource-allocation/)
 
 **WSL2** (**Windows Subsystem for Linux 2**) runs a Linux kernel in a **Hyper-V** VM and provides GPU access through a paravirtualisation stack: the `dxgkrnl` kernel driver (upstreamed in Linux 6.1 under `drivers/hv/dxgkrnl/`) exposes `/dev/dxg`, and the `libdxcore.so` userspace library wraps its **D3DKMT** IOCTLs. The **Mesa** `d3d12` **Gallium** driver translates OpenGL and OpenCL calls into **D3D12** command lists via a **NIR**→**DXIL** translation step, submitted through `libd3d12.so` and `libdxcore.so` to `dxgkrnl` across **VMBus**. Rendered framebuffers reach the Windows Desktop Window Manager via the `wsl-opengl-iosurface` IPC bridge (a cross-VM shared-memory mechanism analogous to **DMA-BUF**). For ML inference, **DirectML** (`libDirectML.so`) provides GPU-accelerated neural network operations over **D3D12**, used by **ONNX Runtime** through the DirectML execution provider.
 
@@ -127,7 +127,7 @@ Within the hook mechanism, OCI defines `prestart`, `createRuntime`, `createConta
 
 The Container Device Interface (CDI) is a vendor-neutral specification for describing how a complex device resource — potentially comprising multiple device nodes, library bind-mounts, environment variables, and OCI hooks — should be injected into a container. Before CDI, each GPU vendor required its own OCI runtime hook or runtime shim, creating tight coupling between the container engine and vendor-specific tooling. CDI externalises the device description into a YAML file placed in `/etc/cdi/` or `/var/run/cdi/` that any CDI-aware OCI runtime can parse directly.
 
-A CDI specification identifies devices under a vendor/class naming scheme (for example, `nvidia.com/gpu=0` or `intel.com/gpu=renderD128`) and lists all `containerEdits` required to expose that device: device node paths with their type, major, and minor numbers; mount entries for userspace libraries or firmware directories; environment variable additions; and optional OCI hooks for post-injection setup. The specification is generated and maintained by vendor CLI tools — `nvidia-ctk cdi generate` for NVIDIA hardware and equivalent tooling for AMD and Intel — and is registered with the runtime automatically. Kubernetes Dynamic Resource Allocation (DRA), promoted to stable in Kubernetes 1.31, integrates with CDI to express device claims in pod specifications declaratively, enabling topology-aware GPU scheduling without device-plugin daemonsets writing directly to the kubelet device socket.
+A CDI specification identifies devices under a vendor/class naming scheme (for example, `nvidia.com/gpu=0` or `intel.com/gpu=renderD128`) and lists all `containerEdits` required to expose that device: device node paths with their type, major, and minor numbers; mount entries for userspace libraries or firmware directories; environment variable additions; and optional OCI hooks for post-injection setup. The specification is generated and maintained by vendor CLI tools — `nvidia-ctk cdi generate` for NVIDIA hardware and equivalent tooling for AMD and Intel — and is registered with the runtime automatically. Kubernetes Dynamic Resource Allocation (DRA), promoted to stable (GA) in Kubernetes 1.35, integrates with CDI to express device claims in pod specifications declaratively, enabling topology-aware GPU scheduling without device-plugin daemonsets writing directly to the kubelet device socket.
 
 ---
 
@@ -586,11 +586,11 @@ The plugin injects `/dev/dri/renderDN` into the container via the device plugin 
 
 ### Dynamic Resource Allocation (DRA)
 
-Kubernetes 1.31 promoted Dynamic Resource Allocation (DRA) to stable. DRA is a more flexible replacement for the device plugin API, using the `resource.k8s.io/v1beta1` API group. Rather than exposing a flat count of identical devices, DRA allows device plugins to describe structured device attributes (compute capability, memory size, NVLink topology) and allows pods to express structured device claims:
+Kubernetes 1.35 promoted Dynamic Resource Allocation (DRA) to stable (GA), after progressing through alpha (1.26) and beta (1.32-era `resource.k8s.io/v1beta1`) stages. [Source](https://kubernetes.io/docs/concepts/scheduling-eviction/dynamic-resource-allocation/) DRA is a more flexible replacement for the device plugin API, using the GA `resource.k8s.io/v1` API group. Rather than exposing a flat count of identical devices, DRA allows device plugins to describe structured device attributes (compute capability, memory size, NVLink topology) and allows pods to express structured device claims:
 
 ```yaml
-# DRA ResourceClaim for NVIDIA MIG partition (Kubernetes 1.31+)
-apiVersion: resource.k8s.io/v1beta1
+# DRA ResourceClaim for NVIDIA MIG partition (Kubernetes 1.35+)
+apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
 metadata:
   name: gpu-claim
@@ -604,7 +604,31 @@ spec:
           expression: device.attributes["nvidia.com"].memoryMiB >= 20480
 ```
 
-DRA enables GPU-topology-aware scheduling — for example, ensuring that two pods requiring NVLink-connected GPUs are co-scheduled on GPUs that share an NVSwitch path. The NVIDIA GPU Operator provides a DRA driver as of version 25.x alongside the legacy device plugin.
+DRA enables GPU-topology-aware scheduling — for example, ensuring that two pods requiring NVLink-connected GPUs are co-scheduled on GPUs that share an NVSwitch path.
+
+### NVIDIA GPU Operator
+
+Everything in §2 (Container Toolkit), and the device-plugin/MIG/DRA mechanisms above, can be installed and wired together by hand — but every one of those pieces (kernel driver, container runtime hook, device plugin DaemonSet, node labels, monitoring exporter) has to be kept in version lockstep across every GPU node in a cluster, which does not scale operationally. The **NVIDIA GPU Operator** is a Kubernetes [operator](https://cloud.redhat.com/blog/introducing-the-operator-framework) — deployed via Helm, and driven by a single cluster-scoped `ClusterPolicy` custom resource — that automates the deployment and lifecycle of that entire stack so a cluster admin can provision a bare GPU node the same way they provision a bare CPU node. [Source](https://github.com/NVIDIA/gpu-operator)
+
+```bash
+helm repo add nvidia https://helm.ngc.nvidia.com/nvidia && helm repo update
+helm install --wait --generate-name -n gpu-operator --create-namespace nvidia/gpu-operator
+```
+
+The operator reconciles a fixed set of operand components, each running as its own DaemonSet or Deployment and each individually toggleable in `ClusterPolicy`:
+
+| Component | Role |
+|---|---|
+| **Driver container** | Builds/loads the NVIDIA kernel driver inside a container against the host kernel, so nodes can run a stock OS image with no vendor driver baked in — swapping driver versions becomes a container image change, not a node re-image. |
+| **NVIDIA Container Toolkit** | The runtime hook and CDI generation covered in §2, installed and configured cluster-wide. |
+| **Kubernetes device plugin** | The `k8s-device-plugin` DaemonSet from §5, advertising `nvidia.com/gpu` (and MIG profile resources). |
+| **DRA driver for GPUs** | [`k8s-dra-driver-gpu`](https://github.com/NVIDIA/k8s-dra-driver-gpu) publishing `ResourceSlice` objects for the DRA path above; available as an installable component, with the project's own roadmap tracking its promotion to a fully GA-managed operand. |
+| **GPU Feature Discovery (GFD)** | Labels each node with GPU model, memory, MIG capability, and driver/CUDA version, built on top of the CNCF **Node Feature Discovery** (NFD) project. |
+| **DCGM + dcgm-exporter** | NVIDIA Data Center GPU Manager for health/telemetry, exported as Prometheus metrics (utilization, ECC errors, thermal, NVLink status). |
+| **MIG Manager** | Reconciles a node's actual MIG geometry (§ above) against the profile requested via node labels or annotations, re-partitioning `nvidia-cap*` instances as needed. |
+| **Operator/driver validator** | Init-container-style checks that gate readiness until the driver and toolkit are confirmed functional on a node before it is marked schedulable. |
+
+This decomposition matters for where responsibility sits relative to earlier sections of this chapter and to Chapter 89: the GPU Operator does not implement any new isolation mechanism — MIG partitioning, SR-IOV, and cgroup device rules remain exactly the kernel- and driver-level primitives described in Chapter 89 §4–§6 and §10. What the operator adds is the automation and lifecycle-management layer on top: it decides *when* to run `nvidia-smi mig -cgi`, deploy a device plugin, or roll a driver upgrade across a fleet, rather than an administrator doing so node-by-node. Equivalent operators exist for other vendors — the **AMD GPU Operator** (`github.com/ROCm/gpu-operator`) automates ROCm driver, device plugin, and metrics-exporter deployment; **Intel** ships a comparable [Intel Device Plugins Operator](https://github.com/intel/intel-device-plugins-for-kubernetes) — though NVIDIA's is the most mature and widely deployed of the three.
 
 ---
 
@@ -967,6 +991,8 @@ This chapter connects to several other parts of the stack:
 **WSL2 d3d12 Gallium driver and Zink (Ch17)**: Zink (Ch17) is a Gallium driver that translates OpenGL to Vulkan. The Mesa `d3d12` Gallium driver follows the same architectural pattern — a translation-layer Gallium driver that converts the Mesa gallium interface to a foreign GPU API (D3D12 instead of Vulkan). Both Zink and d3d12 benefit from Mesa's common NIR shader optimisation passes; `d3d12` has an additional NIR→DXIL translation step not needed by Zink.
 
 **GPU power management (Ch51)**: In containerised and cloud environments, NVIDIA GPU persistence mode (`nvidia-smi -pm 1`) prevents the GPU from powering down between container runs. Without persistence mode, each container startup incurs a cold-initialisation latency (hundreds of milliseconds) as the driver re-initialises the GPU's firmware and clock domains. On Kubernetes nodes that host many short-lived inference pods, persistence mode is essential for maintaining target latency SLOs. For AMD GPUs, the equivalent is the amdgpu `runpm` sysfs control at `/sys/bus/pci/devices/<BDF>/power/control`.
+
+**GPU Virtualisation (Ch89)**: The GPU Operator's MIG Manager and DRA driver operands (§5) are orchestration wrappers around the kernel- and driver-level partitioning mechanisms — MIG instance creation, SR-IOV VF programming, and cgroup v2 `BPF_CGROUP_DEVICE` policy — described in depth in Chapter 89 §4–§6 and §10. This chapter's Kubernetes GPU Scheduling section (§5) is the operational counterpart to Chapter 89's kernel-level foundation.
 
 **ROCm (Ch48)**: The ROCm stack described in this chapter for container deployment sits on top of the kernel interfaces (HSA, `/dev/kfd`) described in detail in Ch48. The ROCm version pinning constraint discussed here — where the container's ROCm userspace version must not exceed the host kernel driver's supported ABI — is a direct consequence of the HSA runtime's use of `KFD_IOC_*` ioctls, which are versioned by the kernel driver.
 

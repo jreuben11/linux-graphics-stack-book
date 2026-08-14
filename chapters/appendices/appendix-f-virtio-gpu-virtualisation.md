@@ -520,7 +520,7 @@ The Kubernetes Device Plugin API (`k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1`
 
 **AMD GPU Operator** (`github.com/ROCm/k8s-device-plugin`) exposes AMD GPUs via the `amd.com/gpu` resource type. It injects both `/dev/kfd` (the KFD compute device node required for ROCm) and `/dev/dri/renderD*` (for 3D and media) into Pods.
 
-The Kubernetes **Dynamic Resource Allocation (DRA)** API (`k8s.io/dynamic-resource-allocation`), introduced as alpha in Kubernetes 1.26 and advancing toward beta in 1.31+, is the likely successor to the Device Plugin API. DRA supports more expressive resource claims (e.g., requesting a specific GPU memory capacity or topology constraint) and structured parameters. Operators tracking GPU resource allocation should monitor DRA's progression, as the Device Plugin API is expected to be deprecated in a future Kubernetes release.
+The Kubernetes **Dynamic Resource Allocation (DRA)** API (`resource.k8s.io`), introduced as alpha in Kubernetes 1.26, reached GA (stable, `resource.k8s.io/v1`) in Kubernetes 1.35. [Source](https://kubernetes.io/docs/concepts/scheduling-eviction/dynamic-resource-allocation/) DRA supports more expressive resource claims (e.g., requesting a specific GPU memory capacity or topology constraint) and structured parameters. The Device Plugin API remains supported alongside DRA rather than being immediately deprecated; operators tracking GPU resource allocation should monitor per-vendor DRA driver maturity before migrating production workloads.
 
 ### F.5.2 cgroup DRM Device Access Policy
 
