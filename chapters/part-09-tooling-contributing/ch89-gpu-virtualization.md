@@ -608,6 +608,42 @@ docker run -e NVIDIA_VISIBLE_DEVICES=MIG-GPU-<uuid>/1/0 \
            nvcr.io/nvidia/pytorch:24.01-py3 python train.py
 ```
 
+**The `nvidia-ctk` CLI.** `nvidia-ctk cdi generate` above is one subcommand of a larger tool. `nvidia-ctk` is a `urfave/cli/v3`-based Go binary with six top-level subcommands, registered in `getCommands()`; global flags are `--debug`/`-d` (env `NVIDIA_CTK_DEBUG`), `--quiet` (env `NVIDIA_CTK_QUIET`, overrides `--debug`), and `--config` (env `NVIDIA_CTK_CONFIG`). [Source](https://github.com/NVIDIA/nvidia-container-toolkit/blob/ef54448e413e0f1ca1cf943ecfa9cd456882397a/cmd/nvidia-ctk/main.go)
+
+```
+NAME:
+   NVIDIA Container Toolkit CLI - Tools to configure the NVIDIA Container Toolkit
+
+COMMANDS:
+   hook     A collection of hooks that may be injected into an OCI spec
+   runtime  A collection of runtime-related utilities for the NVIDIA Container Toolkit
+   info     Provide information about the system
+   cdi      Provide tools for interacting with Container Device Interface specifications
+   system   A collection of system-related utilities for the NVIDIA Container Toolkit
+   config   Interact with the NVIDIA Container Toolkit configuration
+```
+
+- **`hook`** — exposes the individual CDI hooks that a generated CDI spec's `hooks:` entries invoke inside the container at `createContainer` time, as direct subcommands: `update-ldcache` (runs `ldconfig` against a `--folder` added to `/etc/ld.so.conf`), `create-symlinks` (creates `target::link` pairs, e.g. the driver's versioned `.so` → unversioned symlink), `chmod` (applies a `--mode` to `--path` entries under the container root — used to relax permissions on `/dev/nvidia*` device nodes), `enable-cuda-compat` (adds the CUDA forward-compatibility library folder to the ldconfig search path when the container's bundled CUDA compat libraries report a higher major version than `--host-driver-version`), `disable-device-node-modification` (blocks writes to `/proc/driver/nvidia/params` inside the container so an unprivileged process cannot request new device-node creation from the host driver), and `update-application-profile` (sets `EGLVisibleDGPUDevices` to restrict EGL/Vulkan GPU visibility). The command implementations live in the shared `cmd/nvidia-cdi-hook/commands` package, so `nvidia-ctk hook <name>` and the standalone `nvidia-cdi-hook` binary that a CDI spec's `hooks:` entry actually shells out to run identical code. [Source](https://github.com/NVIDIA/nvidia-container-toolkit/blob/ef54448e413e0f1ca1cf943ecfa9cd456882397a/cmd/nvidia-cdi-hook/commands/commands.go)
+
+  `ConfigureCDIHookCommand` also installs deliberate forward/backward-compatibility handling: an unrecognized hook subcommand, or a recognized one invoked with a flag it doesn't understand, does not fail the command — it logs `Unsupported CDI hook: <name>` via `issueUnsupportedHookWarning` and returns exit success. This means a CDI spec written by a newer Container Toolkit (referencing a hook not yet shipped in an older `nvidia-cdi-hook` binary on the host, or vice versa after a hook is removed) degrades to a warning rather than aborting container startup. A hidden `noop` subcommand exists purely to exercise this path in tests. [Source](https://github.com/NVIDIA/nvidia-container-toolkit/blob/ef54448e413e0f1ca1cf943ecfa9cd456882397a/cmd/nvidia-cdi-hook/commands/commands.go#L34-L79)
+
+- **`runtime configure`** — patches a container engine's config file to register the NVIDIA runtime, rather than requiring hand-edited TOML/JSON:
+
+  ```bash
+  nvidia-ctk runtime configure --runtime=containerd --cdi.enabled
+  systemctl restart containerd
+  ```
+
+  Key flags: `--runtime` selects the target engine (`containerd`, `crio`, or `docker`); `--config` overrides the config file path; `--config-mode` selects the registration mechanism; `--cdi.enabled` turns on CDI support in the configured runtime; `--nvidia-set-as-default` makes the NVIDIA runtime the engine's default (rather than requiring `--runtime=nvidia` per container); `--dry-run` prints the resulting config without writing it. The `--oci-hook-path` flag (for the legacy `oci-hook` config mode) is explicitly documented as deprecated in its own usage string — further evidence the toolkit is steering deployments toward the CDI path described above. [Source](https://github.com/NVIDIA/nvidia-container-toolkit/blob/ef54448e413e0f1ca1cf943ecfa9cd456882397a/cmd/nvidia-ctk/runtime/configure/configure.go)
+
+- **`info`** — in the current toolkit source this is a bare stub (`Name: "info", Usage: "Provide information about the system"` with no registered subcommands), unlike the other five top-level commands. [Source](https://github.com/NVIDIA/nvidia-container-toolkit/blob/ef54448e413e0f1ca1cf943ecfa9cd456882397a/cmd/nvidia-ctk/info/info.go)
+
+- **`cdi`** — the generation/inspection toolset behind the one-liner already shown above; besides `generate` it also has `list` (enumerates CDI devices discovered under `--spec-dir`) and `transform root` (rewrites the host/container root path embedded in an *existing* CDI spec's device nodes and mounts — needed when a spec generated on the host is consumed inside a nested container or a `chroot`'d install root). `generate`'s notable flags beyond `--output`/`--format`: `--mode`/`--discovery-mode` (`auto`, plus explicit driver-discovery modes), `--device-name-strategy` (`index`, `uuid`, or `type-index` — repeatable, so a spec can expose the same GPU under multiple naming schemes at once), and `--driver-root`/`--dev-root` for non-standard driver installs. [Source](https://github.com/NVIDIA/nvidia-container-toolkit/blob/ef54448e413e0f1ca1cf943ecfa9cd456882397a/cmd/nvidia-ctk/cdi/generate/generate.go)
+
+- **`system`** — host-preparation utilities that run *before* any container starts: `create-device-nodes --control-devices --load-kernel-modules` creates the control device nodes (`nvidiactl`, `nvidia-modeset`, `nvidia-uvm`, `nvidia-uvm-tools`), loading the kernel modules first if requested; `create-dev-char-symlinks --create-all` creates the `/dev/char/MAJOR:MINOR` symlinks that CDI specs use to reference the same nodes by stable major:minor rather than by name. This is the piece that solves the container cold-start problem: the first container scheduled onto a fresh node needs both loaded NVIDIA kernel modules and populated device nodes to exist on the *host* before any CDI hook or bind mount can succeed, and these commands (typically run by an init container or the NVIDIA GPU Operator's driver daemonset) guarantee that precondition. [Source](https://github.com/NVIDIA/nvidia-container-toolkit/blob/ef54448e413e0f1ca1cf943ecfa9cd456882397a/cmd/nvidia-ctk/system/create-device-nodes/create-device-nodes.go)
+
+- **`config`** — reads and edits `/etc/nvidia-container-runtime/config.toml` (or a path given via `--config-file`): `nvidia-ctk config --set <key>[=value] --in-place` sets one field (list-valued fields accept a separator configurable via `--set-list-separator`); `config create-default` (registered as `default`) writes a fresh default config to `--output` or stdout, e.g. to seed a config before a `runtime configure` pass runs against it. [Source](https://github.com/NVIDIA/nvidia-container-toolkit/blob/ef54448e413e0f1ca1cf943ecfa9cd456882397a/cmd/nvidia-ctk/config/config.go)
+
 ### 10.2 AMD ROCm in Containers
 
 AMD GPU access in containers uses the `/dev/kfd` (the ROCm kernel fusion driver interface) and `/dev/dri/renderD128` (the DRM render node) devices. No proprietary toolkit is required:
@@ -681,9 +717,115 @@ spec:
       - name: gpu-claim   # references a ResourceClaim/ResourceClaimTemplate
 ```
 
-The practical gain over §10.4's model is precisely the co-location and topology problem noted above: because attributes live on the `ResourceSlice` entry itself, a `ResourceClaim`'s CEL selector can request "a MIG partition with ≥3g.40gb profile" or "two SR-IOV VFs on GPUs connected by NVLink" directly, instead of relying on vendor-specific resource-name conventions. The kernel-level objects being claimed are unchanged from §4–§6 — DRA changes how the claim is expressed and matched, not what is being isolated underneath. NVIDIA's own DRA driver, distributed as a component of the [NVIDIA GPU Operator](https://github.com/NVIDIA/gpu-operator) (which also automates driver, Container Toolkit, device plugin, and feature-discovery deployment — see Chapter 240 §7.1 for its role in a Kubernetes cluster), is the reference implementation for mapping MIG and SR-IOV state into `ResourceSlice` attributes.
+The practical gain over §10.4's model is precisely the co-location and topology problem noted above: because attributes live on the `ResourceSlice` entry itself, a `ResourceClaim`'s CEL selector can request "a MIG partition with ≥3g.40gb profile" or "two SR-IOV VFs on GPUs connected by NVLink" directly, instead of relying on vendor-specific resource-name conventions. The kernel-level objects being claimed are unchanged from §4–§6 — DRA changes how the claim is expressed and matched, not what is being isolated underneath. NVIDIA's own DRA driver, [k8s-dra-driver-gpu](https://github.com/NVIDIA/k8s-dra-driver-gpu) — distributed as a component of the [NVIDIA GPU Operator](https://github.com/NVIDIA/gpu-operator), which also automates driver, Container Toolkit, device plugin, and feature-discovery deployment (see Chapter 240 §7.1 for its role in a Kubernetes cluster) — is the reference implementation for mapping MIG and SR-IOV state into `ResourceSlice` attributes.
 
-As of this writing, several DRA capabilities relevant to GPU partitioning — partitionable devices, consumable capacity, device taints and tolerations — remain alpha, meaning MIG- and SR-IOV-aware DRA drivers are still maturing relative to the long-stable device plugin path in §10.4; production clusters at time of writing predominantly still schedule GPUs via device plugins, with DRA adoption concentrated in early adopters and newer driver releases. Chapter 55 §"Dynamic Resource Allocation (DRA)" covers the operational deployment path (driver installation, `DeviceClass` authoring for common GPU shapes) in more depth.
+**A worked `DeviceClass`.** The driver's Helm chart templates one `DeviceClass` per selectable device shape rather than hand-authoring YAML. Its plain-GPU class matches any device the driver reports as a whole GPU:
+
+```yaml
+# deployments/helm/dra-driver-nvidia-gpu/templates/deviceclass-gpu.yaml (rendered)
+apiVersion: resource.k8s.io/v1
+kind: DeviceClass
+metadata:
+  name: gpu.nvidia.com
+spec:
+  selectors:
+  - cel:
+      expression: "device.driver == 'gpu.nvidia.com' && device.attributes['gpu.nvidia.com'].type == 'gpu'"
+  extendedResourceName: nvidia.com/gpu   # only set when apiVersion is v1
+```
+
+[Source](https://github.com/NVIDIA/k8s-dra-driver-gpu/blob/main/deployments/helm/dra-driver-nvidia-gpu/templates/deviceclass-gpu.yaml)
+
+The `extendedResourceName` field is the escape hatch back into §10.4's model: Kubernetes 1.35's `DRAExtendedResource` feature gate lets a pod keep writing the familiar `resources.limits: {nvidia.com/gpu: 1}` while the scheduler transparently synthesizes a matching `ResourceClaim` against this `DeviceClass` and binds it in `PreBind` — visible afterward as an auto-generated `ResourceClaim` carrying the `resource.kubernetes.io/extended-resource-claim: "true"` annotation. This is how existing device-plugin-era manifests migrate onto a DRA driver without a rewrite. The chart emits an analogous `DeviceClass` for MIG devices (`mig.nvidia.com`, selecting `type == 'mig'` with no `extendedResourceName`, since a bare MIG type is too coarse a shape to map onto one legacy resource name), plus dedicated classes per compute-domain/IMEX role. [Source](https://github.com/NVIDIA/k8s-dra-driver-gpu/blob/main/deployments/helm/dra-driver-nvidia-gpu/templates/deviceclass-mig.yaml)
+
+**A worked `ResourceClaimTemplate` and Pod.** The driver's quickstart example requests two whole GPUs by count, with no attribute filtering beyond the `DeviceClass` selector above:
+
+```yaml
+# demo/specs/quickstart/gpu-test8.yaml — one pod, one container asking for 2 GPUs
+apiVersion: resource.k8s.io/v1beta1
+kind: ResourceClaimTemplate
+metadata:
+  namespace: gpu-test8
+  name: double-gpu
+spec:
+  spec:
+    devices:
+      requests:
+      - name: gpu
+        deviceClassName: gpu.nvidia.com
+        count: 2
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: gpu-test8
+  name: gpu-pod
+spec:
+  containers:
+  - name: ctr0
+    image: ubuntu:22.04
+    command: ["bash", "-c", "nvidia-smi; sleep 9999"]
+    resources:
+      claims:
+      - name: twogpus
+  resourceClaims:
+  - name: twogpus
+    resourceClaimTemplateName: double-gpu       # kubelet creates one ResourceClaim per pod from this template
+  tolerations:
+  - key: "nvidia.com/gpu"
+    operator: "Exists"
+    effect: "NoSchedule"
+```
+
+[Source](https://github.com/NVIDIA/k8s-dra-driver-gpu/blob/main/demo/specs/quickstart/gpu-test8.yaml)
+
+Note this upstream demo pins `resource.k8s.io/v1beta1` rather than the stable `v1` group used in the `DeviceClass` example above and in Chapter 55's example. This is not an error in the demo — the chart's `resourceApiVersion` helper probes the target cluster's `APIVersions` and prefers `v1`, falling back through `v1beta2` to `v1beta1` only on older clusters that predate GA, and the quickstart pins the oldest group deliberately for broadest compatibility. [Source](https://github.com/NVIDIA/k8s-dra-driver-gpu/blob/main/deployments/helm/dra-driver-nvidia-gpu/templates/_helpers.tpl#L180-L198) A `ResourceClaimTemplate` (unlike a bare `ResourceClaim`) is namespaced but not itself schedulable state — the kubelet instantiates one concrete `ResourceClaim` per pod at admission, so two replicas of a `Deployment` referencing the same template each get their own independent claim and their own independent device allocation.
+
+**CEL selectors beyond a bare type check.** A `DeviceClass` can select on any attribute the driver publishes on the `ResourceSlice`, not just `type`. This example restricts an extended-resource-style class to one specific MIG profile, mirroring the classic device-plugin naming convention (`nvidia.com/mig-1g.12gb`) while keeping the underlying request DRA-native:
+
+```yaml
+apiVersion: resource.k8s.io/v1
+kind: DeviceClass
+metadata:
+  name: mig-1g-12gb.gpu.nvidia.com
+spec:
+  selectors:
+  - cel:
+      expression: >-
+        device.driver == 'gpu.nvidia.com' &&
+        device.attributes['gpu.nvidia.com'].type == 'mig' &&
+        device.attributes['gpu.nvidia.com'].profile == '1g.12gb'
+  extendedResourceName: nvidia.com/mig-1g.12gb
+```
+
+Each MIG profile needs its own `DeviceClass` and its own `extendedResourceName` — the demo's comments warn explicitly against mapping more than one `DeviceClass` to `nvidia.com/gpu`, since only one class can back a given extended-resource name at a time. [Source](https://github.com/NVIDIA/k8s-dra-driver-gpu/blob/main/demo/specs/extended-resources/mig-1g-12gb.yaml)
+
+**Consumable capacity (alpha).** Dividing one device's capacity across multiple claims, rather than allocating it whole, is exercised by the driver's `--consumable-shares=memory` mode. Each `ResourceClaimTemplate` below requests a 4 GiB *slice* of a GPU's memory capacity rather than the whole device, letting a `Deployment`'s replicas share one physical GPU:
+
+```yaml
+# demo/specs/consumable-shares/memory-sharing.yaml
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  namespace: gpu-share-memory
+  name: gpu-4gi
+spec:
+  spec:
+    devices:
+      requests:
+      - name: gpu
+        exactly:
+          deviceClassName: gpu.nvidia.com
+          capacity:
+            requests:
+              memory: 4Gi
+```
+
+[Source](https://github.com/NVIDIA/k8s-dra-driver-gpu/blob/main/demo/specs/consumable-shares/memory-sharing.yaml)
+
+This is structurally different from MIG (§6.2), which partitions a GPU into hardware-isolated instances ahead of time: capacity-based DRA sharing lets the *scheduler* pack claims onto a device's remaining capacity at bind time, with no hardware partition boundary enforced underneath — closer in spirit to the time-slicing configuration Chapter 55 covers for the device-plugin path, but expressed as a first-class claim request instead of a ConfigMap. Because the underlying `capacity.requests` mechanism is still an alpha DRA feature (behind a Kubernetes feature gate), driver support and scheduler behavior are less battle-tested than the count-based `ResourceClaimTemplate` example above; treat it as appropriate for evaluation rather than as a production isolation guarantee equivalent to MIG.
+
+As of this writing, several DRA capabilities relevant to GPU partitioning — partitionable devices, consumable capacity (shown above), device taints and tolerations — remain alpha, meaning MIG- and SR-IOV-aware DRA drivers are still maturing relative to the long-stable device plugin path in §10.4; production clusters at time of writing predominantly still schedule GPUs via device plugins, with DRA adoption concentrated in early adopters and newer driver releases. The extended-resource compatibility path shown above is the exception — it targets exactly those production clusters, letting them adopt a DRA driver without touching existing pod specs. Chapter 55 §"Dynamic Resource Allocation (DRA)" covers the operational deployment path (driver installation via the GPU Operator, `DeviceClass` authoring for common GPU shapes) in more depth.
 
 ### 10.6 Device cgroup v2 (eBPF-based)
 
