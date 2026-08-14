@@ -35,6 +35,7 @@
     - [12.8 Input Event Mapping](#128-input-event-mapping)
     - [12.9 Framework Integration](#129-framework-integration)
     - [12.10 What Is Missing: The wasi-webgpu Gap](#1210-what-is-missing-the-wasi-webgpu-gap)
+    - [12.11 Current Development Activity: Signals of a Living Ecosystem](#1211-current-development-activity-signals-of-a-living-ecosystem)
 
 ---
 
@@ -1029,9 +1030,9 @@ Six projects are at varying stages of relevance to the native WASM+GPU embedding
 
 #### `wasi-webgpu` (Bytecode Alliance / W3C WASI Community Group)
 
-**Status**: Design phase (WebAssembly CG, mid-2026). No Wasmtime implementation exists.
+**Status**: Phase 2 ("Feature Description Available") in the WASI Community Group process, as of mid-2026, championed by Mendy Berger and Sean Isom. No Bytecode Alliance-blessed Wasmtime implementation exists, though early community prototypes do (see gaps below). [Source: WebAssembly/wasi-webgpu README](https://github.com/WebAssembly/wasi-webgpu)
 
-The most directly relevant standards effort. `wasi-webgpu` is a WASI interface proposal to expose WebGPU surface and GPU device access to WASM modules running outside a browser. A companion proposal, `wasi-graphics-context`, defines surface and swapchain acquisition. Together they would give a WASM plugin typed access to a GPU device via WIT-generated bindings rather than hand-rolled `func_wrap` closures. [Source: github.com/WebAssembly/wasi-webgpu](https://github.com/WebAssembly/wasi-webgpu)
+The most directly relevant standards effort. `wasi-webgpu` is a WASI interface proposal that maps the stable WebGPU device/buffer/pipeline API onto WASI — deliberately scoped to GPU compute and rendering-to-an-existing-surface, not windowing (windowing is an explicit non-goal of the proposal itself). Surface and swapchain acquisition instead live in a sibling namespace, `wasi-gfx:surface` and `wasi-gfx:frame-buffer`, maintained by the community `wasi-gfx` organisation rather than inside core WASI — the project's stated rationale is that surface/windowing APIs need to iterate faster than the WASI standardisation cadence allows, while `wasi:webgpu` itself stays on the formal WASI track because it maps directly onto an already-stable web standard. Together they would give a WASM plugin typed access to a GPU device and a window surface via WIT-generated bindings rather than hand-rolled `func_wrap` closures. [Source: github.com/WebAssembly/wasi-webgpu](https://github.com/WebAssembly/wasi-webgpu) [Source: wasi-gfx/wasi-gfx README](https://github.com/wasi-gfx/wasi-gfx)
 
 *How to use today*: There is no usable implementation yet. The WIT files are in flux; the closest you can do is read the current proposal shape and write a private ABI that mirrors it (which is what §12.3–12.9 does). The intended future usage once the proposal stabilises:
 
@@ -1063,11 +1064,11 @@ interface webgpu {
 A guest module would then be built with `cargo component build --target wasm32-wasip2` and import `wasi:webgpu/webgpu` as a WIT dependency. The `wit-bindgen`-generated guest bindings replace all the raw `extern "C"` declarations in §12.6.
 
 *Current gaps*:
-- **No implementation**: No Wasmtime version implements even the device-creation path. No polyfill or shim exists.
+- **No blessed implementation, but early community prototypes exist**: No Wasmtime release implements `wasi:webgpu` out of the box, and there is no `wasmtime-gpu` crate. The `wasi-gfx` organisation nonetheless maintains a small, actively-updated tooling set: `wasi-gfx-runtime` (a native prototype host with example apps), `wasi-gfx-shim` (a browser-side polyfill that maps `wasi-gfx` components onto the browser's own WebGPU JS API), `wasi-gfx-js` (lets components be authored in JavaScript/TypeScript against the WIT interface), and `wasi-webgpu-headers` (generates C headers compatible with the existing `webgpu-native/webgpu-headers` project, the same header family Dawn and wgpu-native's C API target). None of these are Bytecode Alliance-endorsed or production-grade — `wasi-gfx-shim` in particular is a very early, single-digit-star project — but they mean the proposal is no longer purely paper. [Source: wasi-gfx/wasi-gfx README](https://github.com/wasi-gfx/wasi-gfx)
 - **WIT interface not frozen**: The WIT file has had breaking revisions; binding generated today will not match the final spec.
-- **No surface model**: `wasi-graphics-context` (how a plugin acquires a Wayland/X11/Win32 window surface) is a separate, equally early proposal. Without it, `wasi-webgpu` alone cannot present pixels to the screen.
-- **No security model**: GPU resource quotas, per-plugin memory limits, and preemption of GPU work from a misbehaving plugin are not yet addressed in the proposal.
-- **No testing infrastructure**: No reference test suite, no CTS equivalent for the WASI GPU path.
+- **Surface model exists but isn't standardised**: window/surface acquisition now has a concrete WIT shape (`wasi-gfx:surface`, `wasi-gfx:frame-buffer`), but by design it lives outside the WASI Community Group's formal process, in the faster-iterating `wasi-gfx` namespace. That buys prototyping speed at the cost of stability guarantees — there is no committed backward-compatibility policy the way there is for a Phase-2+ WASI proposal.
+- **No security model**: GPU resource quotas, per-plugin memory limits, and preemption of GPU work from a misbehaving plugin are not yet addressed in either the `wasi:webgpu` or `wasi-gfx` proposals.
+- **No formal testing infrastructure**: `wasi-gfx-runtime`'s example apps exercise the API informally, but there is no reference conformance suite and no CTS equivalent for the WASI GPU path — and per the WASI phase process, a covering test suite is an explicit entry requirement for Phase 3, which `wasi:webgpu` has not yet reached. [Source: WebAssembly/meetings — process/phases.md](https://github.com/WebAssembly/meetings/blob/main/process/phases.md)
 
 ---
 
@@ -1967,7 +1968,46 @@ The proof-of-concept above works, but three things prevent it from being a produ
 
 **3. WASM modules cannot use wgpu directly.** The wgpu crate's WebGPU backend targets the browser's JavaScript WebGPU API (via `web-sys`). There is no `wgpu` backend for "running inside Wasmtime with host-provided GPU imports". Plugin developers cannot write `use wgpu::*; let device = instance.request_device(...)` and have it work in this runtime — they must use the raw `extern "C"` host ABI. A thin crate wrapping the host ABI with a wgpu-shaped API would fix this but does not yet exist.
 
-**The expected unlock**: when `wasi-webgpu` defines a stable WASM interface, the Bytecode Alliance will implement it in Wasmtime as a first-class WASI implementation (parallel to `wasmtime-wasi`). Plugin developers will be able to use a safe Rust wrapper crate; GUI frameworks will gain a standardised `WasmGpuView` widget; and a WASM plugin compiled once will run in any compliant host — native GUI, server-side, or browser — without recompilation.
+#### 12.10.1 Where the Standards Track Actually Stands
+
+`wasi:webgpu` is not a paper proposal sitting in an issue tracker — it is a chartered WASI Community Group proposal that has cleared Phase 1 (Feature Proposal) and sits at **Phase 2, "Feature Description Available,"** as of mid-2026, championed by Mendy Berger and Sean Isom with a stated portability target of Linux, Windows, macOS, Android, and the web. [Source: WebAssembly/wasi-webgpu README](https://github.com/WebAssembly/wasi-webgpu) Phase 2's entry bar, per the WebAssembly CG's own phase process, is a precise-enough overview document plus at least one prototype implementation; it does *not* yet require a covering test suite. That requirement belongs to **Phase 3 ("Implementation Phase")**, and the proposal's own repository flags this directly: its "Stakeholder Interest & Feedback" section — a Phase 3 entry requirement — is still marked `TODO before entering Phase 3`. [Source: WebAssembly/meetings — process/phases.md](https://github.com/WebAssembly/meetings/blob/main/process/phases.md) In plain terms: the API shape has rough community consensus, but the proposal has not yet demonstrated the breadth of implementer and stakeholder commitment WASI requires to start locking the spec down. Estimating a stabilisation date from this position is speculative — the phase process has no fixed timeline, and WASI proposals have sat at Phase 2 for years before advancing (`wasi-nn`, cited in the Roadmap below, is the cautionary example).
+
+#### 12.10.2 The wasi-gfx Split: Standard Core, Fast-Moving Periphery
+
+A structural detail matters for anyone building against this today: `wasi:webgpu` is deliberately narrow. It covers only the GPU device/buffer/pipeline object model that WebGPU itself already standardises, and treats windowing as an explicit non-goal — the README defers surface acquisition to "other projects that may eventually become their own wasi proposals." [Source: WebAssembly/wasi-webgpu README](https://github.com/WebAssembly/wasi-webgpu) That "other project" is the community-run `wasi-gfx` organisation, which publishes two WIT packages — `wasi-gfx:surface` (window/surface management with pointer, keyboard, resize, and frame events) and `wasi-gfx:frame-buffer` (raw pixel buffer access) — that were in fact *removed* from core WASI and moved into this separate namespace specifically so they could iterate faster than the formal Community Group cadence allows. The project's own framing is explicit about the asymmetry: `wasi-gfx:surface` and `wasi-gfx:frame-buffer` are versioned "like a library rather than a rigid standard," while `wasi:webgpu` "remains an official WASI spec" precisely because it maps onto an already-frozen web standard rather than requiring fresh design work. [Source: wasi-gfx/wasi-gfx README](https://github.com/wasi-gfx/wasi-gfx) The practical upshot for the architecture in §12.3–12.9: the device/rendering half of a future standard ABI is on a real, if slow, standards track; the surface-acquisition half deliberately is not, and may change shape without a WASI-style deprecation cycle.
+
+#### 12.10.3 The Tooling Gap Is Narrowing, Not Closed
+
+The `wasi-gfx` organisation also now maintains a small but real prototype toolchain, which meaningfully changes the "no implementation" framing above without closing it:
+
+- **`wasi-gfx-runtime`** — a native host runtime that hosts both `wasi:webgpu` and `wasi-gfx` components, with a working example-app harness (`cargo xtask run-demo`). This is the closest thing to the `wasmtime-gpu` crate described as missing in gap 2 above — but it is a community prototype, not a Bytecode Alliance-maintained crate shipped alongside `wasmtime-wasi`.
+- **`wasi-gfx-shim`** — a browser-side polyfill implementing `wasi-gfx` on top of the browser's *own* WebGPU JS API, so a component written against the WASI interface can also run unmodified inside a normal browser tab. It is very early (single digits of stars, first pushed only days before this chapter's most recent revision) but it is a working shim, not a hypothetical one.
+- **`wasi-gfx-js`** — implements the browser's WebGPU JS API *on top of* `wasi:webgpu`, the mirror image of the shim above: it lets developers author `wasi-gfx` components in JavaScript/TypeScript using WebGPU-shaped calls they already know.
+- **`wasi-webgpu-headers`** — generates C headers conforming to the existing `webgpu-native/webgpu-headers` project, the same header family Dawn's and wgpu-native's C APIs already implement. This is the piece most directly relevant to §3's Emscripten path: code written against `webgpu.h` today is, in principle, retargetable to a `wasi:webgpu` host without a rewrite, once the generated headers are complete.
+
+None of this closes gap 3 — there is still no `wgpu`-crate backend that lets `use wgpu::*` compile against a WASI host — but it does mean a developer evaluating this architecture in mid-2026 has actual repositories to `cargo run` against, not just a WIT sketch. [Source: wasi-gfx organisation repositories](https://github.com/wasi-gfx)
+
+**The expected unlock, revised**: the original framing — "wait for `wasi-webgpu` to stabilise, then Wasmtime ships it" — undersold how much of the ecosystem is already prototype-stage. The more accurate framing is two parallel tracks converging: the `wasi:webgpu` device/buffer/pipeline API advancing (slowly) through the formal WASI phase process toward a Phase 3 test suite, while the `wasi-gfx` organisation's runtime, shim, and header tooling matures in parallel outside that process, deliberately unconstrained by it. A safe Rust wrapper crate, a standardised `WasmGpuView` GUI widget, and true write-once-run-anywhere plugin portability all still depend on the *first* track reaching Phase 4 (`wasi-nn`'s multi-year Phase 2 residency is the reason not to expect this soon) — but the *second* track means the practical developer experience of experimenting with this architecture today is meaningfully better than the "hand-roll everything" position described in §12.3–12.9 might suggest.
+
+### 12.11 Current Development Activity: Signals of a Living Ecosystem
+
+§12.10 covers the standards track. It is worth separately establishing that wasm-wgpu integration is an *actively worked* problem outside standards bodies too. Rather than anchoring this to specific issue numbers and dates — which age out quickly and read as a stale status report within a year of publication — the more durable observation is the trajectory each project is on and where its recurring friction sits.
+
+#### 12.11.1 wgpu's Own WebGPU Backend Is the Most Direct Integration Point
+
+`wgpu/src/backend/webgpu.rs` — the `web-sys`-mediated backend that lets `wgpu::Instance::new` transparently wrap `navigator.gpu` in a browser (§4.1–4.2) — is under continuous substantive development, not just dependency maintenance. Recent work has extended it in two directions: filling in WebGPU-spec error semantics that the backend previously collapsed into generic device-loss handling, and wiring up `GPUExternalTexture` support — the WebGPU mechanism for importing an already-decoded browser video frame as a GPU-sampleable texture without a copy. That external-texture path is the closest thing WebGPU currently offers to a "video interop" primitive: much narrower than Vulkan Video (no decode/encode, just zero-copy sampling of a frame the browser has already decoded), but the only such bridge presently in wgpu's browser backend. The recurring open-issue themes are less about missing features and more about cross-backend and cross-browser consistency: divergent crash/device-loss behaviour between the WebGPU and WebGL2 fallback backends, and browser-specific stability problems (WebKit/Safari in particular) that show the wasm target has not yet reached uniform reliability across engines. [Source: gfx-rs/wgpu repository](https://github.com/gfx-rs/wgpu)
+
+#### 12.11.2 The wasi-gfx Toolchain Is Being Actively Built, Not Just Speced
+
+Beyond the proposal text discussed in §12.10.3, the `wasi-gfx` organisation's runtime, shim, and header repositories see frequent, ongoing commits — the kind of cadence associated with active prototyping rather than an abandoned proof-of-concept. For a Phase 2 standards proposal with no formal implementation mandate yet, that is a meaningful signal: the ecosystem isn't waiting for the WASI process to reach Phase 3 before building against the interface.
+
+#### 12.11.3 Bevy as the Ecosystem's Pressure Test
+
+Bevy (Chapter 40) is the highest-traffic consumer of wgpu's wasm path, and its issue tracker functions as an informal integration test suite for the whole stack. The recurring categories of web-specific bugs reported against it map directly onto seams this chapter describes elsewhere: WebGPU's stricter, browser-enforced device limits (§7.4) being exceeded in scenes that run fine under native Vulkan's more permissive limits; viewport/HiDPI scaling edge cases specific to the web canvas integration (§4.4); web-target tooling gaps around newer shader-language work like WESL (see the Medium-term Roadmap below); and shader or texture behaviour that reproduces on one browser's WebGPU implementation (Dawn, in Chrome/Edge) but not another's (wgpu itself, in Firefox) — concrete, ongoing evidence of the cross-implementation divergence described qualitatively in §7.5. None of these are wgpu bugs in the narrow sense; they are integration bugs at the seam between Bevy, wgpu's browser backend, and each browser's own WebGPU implementation — the seam §4–§7 describe, still being hardened through production use. [Source: bevyengine/bevy repository](https://github.com/bevyengine/bevy)
+
+#### 12.11.4 The Browser-Vendor Angle
+
+Firefox's WebGPU implementation is not a from-scratch engine — it embeds the `wgpu` crate directly inside Gecko. That means every Gecko release that advances Firefox's WebGPU support (tracked in this chapter's Roadmap as "Firefox WebGPU enabled by default") is itself wgpu integration work, just filed under Mozilla's release process rather than a wasm-specific tracker. It is a second, independent axis of active wasm-wgpu integration work beyond the browser-*target* activity in §12.11.1: it is wgpu *becoming* a browser's GPU implementation, not merely targeting one.
 
 ---
 
@@ -2104,6 +2144,12 @@ The proof-of-concept above works, but three things prevent it from being a produ
 - [WebLLM arXiv paper](https://arxiv.org/html/2412.15803v1)
 - [Figma rendering with WebGPU](https://www.figma.com/blog/figma-rendering-powered-by-webgpu/)
 - [Wasmer COOP/COEP header patching](https://docs.wasmer.io/sdk/wasmer-js/how-to/coop-coep-headers/)
+- [WebAssembly/wasi-webgpu — proposal README and phase status](https://github.com/WebAssembly/wasi-webgpu)
+- [WebAssembly/meetings — process/phases.md (WASI proposal phase process)](https://github.com/WebAssembly/meetings/blob/main/process/phases.md)
+- [wasi-gfx/wasi-gfx — WIT packages and tooling overview](https://github.com/wasi-gfx/wasi-gfx)
+- [wasi-gfx organisation repositories (wasi-gfx-runtime, wasi-gfx-shim, wasi-gfx-js, wasi-webgpu-headers)](https://github.com/wasi-gfx)
+- [gfx-rs/wgpu repository — webgpu.rs backend and issue tracker](https://github.com/gfx-rs/wgpu)
+- [bevyengine/bevy repository — web/wasm issue tracker](https://github.com/bevyengine/bevy)
 
 ---
 
