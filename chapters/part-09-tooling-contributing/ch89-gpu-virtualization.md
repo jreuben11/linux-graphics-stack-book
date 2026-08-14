@@ -400,6 +400,8 @@ The NVIDIA Container Toolkit (§10) reads `NVIDIA_VISIBLE_DEVICES` at container 
 
 **No graphics APIs** are supported in MIG mode; the A100/H100 are exclusively compute GPUs. RTX Pro 6000 Blackwell is the first GPU where NVIDIA is extending MIG to graphics workloads (Note: this feature is still evolving as of mid-2026; verify current documentation).
 
+The `nvidia-smi mig` invocations above are the manual path; NVIDIA's `NVIDIA/mig-parted` and `NVIDIA/vgpu-device-manager` tools exist to make MIG and vGPU configuration declarative and idempotent for fleet operators instead of an operator running `-cgi`/`-cci` by hand on every node. `mig-parted` takes a YAML config describing named MIG layouts (e.g., "all-1g.10gb" or a mixed GI/CI profile set), applies it via the same underlying `nvidia-smi mig` and NVML calls, and is the mechanism Kubernetes GPU operators use to reconcile a node's MIG geometry to a declared state — it is the piece that sits underneath the `nvidia.com/mig-3g.40gb`-style resource names referenced in §10.4. `vgpu-device-manager` does the equivalent for the proprietary vGPU product in §6.1, applying declarative vGPU-type-to-GPU mappings on hosts running the NVIDIA vGPU Manager. [Source: NVIDIA/mig-parted, https://github.com/NVIDIA/mig-parted; NVIDIA/vgpu-device-manager, https://github.com/NVIDIA/vgpu-device-manager]
+
 ---
 
 ## 7. virtio-gpu: The Paravirtual Display Stack

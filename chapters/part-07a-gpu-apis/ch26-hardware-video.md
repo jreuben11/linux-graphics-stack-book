@@ -1517,6 +1517,10 @@ The NVDEC SDK path is the only one with zero-copy to CUDA compute (DeepStream, T
 [Source: video-sdk-samples GitHub](https://github.com/NVIDIA/video-sdk-samples)
 [Source: nvidia-vaapi-driver GitHub](https://github.com/elFarto/nvidia-vaapi-driver)
 
+### 12.7 Python Bindings: VideoProcessingFramework and nvvl
+
+Two NVIDIA projects wrap the `nvcuvid.h` / NVENC C APIs above for Python consumers instead of requiring a custom C++ `NvDecoder`/`NvEncoder` harness. `NVIDIA/VideoProcessingFramework` (VPF, archived) exposed NVDEC decode and NVENC encode as Python objects (`PyNvDecoder`, `PyNvEncoder`) that hand back decoded frames as PyTorch tensors or NumPy arrays already resident in GPU memory, targeting the same zero-copy-to-CUDA use case as §12.4 but from a Python training/inference pipeline rather than C++. `NVIDIA/nvvl` predates VPF and solves a narrower problem specific to ML training: it decodes short video clips directly into batched CUDA tensors for data loaders, avoiding the CPU-side JPEG-decode-per-frame bottleneck that dominates video-dataset training pipelines when frames are pre-extracted to disk. Both are effectively superseded in current NVIDIA guidance by the DALI (Data Loading Library) video pipeline, but remain representative of the "GPU-decode-straight-into-a-training-tensor" pattern this section's zero-copy transcode path also implements. [Source: NVIDIA/VideoProcessingFramework, https://github.com/NVIDIA/VideoProcessingFramework; NVIDIA/nvvl, https://github.com/NVIDIA/nvvl]
+
 ---
 
 ## Media Server Hardware Acceleration on Linux

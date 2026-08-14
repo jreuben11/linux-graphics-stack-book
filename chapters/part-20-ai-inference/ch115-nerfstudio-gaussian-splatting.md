@@ -2984,6 +2984,8 @@ This chapter connects to the following parts of the Linux graphics stack:
 
 **Chapter 212 — Python 3D ML Libraries:** The data structure and preprocessing layer beneath the training pipelines in this chapter — PyTorch3D `Meshes`/`Pointclouds`, Kaolin SPC octrees and USD I/O, Open3D TSDF integration, trimesh mesh loading, and sparse 3D convolution (spconv/torchsparse for LiDAR perception) — is covered in Chapter 212. threestudio's DMTet/NeuS geometry backends feed the FlexiCubes and marching-tetrahedra conversions described there; DUSt3R/MASt3R dense point map outputs feed directly into Open3D Poisson reconstruction (ch212 §1.6) and PyTorch3D `Pointclouds` (ch212 §2.1).
 
+**Chapter 211b — Isaac Sim, Isaac Lab, and GR00T; Chapter 240 — Cosmos, OSMO, and Omniverse Farm:** NuRec (`NVIDIA/instant-nurec`, `nurec-skills`, `harmonizer`) is NVIDIA Omniverse's feed-forward 3D Gaussian reconstruction pipeline for autonomous-vehicle and robotics simulation — it converts driving-log sensor recordings directly into 3DGS scene representations without the per-scene optimisation loop described in §6–7 of this chapter, then uses `harmonizer` to correct reconstruction artifacts and enforce temporally consistent lighting/appearance, and `nurec-skills` to automate the reconstruction-and-rendering workflow end to end. This is the same feed-forward reconstruction problem as DUSt3R/MASt3R (§17–18) applied to driving-log sensor streams instead of casual multi-view capture; the resulting scenes feed Isaac Sim (Chapter 211b) as simulation environments and the Cosmos/Omniverse Farm synthetic-data pipeline (Chapter 240). [Source: NVIDIA/instant-nurec, https://github.com/NVIDIA/instant-nurec; NVIDIA/nurec-skills, https://github.com/NVIDIA/nurec-skills; NVIDIA/harmonizer, https://github.com/NVIDIA/harmonizer]
+
 **Chapter 46 — Vulkan Compute:** Section 11 of this chapter covers `vk_gaussian_splatting`, which demonstrates the Vulkan compute and ray-tracing pipeline for real-time splat rendering. Chapter 46 covers the Vulkan compute model in depth.
 
 **Chapter 76 — Modern Vulkan Extensions:** VK3DGRT uses `VK_KHR_ray_tracing_pipeline` and `VK_KHR_acceleration_structure`. Chapter 76 covers these extensions with reference to their interaction with DRM/KMS and Mesa.
@@ -3016,6 +3018,9 @@ This chapter connects to the following parts of the Linux graphics stack:
 - [PlayCanvas SuperSplat](https://github.com/playcanvas/supersplat)
 - [COLMAP: Structure-from-Motion Revisited](https://colmap.github.io/)
 - [ROCm/AMD discussion](https://github.com/nerfstudio-project/nerfstudio/discussions/2388)
+- [NVIDIA instant-nurec: Feed-Forward 3D Gaussian Reconstruction from Driving Logs](https://github.com/NVIDIA/instant-nurec)
+- [NVIDIA nurec-skills](https://github.com/NVIDIA/nurec-skills)
+- [NVIDIA harmonizer](https://github.com/NVIDIA/harmonizer)
 
 ## Roadmap
 

@@ -950,6 +950,8 @@ The CDN edge must be configured to disable response buffering — nginx requires
 
 **GStreamer as a server**: `gst-rtsp-server` (C library) builds a fully-featured RTSP server from GStreamer pipelines. For WHIP/WHEP, GStreamer's `whipsink` and `whepsrc` elements (added in 1.22) provide direct integration.
 
+All of the above targets internet delivery, where compression is mandatory and packet loss is expected. Professional broadcast plants instead run **SMPTE ST 2110** — uncompressed video, audio, and ancillary data as separate RTP essence streams over a PTP-synchronised, lossless Ethernet fabric — a fundamentally different transport regime from the ABR/WebRTC/SRT protocols in this chapter. NVIDIA's `NVIDIA/Rivermax` SDK is the vendor path into that regime: it extends GPUDirect zero-copy delivery to ST 2110 streams, moving RTP-wrapped video frames between the NIC and GPU memory without a CPU-side copy, which matters for broadcast infrastructure doing GPU-accelerated processing (graphics insertion, up/down-conversion) on live uncompressed feeds. [Source: NVIDIA/Rivermax, https://github.com/NVIDIA/Rivermax]
+
 ---
 
 ## 12. Integrations

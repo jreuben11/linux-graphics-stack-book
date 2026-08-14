@@ -144,6 +144,8 @@ graph TD
     DRV -- "ioctl" --> KernelDrv
 ```
 
+`NVIDIA/cuda-python` is NVIDIA's official Cython-based binding of both libraries into a single Python package: `cuda.bindings.driver` exposes the `cu`-prefixed Driver API one-to-one, and `cuda.bindings.runtime` exposes the `cuda`-prefixed Runtime API one-to-one, with a higher-level `cuda.core` module layered on top for Pythonic context, stream, and module management. This sits below the tile-programming abstraction described in §11 — `cutile` and Tilus compile a Python function body to a kernel, whereas `cuda-python` just gives a Python application direct, unmediated calls into `libcuda.so`/`libcudart.so` without writing a CUDA C extension module. [Source: NVIDIA/cuda-python, https://github.com/NVIDIA/cuda-python]
+
 ### 1.2 Version Compatibility and CUDA_ERROR_INVALID_PTX
 
 The driver API version installed on a system must be greater than or equal to the runtime API version the application was built against. This is enforced by CUDA's forward-compatibility layer (`libcuda.so` exposes a compatibility interface for toolkit versions newer than the driver, within limits documented per-major-version).

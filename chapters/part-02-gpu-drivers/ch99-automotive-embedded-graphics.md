@@ -952,6 +952,10 @@ As noted in §2, AGL uses **Waltham** for forwarding Wayland protocol messages (
 
 **Note**: Waltham adoption in production is limited and its real-world latency and bandwidth characteristics over automotive Ethernet (100Base-T1, 1000Base-T1) are not publicly benchmarked as of 2026; treat the above as architectural description rather than tested specification.
 
+### NvSci: Cross-SoC Buffer and Sync Sharing on NVIDIA DRIVE/Tegra
+
+The H.264-streaming and Waltham paths above assume the two SoCs communicate over a general-purpose network link. NVIDIA's DRIVE/Tegra platforms (e.g. Orin, referenced above as a central compute SoC option) instead expose a lower-level primitive for the same multi-SoC problem: `NVIDIA/nvsci` provides the Linux kernel modules backing **NvSciBuf** (buffer allocation and cross-process/cross-SoC memory handle sharing) and **NvSciSync** (fence/synchronization object sharing), used when a safety-island processor and a Linux compute processor on the same board — or two discrete Tegra SoCs connected via PCIe — need to share a GPU-rendered buffer and its associated completion fence without a copy. This is architecturally the same problem DMA-BUF and sync objects solve within a single Linux kernel instance (Chapter 5), extended across an IOMMU/security domain boundary that a single DMA-BUF handle cannot cross; NvSci is NVIDIA's automotive-specific answer to that boundary, as distinct from Waltham's protocol-forwarding approach and the GStreamer path's encode/decode round-trip. [Source: NVIDIA/nvsci, https://github.com/NVIDIA/nvsci]
+
 ### Adaptive AUTOSAR Graphics Services
 
 Adaptive AUTOSAR (AP) defines a standardised software architecture for SDV high-compute ECUs. AP defines an `ara::com` communication framework (over SOME/IP) but does not standardise a graphics API at the AP level. Vendor implementations (ETAS, Vector, Elektrobit) typically integrate AGL UCB or a custom Linux-based HMI container as an AP adaptive application, exposing system state via SOME/IP services and receiving rendered surface updates via Waltham or direct DMA-BUF sharing.

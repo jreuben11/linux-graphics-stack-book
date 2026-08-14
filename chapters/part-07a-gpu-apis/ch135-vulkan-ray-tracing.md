@@ -585,6 +585,10 @@ The hardware BVH node format for RDNA is not publicly documented; RADV reverse-e
 
 Intel's ANV driver uses the **GRL** (Generic Ray Tracing Library), open-sourced as part of Mesa at `src/intel/vulkan/grl/` [Source](https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/src/intel/vulkan/grl). GRL kernels are written in an OpenCL-like C dialect and compiled to Intel GPU compute shaders. Intel's Synchro BVH builder (a state-of-the-art PLOC variant) has been open-sourced since Xe2.
 
+### cuBQL: CUDA-Native BVH Construction
+
+Outside the Vulkan driver builders above, NVIDIA's `cuBQL` (`NVIDIA/cuBQL`) is a standalone CUDA BVH build-and-query library rather than a driver-internal implementation — it targets applications that build and traverse BVHs directly from CUDA kernels (OptiX-adjacent renderers, point-cloud and particle queries, custom ray tracers) without going through a Vulkan acceleration-structure object at all. It implements the same family of construction algorithms described above (Morton-code radix sort plus LBVH, alongside SAH-style builders) as reusable CUDA templates over arbitrary bounding-primitive types, so a CUDA application gets a BVH builder with the same algorithmic lineage as RADV's and ANV's without needing a `VkAccelerationStructureKHR` handle. [Source: NVIDIA/cuBQL, https://github.com/NVIDIA/cuBQL]
+
 ### Deferred Host Operations
 
 `VK_KHR_deferred_host_operations` allows CPU-side BVH construction to be split across threads:

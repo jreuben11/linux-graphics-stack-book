@@ -244,6 +244,8 @@ Where OSMO backends are Kubernetes-native by design, Omniverse Farm's standalone
 
 **Chapter 25 (GPU Compute).** The general Linux GPU-compute scheduling and memory-management fundamentals underlying every container this chapter dispatches, whether via OSMO or Omniverse Farm.
 
+**Chapter 115 (NeRFStudio and Gaussian Splatting).** NuRec (`NVIDIA/instant-nurec`, `nurec-skills`, `harmonizer`) reconstructs simulation-ready 3D Gaussian Splatting scenes directly from driving-log sensor recordings, giving the Curate stage of the Physical AI Data Factory Blueprint (§6.1) a route to reconstructed real-world environments alongside the generative Cosmos pipelines this chapter documents. Chapter 115 covers the reconstruction pipeline and its relationship to the DUSt3R/MASt3R feed-forward reconstruction family; this chapter's §6 is the place NuRec's output slots into a Physical-AI data pipeline. [Source: NVIDIA/instant-nurec, https://github.com/NVIDIA/instant-nurec]
+
 ---
 
 *References used in this chapter:*
