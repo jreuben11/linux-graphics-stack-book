@@ -34,7 +34,15 @@
    - 6.5 [WebKitGTK/WPE: CDMProxy and Thunder/OpenCDM](#65-webkitgtkwpe-cdmproxy-and-thunderopencdm)
    - 6.6 [Out of Scope](#66-out-of-scope)
 7. [MSE/DASH-HLS vs. WebRTC: When to Use Which](#7-msedash-hls-vs-webrtc-when-to-use-which)
-8. [Integrations](#8-integrations)
+8. [Building a Video App with Shaka Player](#8-building-a-video-app-with-shaka-player)
+   - 8.1 [Project Setup and Basic Playback](#81-project-setup-and-basic-playback)
+   - 8.2 [Configuration: ABR, Buffering, and Network Retry](#82-configuration-abr-buffering-and-network-retry)
+   - 8.3 [Error Handling](#83-error-handling)
+   - 8.4 [Wiring Up DRM: License Servers, Authentication, and Wrapping](#84-wiring-up-drm-license-servers-authentication-and-wrapping)
+   - 8.5 [Widevine Service Certificates](#85-widevine-service-certificates)
+   - 8.6 [The UI Library](#86-the-ui-library)
+   - 8.7 [MoQ: Media over QUIC (Experimental)](#87-moq-media-over-quic-experimental)
+9. [Integrations](#9-integrations)
 
 ---
 
@@ -339,7 +347,278 @@ The delivery stack this chapter covers (MSE-consumed DASH/HLS, §1–§3, full p
 
 The practical rule: reach for MSE/DASH-HLS whenever delivery is one-to-many and a few seconds of latency is acceptable — it is almost always the cheaper and more robust choice at scale, and pairs directly with the EME/CDM machinery in §4–§6 of this chapter for protected VOD and live content. Reach for WebRTC specifically when the latency floor itself is the product requirement — calls, interactive live production, cloud gaming, remote control — and budget for SFU infrastructure that behaves nothing like a CDN.
 
-## 8. Integrations
+## 8. Building a Video App with Shaka Player
+
+§1–§7 covered the MSE/EME/CENC/CDM machinery from the specification side. This section grounds that machinery in one concrete, working application, built entirely on Shaka Player's own public API and documented tutorials — the reference implementation already introduced in §2.1 as the one player library that speaks both DASH and HLS through a single internal pipeline with the broadest DRM coverage of the three libraries compared there. [Source: Shaka Player tutorials](https://shaka-project.github.io/shaka-player/docs/api/tutorial-basic-usage.html)
+
+### 8.1 Project Setup and Basic Playback
+
+A minimal Shaka Player page needs only the compiled library, a `<video>` element, and five steps in application code: install polyfills, confirm browser support, construct and attach a `Player`, register an error listener, and call `load()`.
+
+```html
+<!DOCTYPE html>
+<html>
+  <head>
+    <!-- Shaka Player compiled library: -->
+    <script src="dist/shaka-player.compiled.js"></script>
+    <!-- Your application source: -->
+    <script src="myapp.js"></script>
+  </head>
+  <body>
+    <video id="video" width="640" controls autoplay></video>
+  </body>
+</html>
+```
+
+```javascript
+const manifestUri =
+    'https://storage.googleapis.com/shaka-demo-assets/angel-one/dash.mpd';
+
+function initApp() {
+  // shaka.polyfill.installAll() patches browser-specific gaps in the MSE/EME
+  // surface described in §1 and §4 before any player code touches them.
+  shaka.polyfill.installAll();
+  if (shaka.Player.isBrowserSupported()) {
+    initPlayer();
+  } else {
+    console.error('Browser not supported!');
+  }
+}
+
+async function initPlayer() {
+  const video = document.getElementById('video');
+  const player = new shaka.Player();
+  await player.attach(video);
+  window.player = player; // for debugging in the console
+
+  player.addEventListener('error', onErrorEvent);
+
+  try {
+    await player.load(manifestUri);
+    console.log('The video has now been loaded!');
+  } catch (e) {
+    onError(e);
+  }
+}
+
+function onErrorEvent(event) {
+  onError(event.detail);
+}
+
+function onError(error) {
+  console.error('Error code', error.code, 'object', error);
+}
+
+document.addEventListener('DOMContentLoaded', initApp);
+```
+
+`player.attach(video)` is the same attachment point EME uses internally (`video.setMediaKeys()`, §4.1) once a manifest turns out to be encrypted — the app never calls that directly; Shaka does it as part of `load()` after the capability negotiation in §4.1 succeeds. [Source: Shaka Player — Basic Usage tutorial](https://shaka-project.github.io/shaka-player/docs/api/tutorial-basic-usage.html)
+
+### 8.2 Configuration: ABR, Buffering, and Network Retry
+
+Shaka centralizes all tunables — ABR, buffering, DRM, manifest parsing, language selection — behind one hierarchical `player.configure()` / `player.getConfiguration()` pair. Configuration accepts either a partial object (unset fields keep their current value; fields explicitly set to `undefined` revert to the default) or a single dotted path string plus a value, for one-off changes:
+
+```javascript
+// Object form
+player.configure({
+  streaming: {
+    bufferingGoal: 30,
+    rebufferingGoal: 15,
+    bufferBehind: 30,
+  },
+});
+
+// Path-string form — equivalent single-field update
+player.configure('streaming.bufferingGoal', 30);
+```
+
+`bufferingGoal` is the target amount of buffered content in seconds — the player keeps fetching segments until it reaches this; `rebufferingGoal` is the minimum buffered content required before playback starts or resumes after a stall, and must always be set lower than `bufferingGoal`; `bufferBehind` is how much already-played content stays buffered behind the playhead before eviction (§1.3's quota eviction, exposed as a tunable rather than left to the browser's implicit MSE quota heuristics). Not every change is immediate: networking and buffering settings apply right away, while DRM and manifest-parsing settings (§8.4) only take effect on the *next* `load()` call.
+
+Network resilience is split across three independent retry blocks — `drm.retryParameters` (license requests), `manifest.retryParameters`, and `streaming.retryParameters` (segment requests) — all sharing the same shape:
+
+```javascript
+player.configure({
+  streaming: {
+    retryParameters: {
+      timeout: 30000,        // ms, 0 = no timeout
+      stallTimeout: 5000,
+      connectionTimeout: 10000,
+      maxAttempts: 2,
+      baseDelay: 1000,       // ms before the first retry
+      backoffFactor: 2,      // each retry multiplies the delay by this
+      fuzzFactor: 0.5,       // randomize each delay by ±50%
+    },
+  },
+});
+```
+
+With a 1000ms base delay and a backoff factor of 2, successive retries wait roughly 1s, 2s, 4s, 8s before the fuzz factor randomizes each one by ±50% — the randomization specifically exists to stop many simultaneously-failing clients from re-hammering the same origin in lockstep. `streaming.lowLatencyMode` flips several of these and the buffering goals at once for LL-DASH/LL-HLS content (§7); `player.configurationForLowLatency()` exposes the individual values it sets, for apps that want to start from that baseline and adjust further. [Source: Shaka Player — Configuration tutorial](https://shaka-project.github.io/shaka-player/docs/api/tutorial-config.html) · [Network and Buffering Configuration tutorial](https://shaka-project.github.io/shaka-player/docs/api/tutorial-network-and-buffering-config.html)
+
+### 8.3 Error Handling
+
+Shaka errors carry a `severity` field distinguishing **critical** errors (`shaka.util.Error.Severity.CRITICAL` — playback cannot continue) from non-fatal ones the player can often recover from on its own. Three places to catch them cover the full lifecycle:
+
+```javascript
+// 1. Errors after a successful load — via the player's own event
+player.addEventListener('error', (event) => onError(event.detail));
+
+// 2. Errors during the initial load — via the load() promise
+try {
+  await player.load(manifestUri);
+} catch (error) {
+  onError(error);
+}
+
+function onError(error) {
+  if (error.severity === shaka.util.Error.Severity.CRITICAL) {
+    // stop, show a fatal error UI
+  } else {
+    // log and let Shaka's own recovery continue
+  }
+}
+```
+
+`streaming.failureCallback` lets an app intercept and convert streaming-layer errors before Shaka's default handling runs, and the `NetworkingEngine`'s `retry` event can be used to stop retries outright for errors that retrying can never fix — a 404 on a VOD manifest that will never appear, for instance — by calling `event.preventDefault()` inside the listener. [Source: Shaka Player — Error Handling tutorial](https://shaka-project.github.io/shaka-player/docs/api/tutorial-errors.html)
+
+### 8.4 Wiring Up DRM: License Servers, Authentication, and Wrapping
+
+§4.2 showed the EME handshake with a bare `fetch()` call standing in for "whatever license server the DRM operator runs." In a real Shaka app, that plumbing is `drm.servers` plus, when needed, request/response filters:
+
+```javascript
+player.configure({
+  drm: {
+    servers: {
+      'com.widevine.alpha': 'https://foo.bar/drm/widevine',
+      'com.microsoft.playready': 'https://foo.bar/drm/playready',
+    },
+  },
+});
+```
+
+`drm.advanced` carries per-key-system settings, most importantly the `robustness` strings from §4.1/§6.1 as actual configuration rather than abstract API surface:
+
+```javascript
+player.configure({
+  drm: {
+    advanced: {
+      'com.widevine.alpha': {
+        videoRobustness: ['HW_SECURE_ALL'],
+        audioRobustness: ['HW_SECURE_ALL'],
+        headers: { 'customHeader1': 'value1' },
+      },
+    },
+  },
+});
+```
+
+Widevine accepts `SW_SECURE_CRYPTO`, `SW_SECURE_DECODE`, `HW_SECURE_CRYPTO`, `HW_SECURE_DECODE`, `HW_SECURE_ALL` — the same L3→L1 spectrum from §6.1, and the reason requesting `HW_SECURE_ALL` on desktop Linux fails to resolve per §6.2. PlayReady accepts `3000`/`2000`/`150` but, per Shaka's own documentation, effectively ignores whatever is configured and defaults to `2000` regardless. FairPlay (§6.6, noted there as out of this book's Linux scope) takes an empty-string robustness value. `drm.clearKeys` configures the Clear Key reference CDM from §4.3 directly, without a license server round-trip at all — useful for exactly the conformance-testing role §4.3 describes:
+
+```javascript
+player.configure({
+  drm: {
+    clearKeys: {
+      'deadbeefdeadbeefdeadbeefdeadbeef': '18675309186753091867530918675309',
+    },
+  },
+});
+```
+
+**Authenticating license requests.** EME itself has no notion of application-level authentication — the CDM just POSTs opaque bytes wherever `drm.servers` points. Shaka's `NetworkingEngine` exposes request filters to inject whatever an operator's license server actually requires: a header, a cookie, or an asynchronously-fetched bearer token.
+
+```javascript
+player.getNetworkingEngine().registerRequestFilter((type, request, context) => {
+  if (type === shaka.net.NetworkingEngine.RequestType.LICENSE) {
+    request.headers['CWIP-Auth-Header'] = 'VGhpc0lzQVRlc3QK';
+  }
+});
+```
+
+Cookie-based auth needs an explicit opt-in, since cross-origin credentials are disabled by default: `request.allowCrossSiteCredentials = true;` inside the same filter. A filter that returns a `Promise` is treated as asynchronous, which is the documented pattern for fetching a short-lived auth token before the license request goes out, rather than caching a stale one; combined with a `retry` listener watching for HTTP 401 responses, an app can refresh credentials and let Shaka's retry logic re-attempt the request. [Source: Shaka Player — License Server Authentication tutorial](https://shaka-project.github.io/shaka-player/docs/api/tutorial-license-server-auth.html)
+
+**License wrapping.** Some license servers need to exchange application metadata alongside the raw CDM-generated license request — again something EME has no channel for. The same request/response filter pair used for authentication is what makes that possible: a request filter base64-encodes the platform's raw license request into a JSON envelope carrying whatever extra fields the server expects, and a matching response filter unwraps the server's JSON response back down to the raw license bytes the CDM actually needs.
+
+```javascript
+player.getNetworkingEngine().registerRequestFilter((type, request, context) => {
+  if (type === shaka.net.NetworkingEngine.RequestType.LICENSE) {
+    const wrapped = {
+      rawLicenseRequestBase64:
+          shaka.util.Uint8ArrayUtils.toBase64(new Uint8Array(request.body)),
+      favoriteColor: 'blue', // arbitrary app-specific metadata
+    };
+    request.body = shaka.util.StringUtils.toUTF8(JSON.stringify(wrapped));
+  }
+});
+
+player.getNetworkingEngine().registerResponseFilter((type, response, context) => {
+  if (type === shaka.net.NetworkingEngine.RequestType.LICENSE) {
+    const wrapped = JSON.parse(shaka.util.StringUtils.fromUTF8(response.data));
+    response.data =
+        shaka.util.Uint8ArrayUtils.fromBase64(wrapped.rawLicenseBase64);
+  }
+});
+```
+
+This is the mechanism that turns §4.2's `session.update(license)` step from a direct pass-through into whatever a real operator's license-proxy contract actually requires, without the CDM or the EME spec needing to know or care. [Source: Shaka Player — License Wrapping tutorial](https://shaka-project.github.io/shaka-player/docs/api/tutorial-license-wrapping.html)
+
+### 8.5 Widevine Service Certificates
+
+A Widevine service certificate lets a player skip one network round-trip per session: without it, the CDM's first license request has to go fetch the certificate from the license server before it can generate a real request; preloading the certificate removes that round-trip. It can be provided directly or as a URI Shaka fetches itself, and once configured it persists across every subsequent `load()` on the same `Player` instance:
+
+```javascript
+player.configure({
+  drm: {
+    advanced: {
+      'com.widevine.alpha': {
+        serverCertificateUri: 'https://example.com/service.cert',
+      },
+    },
+  },
+});
+```
+
+This is a session-setup optimization independent of the L1/L2/L3 security-level negotiation in §6.1 — it affects how quickly the first license request goes out, not which security level the CDM ultimately gets. [Source: Shaka Player — Widevine Service Certificates tutorial](https://shaka-project.github.io/shaka-player/docs/api/tutorial-widevine-service-certs.html)
+
+### 8.6 The UI Library
+
+Everything in §8.1–§8.5 works against a bare `<video>` element with no on-screen controls beyond the browser default. Shaka's separate, optional UI library (`dist/shaka-player.ui.js` + `dist/controls.css`) adds an accessible, localized, skinnable control surface declaratively:
+
+```html
+<div data-shaka-player-container style="max-width:40em">
+  <video autoplay data-shaka-player id="video"
+         style="width:100%;height:100%"></video>
+</div>
+```
+
+```javascript
+document.addEventListener('shaka-ui-loaded', () => {
+  const video = document.getElementById('video');
+  const ui = video['ui'];
+  const controls = ui.getControls();
+  const player = controls.getPlayer();
+
+  player.addEventListener('error', onPlayerErrorEvent);
+  controls.addEventListener('error', onUIErrorEvent);
+});
+document.addEventListener('shaka-ui-load-failed', initFailed);
+```
+
+A manifest URI can be supplied declaratively too (`<video data-shaka-player src="...dash.mpd">`, with `<source>` fallbacks for multi-format manifests) instead of calling `load()` from application code. For apps that build the player/video DOM dynamically rather than declaring it in markup up front, `new shaka.ui.Overlay(player, container, video)` attaches the same UI programmatically. Optional attributes add Chromecast support (`data-shaka-player-cast-receiver-id`) and VR playback mode. [Source: Shaka Player — UI Library tutorial](https://shaka-project.github.io/shaka-player/docs/api/tutorial-ui.html)
+
+### 8.7 MoQ: Media over QUIC (Experimental)
+
+Shaka Player carries experimental support for a fourth delivery mode alongside the DASH/HLS-over-HTTP model this chapter otherwise covers: **Media over QUIC Transport (MoQT)**, consumed through Shaka's own **MoQ Streaming Format (MSF)** manifest parser. It is built entirely on the browser `WebTransport` API and tracks IETF drafts that are still under active development — not a finished RFC. Loading it only requires signaling the MIME type explicitly, since there is no file extension or manifest structure for Shaka to sniff:
+
+```javascript
+await player.load(manifestUri, null, 'application/msf');
+```
+
+Internally this opens a `WebTransport` connection to the given URI, performs MoQT session setup and version negotiation, subscribes to (or auto-discovers) a catalog track namespace, parses the resulting catalog JSON to find the available media tracks, and subscribes to those tracks into the same playback pipeline every other MSE-backed source in this chapter uses. Content protection works the same way as DASH/HLS — protection info in the catalog populates `drm.servers` (§8.4) automatically. Configuration lives under `manifest.msf`: `namespaces` for an explicit MoQT path (auto-discovered if omitted), `authorizationToken` for a bearer token, `fingerprintUri` for validating a self-signed relay certificate, `useFetchCatalog` to choose a one-shot catalog fetch over an ongoing subscription, and `version` to pin a specific draft (`DRAFT_14`, `DRAFT_16`) instead of auto-negotiating. The current, load-bearing limitation: **only live content is supported — a VOD MSF manifest fails to load.** [Source: Shaka Player — MoQ tutorial](https://shaka-project.github.io/shaka-player/docs/api/tutorial-moq.html)
+
+MoQT is worth noting against §7's latency/scale framing specifically because it targets the gap between the two poles that section describes: QUIC/WebTransport's per-object subscription model aims at WebRTC-adjacent latency while staying on a pub/sub relay architecture that, unlike an SFU, is designed to fan out through cacheable relay infrastructure rather than one stateful connection per viewer. Whether that holds up in production is still an open question — the relevant IETF working group's specifications remain drafts, and Shaka's own implementation is explicitly experimental.
+
+---
+
+## 9. Integrations
 
 - **Ch33 (Chromium's Multi-Process GPU Architecture)**: the Widevine CDM host process (§6.3) follows the same sandboxed multi-process isolation model documented there for the GPU process.
 - **Ch36 (The Chromium Compositor — CC and Viz)**: decoded and decrypted frames handed back by the CDM/decoder pipeline enter the compositor exactly like any other video frame once past the protected-content boundary.
