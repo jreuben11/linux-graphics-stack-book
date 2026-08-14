@@ -85,6 +85,8 @@ The specification defines two concrete file forms: a UTF-8 JSON manifest (`.gltf
 
 glTF 2.0 was finalized in June 2017 and is standardized as ISO/IEC 12113:2022. The specification and all schema files are maintained by the Khronos Group at the glTF registry ([Source](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html)). This chapter covers the complete glTF 2.0 data model, its official extension family, and the C and C++ loaders used in production Linux pipelines.
 
+glTF's direct predecessor at Khronos is **COLLADA**, an XML-based digital-asset-interchange schema originally created at Sony Computer Entertainment in October 2004 and transferred to Khronos management shortly after, later standardized as ISO/PAS 17506:2012. COLLADA targeted DCC-to-DCC interchange — arbitrary shader graphs via COLLADA FX, full scene-graph fidelity, verbose human-readable XML — rather than runtime loading efficiency, and it carries no native binary form comparable to GLB. glTF was conceived by members of the COLLADA working group itself in 2012 (first shown at SIGGRAPH 2012 as "WebGL Transmission Format") specifically to address that gap: a compact, GPU-upload-ready format for shipping assets to running applications rather than moving them between authoring tools. COLLADA remains formally maintained by Khronos (version 1.5.1 was released in November 2025) and legacy DCC/GIS tooling built around `.dae` files still exists, but production real-time pipelines converged on glTF, and this chapter follows that convergence rather than covering COLLADA's schema in depth. [Source: COLLADA — Wikipedia](https://en.wikipedia.org/wiki/COLLADA) [Source: glTF — Wikipedia](https://en.wikipedia.org/wiki/GlTF)
+
 ### 1.2 What is Physically-Based Rendering (PBR)?
 
 Physically-Based Rendering (PBR) is a shading methodology that models light-surface interaction using equations derived from measured optical properties of real materials. The central insight is that surfaces can be described by a small set of perceptually meaningful parameters — base color, metallic factor, and roughness — that drive a bidirectional reflectance distribution function (BRDF) producing consistent, predictable results under varied lighting conditions.
@@ -1406,6 +1408,8 @@ As of mid-2026, the glTF 3.0 specification is under active development by the Kh
 
 **MaterialX integration**: glTF 3.0 is expected to adopt MaterialX 1.39 as the procedural material description layer, replacing the fixed-function PBR model with a node-graph system. MaterialX is already used in OpenUSD (Chapter 69) and AOUSD Core 1.0. This will allow glTF to represent subsurface scattering, hair, cloth, and other complex material models that the metallic-roughness BRDF cannot express.
 
+**glTF vs. USD — scope and conversion**: glTF and OpenUSD (Chapter 69) cover overlapping 3D-asset territory but solve different problems, and neither is a substitute for the other. glTF is deliberately flat and non-composable: one scene graph per file, no sublayers, no references/payloads, no variant sets — its entire schema optimises for a loader parsing a single file straight onto the GPU, which is why this chapter treats it as the delivery-time target format (Section 9). USD is the opposite: a layered, composed scene-description format built for large production pipelines, where sublayers, references, payloads, and variant sets let many departments iterate on one asset without hand-merging files, at the cost of requiring a composition engine (Chapter 69's Hydra/USD stage) rather than a flat parse. In practice USD sits upstream of glTF in a pipeline: a studio composes and iterates on a full scene in USD, then flattens and exports a real-time-ready subset to glTF for a game engine, WebGL viewer, or AR/VR headset. Conversion between the two remains tool-specific rather than standardised — NVIDIA Omniverse's Asset Converter extension and Google's `usd_from_gltf` (glTF/GLB → USDZ) are representative examples — and each performs a lossy flatten of USD's composition and variant features into glTF's fixed hierarchy, since glTF has no schema to represent them. No official Khronos/AOUSD interchange specification exists yet to standardise this conversion; see the Long-term roadmap below. [Source: NVIDIA Omniverse Asset Converter extension](https://docs.omniverse.nvidia.com/extensions/latest/ext_asset-converter.html) [Source: google/usd_from_gltf](https://github.com/google/usd_from_gltf)
+
 **Physics and audio metadata**: Draft extensions `OMI_physics_body` and `OMI_physics_shape` (originally for Godot) and `KHR_audio_emitter` are candidate extensions for glTF 3.0's core extension set, formalising scene-level physics and spatial audio metadata.
 
 **Spatial audio**: `KHR_audio_emitter` defines point/global audio sources and reverb zones, enabling game engines to load audio placement directly from the asset rather than recreating it in the engine editor.
@@ -1434,7 +1438,7 @@ Note: The glTF 3.0 specification had not been finalised as of the writing of thi
 
 **Chapter 63 — KTX2 and Basis Universal**: The `gltf-transform etc1s` and `gltf-transform uastc` commands transcode glTF textures to KTX2 containers with Basis Universal supercompression, as described in Chapter 63. The tinygltf image loading hook enables custom KTX2 decoding at asset load time.
 
-**Chapter 69 — OpenUSD and MaterialX**: The glTF 3.0 roadmap's MaterialX integration connects the two Khronos/AOUSD material description standards. OpenUSD already supports glTF import/export via USD plugins. The `mdl_material` and `UsdShadeMaterial` schemas cover overlapping material semantics.
+**Chapter 69 — OpenUSD and MaterialX**: The glTF 3.0 roadmap's MaterialX integration connects the two Khronos/AOUSD material description standards. OpenUSD already supports glTF import/export via USD plugins, and tools such as NVIDIA Omniverse's Asset Converter and Google's `usd_from_gltf` bridge the two formats, though no formal interchange specification standardises this conversion yet (Section 11). The `mdl_material` and `UsdShadeMaterial` schemas cover overlapping material semantics.
 
 ---
 
@@ -1472,6 +1476,10 @@ Note: The glTF 3.0 specification had not been finalised as of the writing of thi
 30. gltf-transform concepts: https://gltf-transform.dev/concepts
 31. asset.schema.json: https://github.com/KhronosGroup/glTF/blob/main/specification/2.0/schema/asset.schema.json
 32. camera.schema.json: https://github.com/KhronosGroup/glTF/blob/main/specification/2.0/schema/camera.schema.json
+33. COLLADA — Wikipedia: https://en.wikipedia.org/wiki/COLLADA
+34. glTF — Wikipedia (origins in the COLLADA working group): https://en.wikipedia.org/wiki/GlTF
+35. NVIDIA Omniverse Asset Converter extension documentation: https://docs.omniverse.nvidia.com/extensions/latest/ext_asset-converter.html
+36. google/usd_from_gltf — glTF/GLB to USDZ converter: https://github.com/google/usd_from_gltf
 
 ## Roadmap
 

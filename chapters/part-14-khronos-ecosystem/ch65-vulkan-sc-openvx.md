@@ -1588,6 +1588,7 @@ For ParaView integration, the `vtkAnariRenderingPlugin` (part of VTK 9.3+) expos
 28. [ANARI Tutorial C Source — KhronosGroup GitHub](https://github.com/KhronosGroup/ANARI-SDK/blob/next_release/examples/simple/anariTutorial.c)
 29. [Khronos Releases New ANARI SDK Updates — Blog](https://www.khronos.org/blog/khronos-releases-new-anari-sdk-updates-hackathon-results)
 30. [CoreAVI VkCore SC Robotics Article — Robotics 24/7](https://www.robotics247.com/article/coreavi_enables_safe_robotics_designs_newly_ratified_vulkan_sc_api)
+31. [Kamaros Embedded Camera System API — Khronos](https://www.khronos.org/kamaros/)
 
 ---
 
@@ -1600,6 +1601,7 @@ For ParaView integration, the `vtkAnariRenderingPlugin` (part of VTK 9.3+) expos
 - Khronos and RasterGrid are tracking additional SoC vendor conformance submissions (expected from Renesas R-Car and STMicroelectronics Stellar-E series) as automotive software-defined-vehicle platforms proliferate.
 - OpenVX 2.0 specification work has been announced; near-term progress is expected on the graph partitioning extension that allows a single `vx_graph` to span heterogeneous SoC subsystems (CPU, DSP, and dedicated NPU) with compiler-defined tile boundaries.
 - ANARI 1.1 ratification (reached feature freeze August 2025) is expected to produce a formal release and updated SDK in the near term, enabling `KHR_GEOMETRY_ISOSURFACE` and NanoVDB volumes for production ParaView and VTK deployments.
+- **Kamaros**, a new Khronos working group developing an open, royalty-free API for embedded camera and ISP control (sensor and 3A programming — auto-focus, auto-exposure, auto-white-balance — plus image statistics and frame metadata), is adjacent to this chapter's embedded-vision focus: an OpenVX graph consuming a Kamaros-controlled camera stream would close the loop from sensor capture to classical/neural vision processing on the same embedded SoC. The working group formed from a 2021 cross-industry exploratory process and adopted the "Kamaros" name in October 2022; as of this writing it remains pre-specification, with a public Scope of Work document and overview presentation but no ratified API. [Source: Khronos Kamaros](https://www.khronos.org/kamaros/)
 
 ### Medium-term (1–3 years)
 - Vulkan SC 2.0 based on Vulkan 1.3 is a stated Khronos goal; the challenge is scoping which 1.3 features (dynamic rendering, synchronisation2, format features) can be included without expanding the certifiable footprint — the working group is evaluating each extension individually.
