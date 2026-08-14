@@ -14,8 +14,10 @@
 6. [Multi-GPU Routing in OBS](#multi-gpu-routing-in-obs)
 7. [Virtual Camera and Webcam Sources](#virtual-camera-and-webcam-sources)
 8. [OBS Plugins and the libobs API](#obs-plugins-and-the-libobs-api)
-9. [Performance Tuning and Diagnostics](#performance-tuning-and-diagnostics)
-10. [Integrations](#integrations)
+9. [OBS Command-Line Interface](#obs-command-line-interface)
+10. [obs-websocket: Remote-Control API and SDK Ecosystem](#obs-websocket-remote-control-api-and-sdk-ecosystem)
+11. [Performance Tuning and Diagnostics](#performance-tuning-and-diagnostics)
+12. [Integrations](#integrations)
 
 ---
 
@@ -552,6 +554,142 @@ obs_enter_graphics();
 gs_texture_t *tex = gs_texture_create(w, h, GS_RGBA, 1, NULL, GS_DYNAMIC);
 obs_leave_graphics();
 ```
+
+---
+
+## OBS Command-Line Interface
+
+Everything covered so far is compiled into the `obs` binary; this section covers driving that binary from a shell rather than the GUI — the mechanism headless capture rigs, systemd-managed streaming boxes, and CI-triggered recording jobs actually use on Linux.
+
+### Launch Parameters for Automation
+
+OBS accepts a set of command-line flags at startup that select a scene collection/profile/scene and immediately begin streaming, recording, or the virtual camera without any GUI interaction:
+
+| Flag | Effect |
+|---|---|
+| `--startstreaming` | Begin streaming immediately after launch |
+| `--startrecording` | Begin recording immediately after launch |
+| `--startvirtualcam` | Activate the virtual camera immediately |
+| `--startreplaybuffer` | Start the replay buffer immediately |
+| `--collection "name"` | Load a specific scene collection |
+| `--profile "name"` | Load a specific profile (output/encoder settings) |
+| `--scene "name"` | Switch to a specific scene on load |
+| `--studio-mode` | Enable Studio Mode on startup |
+| `--minimize-to-tray` | Launch minimized to the system tray |
+| `--portable`, `-p` | Run in portable mode (config stored next to the binary) |
+| `--multi`, `-m` | Suppress the "already running" warning, allow multiple instances |
+| `--safe-mode` | Disable third-party plugins and scripts for the session |
+| `--only-bundled-plugins` | Load only the plugins shipped with OBS itself |
+| `--disable-missing-files-check` | Skip the missing-media dialog on startup |
+| `--verbose` | Increase log verbosity |
+| `--unfiltered_log` | Disable log-line filtering/deduplication |
+| `--help`, `-h` | Print all available flags |
+| `--version`, `-v` | Print the OBS version (macOS/Linux only) |
+
+Quoting is required for any collection, profile, or scene name containing spaces. [Source: OBS Project — Launch Parameters](https://obsproject.com/kb/launch-parameters)
+
+### Headless / Kiosk Deployment
+
+Combining these flags is the standard pattern for a Linux box whose only job is to come up already streaming — a permanently-mounted capture rig, a lecture-hall encoder, or a systemd-managed appliance:
+
+```bash
+obs --collection "Lecture Hall" --profile "RTMP-1080p60" --scene "Camera + Slides" \
+    --startstreaming --minimize-to-tray --disable-missing-files-check
+```
+
+```ini
+# /etc/systemd/system/obs-stream.service
+[Unit]
+Description=OBS Studio headless stream
+After=graphical-session.target pipewire.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/obs --collection "Lecture Hall" --profile "RTMP-1080p60" \
+    --startstreaming --minimize-to-tray
+Restart=on-failure
+Environment=DISPLAY=:0
+
+[Install]
+WantedBy=graphical-session.target
+```
+
+OBS still requires a running Wayland/X11 session and, for the GPU capture path in §3, a working PipeWire portal — `--minimize-to-tray` hides the window but does not make OBS a true headless/off-screen renderer. `--verbose` and `--unfiltered_log` are the flags to reach for when diagnosing the capture/encode pipeline failures covered in the Performance Tuning section below, since OBS's default log filtering collapses repeated VA-API/PipeWire warnings that are often the actual signal.
+
+---
+
+## obs-websocket: Remote-Control API and SDK Ecosystem
+
+§8 covers `libobs`, the in-process C plugin API compiled directly into the OBS binary. `obs-websocket` is the complementary out-of-process mechanism: a JSON-over-WebSocket protocol for controlling a *running* OBS instance from any language, over the network if desired — the API that stream-deck integrations, external overlay controllers, and automation scripts actually use, as opposed to compiled `libobs` plugins.
+
+### The Built-In WebSocket Server
+
+Since OBS 28, `obs-websocket` v5.x ships built into OBS itself — no separate plugin install is required. It is enabled and configured from **Tools → WebSocket Server Settings**, which sets the listen port (default `4455`) and an optional password. [Source: obs-websocket GitHub](https://github.com/obsproject/obs-websocket)
+
+### Protocol Handshake and Message Framing
+
+Every message on the WebSocket connection is a JSON object with an `op` (opcode) field and a `d` (data) payload. Connection establishment is a three-message handshake:
+
+1. **`Hello` (op 0)** — sent by the server immediately on connect; carries the server's supported RPC version and, if a password is set, an authentication `challenge` and `salt`.
+2. **`Identify` (op 1)** — sent by the client; carries its requested RPC version, the computed `authentication` string (if required), and an event-subscription bitmask.
+3. **`Identified` (op 2)** — sent by the server once identification succeeds; carries the `negotiatedRpcVersion` for the session.
+
+When a password is configured, the client authenticates by hashing: base64(SHA256(password + salt)), then base64(SHA256(that_string + challenge)) — the result is the `authentication` string sent in `Identify`. [Source: obs-websocket protocol specification](https://github.com/obsproject/obs-websocket/blob/master/docs/generated/protocol.md)
+
+After identification, two opcodes carry the actual remote-control traffic:
+
+- **`Request` (op 6)** — client → server, carrying `requestType` (e.g. `"SetCurrentProgramScene"`), a `requestId` for correlating the reply, and optional `requestData`.
+- **`RequestResponse` (op 7)** — server → client, carrying a `requestStatus` object (`result: true/false`, numeric `code`) and any `responseData`.
+- **`Event` (op 5)** — server → client, unsolicited notifications (scene changed, stream started, input muted) the client subscribed to via the `Identify` bitmask.
+
+### Example Requests
+
+| Request | Effect |
+|---|---|
+| `GetSceneList` | List all scenes in the current collection |
+| `SetCurrentProgramScene` | Switch the active (program) scene |
+| `StartStream` / `StopStream` / `ToggleStream` | Control the streaming output |
+| `StartRecord` / `StopRecord` | Control the recording output |
+| `SetInputMute` | Mute/unmute an audio source |
+| `CreateInput` / `RemoveInput` | Add or remove a source programmatically |
+| `GetSourceScreenshot` | Capture a still frame from any source as base64-encoded image data |
+
+[Source: obs-websocket protocol specification](https://github.com/obsproject/obs-websocket/blob/master/docs/generated/protocol.md)
+
+### Client SDKs
+
+Rather than hand-rolling the handshake, most integrations use an existing client library:
+
+- **`obs-websocket-py`** (Python) — `pip3 install obs-websocket-py`; wraps the protocol behind an `obsws`/`requests` API.
+- **`obs-websocket-js`** (JavaScript/TypeScript, Node and browser) — `npm install obs-websocket-js`.
+
+```python
+from obswebsocket import obsws, requests
+
+ws = obsws("localhost", 4455, "your_password")
+ws.connect()
+
+ws.call(requests.SetCurrentProgramScene(sceneName="Gameplay"))
+ws.call(requests.StartStream())
+
+ws.disconnect()
+```
+
+[Source: obs-websocket-py](https://github.com/Elektordi/obs-websocket-py)
+
+### obs-cmd: Terminal Automation
+
+For shell scripting without writing any code, `obs-cmd` (Rust) is a standalone CLI that speaks the same obs-websocket v5 protocol against a running instance — connecting by default to `obsws://localhost:4455`, overridable via `--websocket` or the `OBS_WEBSOCKET_URL` environment variable:
+
+```bash
+obs-cmd scene switch "Gameplay"
+obs-cmd recording start
+obs-cmd streaming toggle
+obs-cmd audio mute "Desktop Audio"
+obs-cmd save-screenshot "Webcam" "png" "/tmp/webcam.png"
+```
+
+This is the natural complement to the launch-parameter automation above: launch parameters set up *how OBS starts*, `obs-websocket`/`obs-cmd` control *an already-running* OBS instance — the mechanism a lighting-control panel, a Stream Deck plugin, or a shell script triggered by a systemd timer uses to switch scenes or cut a stream mid-session. [Source: obs-cmd](https://github.com/grigio/obs-cmd)
 
 ---
 
