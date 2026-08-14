@@ -13,8 +13,9 @@
 5. [Kubernetes GPU Scheduling](#5-kubernetes-gpu-scheduling)
 6. [WSL2 GPU Path](#6-wsl2-gpu-path)
 7. [GPU Virtualisation](#7-gpu-virtualisation)
-8. [Cloud GPU Instances](#8-cloud-gpu-instances)
-9. [Integrations](#integrations)
+8. [Kata Containers and Confidential Containers](#8-kata-containers-and-confidential-containers)
+9. [Cloud GPU Instances](#9-cloud-gpu-instances)
+10. [Integrations](#integrations)
 
 ---
 
@@ -869,7 +870,50 @@ For MI300X with 8 CPX VFs, each VF has approximately 24 GB of HBM3 and access to
 
 ---
 
-## 8. Cloud GPU Instances
+## 8. Kata Containers and Confidential Containers
+
+Every isolation mechanism in §1–§7 shares one host kernel: namespaces and cgroups restrict what a container process can *see* and *use*, but a kernel exploit or a malicious co-tenant with host root still reaches every container on the box, GPU included. Kata Containers and the Confidential Containers project address this by moving the isolation boundary from the kernel to the hypervisor — and, for GPU workloads specifically, into the hardware itself.
+
+### Kata Containers: VM-Isolated Pods
+
+Kata Containers is an OCI-compliant container runtime that runs each pod (or, depending on configuration, each container) inside its own lightweight virtual machine rather than as a namespaced process on the host kernel. It implements the same containerd/CRI shim interface as runc, so adopting it in Kubernetes is a `RuntimeClass` selection rather than a different orchestration model: a pod annotated `runtimeClassName: kata-qemu` gets a QEMU-booted micro-VM with its own guest kernel instead of a shared-kernel namespace. Kata supports several hypervisors behind the same shim — QEMU, Cloud Hypervisor, Firecracker, and the Rust-native Dragonball VMM — trading VM-boot latency and feature completeness against one another. [Source: Kata Containers architecture overview](https://github.com/kata-containers/kata-containers/blob/main/docs/design/architecture/README.md)
+
+The isolation gain is real: a compromised container in a Kata pod is a compromised guest kernel behind a hypervisor boundary (VFIO IOMMU protection, memory isolation), not a process one `cgroup` release away from the host kernel. The cost is the same one full virtualisation has always carried — slower pod startup and a guest kernel to keep patched — which is why Kata is typically deployed selectively, for the specific pods handling untrusted code or sensitive data, alongside runc for everything else.
+
+### GPU Passthrough in Kata (VFIO, Reprised)
+
+Kata's GPU story reuses the VFIO passthrough mechanism from §7 verbatim — a Kata micro-VM is, from the GPU's perspective, just another QEMU guest getting a `vfio-pci`-bound device — but automates the host-side binding and device-selection steps that §7's manual `driver_override` walkthrough does by hand. The NVIDIA GPU Operator (§5) ships two additional components for this path: `nvidia-vfio-manager`, which binds selected GPUs to `vfio-pci` instead of the native driver, and `nvidia-sandbox-device-plugin`, which publishes a CDI specification for the vfio-bound devices to `/var/run/cdi/nvidia.yaml`. Kata's runtime then cold-plugs the VFIO device onto a dedicated root port at sandbox-creation time (`cold_plug_vfio = "root-port"` in the hypervisor config), resolving which physical GPU to attach by querying the kubelet's Pod Resources API for the CDI device the scheduler assigned to that pod. [Source: Kata Containers, NVIDIA GPU passthrough with QEMU](https://github.com/kata-containers/kata-containers/blob/main/docs/use-cases/NVIDIA-GPU-passthrough-and-Kata-QEMU.md)
+
+Two deployment shapes are documented: **single-GPU passthrough**, one physical GPU assigned exclusively to one pod, and **multi-GPU NVSwitch/NVLink passthrough**, where several GPUs on an NVLink-connected HGX system (Hopper SXM, Blackwell) are passed through to the same pod together — the scenario that motivates Protected PCIe (PPCIE) below. The corresponding Kubernetes `RuntimeClass` for this non-confidential path is `kata-qemu-nvidia-gpu`.
+
+### Confidential Guest Support: TDX and SEV-SNP
+
+Kata's hypervisor configuration exposes a `confidential_guest` toggle that, per the project's own config comments, "may trigger different hardware features, ranging from memory encryption to both memory and CPU-state encryption and integrity," with the runtime "dynamically detect[ing] the available feature set and aim[ing] at enabling the largest possible one." Setting `confidential_guest = true` alongside `sev_snp_guest = true` selects AMD SEV-SNP; the TDX variant of the same config carries a `tdx_quote_generation_service_socket_port` instead, because a TDX guest cannot generate its own attestation quote and must reach a host-side Quote Generation Service over that socket. [Source: Kata `configuration-qemu-nvidia-gpu-tdx.toml.in`](https://github.com/kata-containers/kata-containers/blob/main/src/runtime/config/configuration-qemu-nvidia-gpu-tdx.toml.in) · [`configuration-qemu-nvidia-gpu-snp.toml.in`](https://github.com/kata-containers/kata-containers/blob/main/src/runtime/config/configuration-qemu-nvidia-gpu-snp.toml.in)
+
+Kata ships dedicated runtime classes that combine this confidential-guest boundary with the GPU passthrough of the previous subsection: `kata-qemu-nvidia-gpu-tdx` and `kata-qemu-nvidia-gpu-snp`. The point of pairing them is that VFIO's IOMMU isolation alone only stops the guest from reaching other devices — it does nothing to stop a compromised *hypervisor* from reading guest memory. `confidential_guest` closes that gap for the CPU-side VM state; by design it currently forgoes CPU/memory hotplug and NVDIMM support as a tradeoff.
+
+### NVIDIA GPU Confidential Computing and PPCIE
+
+CPU-side memory encryption alone leaves the GPU out of the trust boundary — the deep hardware mechanics of NVIDIA's own GPU Confidential Computing mode (Hopper CC-Off/CC-On/CC-DevTools states, the Compute Protected Region in HBM, SPDM-based device attestation, and the NRAS remote-attestation service) belong to [Chapter 80](ch80-gpu-security.md) rather than being duplicated here. What matters at the container-orchestration layer is **Protected PCIe (PPCIE)**: NVIDIA's `nvtrust` tooling describes a mode where, once the whole set of GPUs in a confidential VM has been verified to be in PPCIE mode, NVLink traffic between them is allowed to stay in plaintext — trusting the physically-secured NVSwitch fabric — while PCIe transport back to the CPU stays protected. [Source: NVIDIA nvtrust README, PPCIE Verifier](https://github.com/NVIDIA/nvtrust) This is precisely what the multi-GPU NVSwitch passthrough scenario in the previous subsection depends on: without PPCIE, encrypting every inter-GPU NVLink hop on an 8-GPU HGX confidential node would be prohibitively expensive.
+
+### The Confidential Containers (CoCo) Project
+
+Kata's `confidential_guest` support gives a pod an encrypted VM boundary, but says nothing about *proving* that boundary is genuine to a remote party, or about getting secrets (decryption keys, credentials) into the guest only after it does. The **Confidential Containers (CoCo)** project — a CNCF Incubating project — builds that layer on top of Kata rather than replacing it, standardizing pod-level confidential computing across TEE vendors and cloud offerings. [Source: confidentialcontainers.org](https://confidentialcontainers.org/) · [confidential-containers/confidential-containers architecture.md](https://github.com/confidential-containers/confidential-containers/blob/main/architecture.md)
+
+Its architecture splits across the TEE boundary:
+
+- **Inside the guest**: the **Confidential Data Hub (CDH)**, coordinated by kata-agent, pulls, verifies, and decrypts encrypted container images from inside the TEE — so the image plaintext never exists in host-visible memory. The **Attestation Agent (AA)** collects the TEE's hardware evidence (a TDX or SEV-SNP quote, in Kata's case the same one §8.3's quote-generation-service plumbing produces) and performs the attestation handshake.
+- **Outside the guest**, the **Trustee** project provides the infrastructure side as three services: the **Key Broker Service (KBS)**, the relying party the guest's Attestation Agent talks to; the **Attestation Service (AS)**, which validates the submitted evidence; and the **Reference Value Provider Service (RVPS)**, which manages the expected measurement/appraisal policy the AS checks evidence against.
+
+The resulting flow — image pull triggers attestation; AA and KBS complete a handshake that AS verifies; a successful check yields an attestation token; CDH uses that token to fetch decryption keys and complete the image pull inside the TEE — means secrets are only ever released to a guest that has cryptographically proven, to an independent service, which exact code it is running.
+
+Beyond Kata's local QEMU/VFIO path, CoCo's `cloud-api-adaptor` subproject implements **peer pods**: instead of a locally-run micro-VM, the Kata shim drives a cloud provider's own confidential VM API (e.g., Azure or AWS confidential VM offerings) as the pod's backing VM, letting the same CoCo attestation flow work in clouds where the operator cannot run KVM/QEMU directly on the node. CoCo also covers TEEs Kata's own hypervisor configs above do not: IBM Secure Execution as a third VM-based backend, and, for **process-based** isolation rather than whole-VM isolation, Intel SGX via the `enclave-cc` subproject — an OCI runtime that runs a single container as an SGX enclave, trading a much smaller trusted computing base for tighter application-compatibility constraints than the VM-based approaches. [Source: confidential-containers GitHub organisation](https://github.com/confidential-containers)
+
+**GPU attestation is not yet unified with this flow.** When a CoCo pod uses Kata's `kata-qemu-nvidia-gpu-tdx`/`-snp` runtime classes, GPU device attestation still happens through NVIDIA's own SPDM/NRAS mechanism (Ch80) as a separate step from the CPU-TEE attestation Trustee performs — the two checks are not, as of this writing, folded into one KBS-issued token. Note: needs verification; this is an active area of upstream integration work and the exact state may have moved on by the time this is read.
+
+---
+
+## 9. Cloud GPU Instances
 
 Cloud GPU instances add a kernel driver version compatibility dimension to the container GPU problem: the host kernel and NVIDIA/AMD driver are managed by the cloud provider's AMI/OS image, and they may not match what a container image was built against.
 
@@ -987,8 +1031,8 @@ The EFA environment variables (`FI_PROVIDER=efa`, `NCCL_SOCKET_IFNAME=efa0`) are
 
 ### Long-term
 
-- **Unified GPU device model across containers and VMs**: The long-term architectural goal is a single unified Linux kernel device model — likely an evolution of DRM + SR-IOV + cgroups v2 device controller — that provides equal-quality isolation for containers, VMs, and bare-metal workloads from a single driver code path. VFIO, `mdev`, and render-node bind-mounting would become implementation strategies within a common abstraction. Note: needs verification.
-- **GPU cgroups v3 resource controllers**: The current GPU resource accounting in Linux is approximate (device-plugin counts, MIG static partitions). Future cgroups v3 work may introduce first-class GPU memory and compute controllers analogous to the existing memory and CPU controllers, enabling per-pod GPU bandwidth and VRAM quotas enforced by the kernel rather than by userspace drivers. Note: needs verification.
+- **Unified GPU device model across containers and VMs**: The long-term architectural goal is a single unified Linux kernel device model — likely an evolution of DRM + SR-IOV + cgroups v2 device controllers — that provides equal-quality isolation for containers, VMs, and bare-metal workloads from a single driver code path. VFIO, `mdev`, and render-node bind-mounting would become implementation strategies within a common abstraction. Note: needs verification.
+- **Kernel-enforced GPU memory quotas via the `dmem` cgroup controller**: this is not a future item — it has already landed. Linux 6.14 added a **`dmem`** controller to cgroup v2 (there is no "cgroups v3"; this is ordinary evolutionary growth of the existing unified hierarchy) that provides first-class per-region device-memory accounting: `dmem.max`/`dmem.min`/`dmem.low` set limits and `dmem.current` reports usage, keyed per PCI device and memory region (e.g. `drm/0000:03:00.0/vram0`, `drm/0000:03:00.0/stolen` for Intel's `xe` driver). What remains open is breadth of adoption — as of this writing `xe` is the flagship consumer and it is not yet clear whether `amdgpu` and NVIDIA's open kernel driver will wire up `dmem` registration on the same timeline. [Source: kernel.org cgroup-v2 admin guide, DMEM section](https://docs.kernel.org/admin-guide/cgroup-v2.html)
 - **Seamless multi-cloud GPU portability**: As CDI matures and DRA stabilises, workload portability across AWS, GCP, Azure, and on-premises Kubernetes clusters is expected to improve. Driver version pinning constraints (`NVIDIA_REQUIRE_CUDA`, ROCm ABI) remain a hard coupling; a future firmware abstraction layer or stable userspace ABI freeze could decouple container images from host driver versions. Note: needs verification.
 
 ---
@@ -1010,6 +1054,8 @@ This chapter connects to several other parts of the stack:
 **GPU Virtualisation (Ch89)**: The GPU Operator's MIG Manager and DRA driver operands (§5) are orchestration wrappers around the kernel- and driver-level partitioning mechanisms — MIG instance creation, SR-IOV VF programming, and cgroup v2 `BPF_CGROUP_DEVICE` policy — described in depth in Chapter 89 §4–§6 and §10. This chapter's Kubernetes GPU Scheduling section (§5) is the operational counterpart to Chapter 89's kernel-level foundation.
 
 **ROCm (Ch48)**: The ROCm stack described in this chapter for container deployment sits on top of the kernel interfaces (HSA, `/dev/kfd`) described in detail in Ch48. The ROCm version pinning constraint discussed here — where the container's ROCm userspace version must not exceed the host kernel driver's supported ABI — is a direct consequence of the HSA runtime's use of `KFD_IOC_*` ioctls, which are versioned by the kernel driver.
+
+**GPU Security and Confidential Computing (Ch80)**: §8's Kata/CoCo material covers the container-orchestration layer — VM boundaries, runtime classes, and the Trustee attestation flow. The GPU hardware mechanisms that layer ultimately relies on — NVIDIA Hopper's CC-Off/CC-On/CC-DevTools modes, the Compute Protected Region in HBM, SPDM-based device attestation, and AMD's SEV-SNP GPU trust-domain work — are covered in depth in Chapter 80.
 
 ---
 

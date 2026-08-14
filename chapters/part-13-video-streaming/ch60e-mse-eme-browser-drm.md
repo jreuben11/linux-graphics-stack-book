@@ -128,6 +128,19 @@ MSE is a low-level primitive; virtually no production site drives `SourceBuffer`
 
 All three exist because a real player needs far more than MSE provides: manifest parsing (MPD/M3U8), ABR heuristics, DRM session orchestration (§4), gap-jumping over minor segment discontinuities, and codec-switch handling — MSE supplies only the mechanism to get bytes into the decode pipeline. [Source: Shaka Player GitHub](https://github.com/shaka-project/shaka-player) · [hls.js GitHub](https://github.com/video-dev/hls.js) · [dash.js GitHub](https://github.com/Dash-Industry-Forum/dash.js)
 
+**Comparing the three.** The libraries differ enough in scope and maintainership that "just pick one" is rarely the right framing:
+
+| | hls.js | dash.js | Shaka Player |
+|---|---|---|---|
+| Manifest formats | HLS only | DASH only | DASH **and** HLS, one internal pipeline |
+| Maintainer | Community (video-dev, originating at Dailymotion) | DASH Industry Forum (spec consortium) | Google |
+| Runtime dependencies | Zero — own inline ISOBMFF box-writer (§1.5) | `codem-isoboxer` for box parsing (§1.5) | Self-contained |
+| Primary role | The de facto HLS engine — embedded inside video.js's `@videojs/http-streaming` and countless HLS-only players | Reference/conformance implementation — the player DASH spec authors point to when demonstrating correct behavior | General-purpose production player |
+| DRM/multi-DRM breadth | EME support exists but narrower in practice, mainly FairPlay-oriented deployments | CENC-oriented (§5), since DASH is the format multi-DRM packaging chiefly targets | Broadest of the three — Widevine, PlayReady, and FairPlay all first-class, plus offline storage via IndexedDB |
+| Typical fit | Sites that only need HLS, or want the smallest footprint | Reference testing and DASH-only conformance work rather than general production use | Production OTT/premium video needing both formats and full DRM coverage from one codebase |
+
+The practical split: **hls.js** wins on minimalism for HLS-only delivery; **dash.js** is reached for chiefly to validate DASH-spec conformance rather than to ship a general-purpose player; **Shaka Player** is what production teams pick when they need both manifest formats and full DRM coverage maintained by a single, actively-developed vendor codebase — which is also why it is the heaviest of the three to bundle. [Source: hls.js package.json](https://github.com/video-dev/hls.js/blob/master/package.json) · [dash.js package.json](https://github.com/Dash-Industry-Forum/dash.js/blob/development/package.json) · [Shaka Player GitHub](https://github.com/shaka-project/shaka-player)
+
 ### 2.2 The Fetch-Append-Evict Loop
 
 Every one of these players runs the same core loop: the ABR controller picks a bitrate rendition for the next segment based on measured throughput and current `buffered` depth; the player fetches that segment over HTTP; on arrival, it calls `appendBuffer()`; once `updateend` fires, it checks `buffered` again to decide whether to fetch further ahead or pause fetching because the buffer is already deep enough; periodically it calls `remove()` on ranges behind the playhead to keep memory bounded. The loop is entirely userland JavaScript — MSE contributes only the four primitives in §1.2, not the scheduling policy around them.
