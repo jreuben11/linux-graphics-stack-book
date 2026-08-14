@@ -94,10 +94,10 @@ Perfetto is a production-grade, open-source system-level tracing framework used 
 
 GPU profiling support in Perfetto on Linux is provided through two mechanisms:
 
-- **Driver-submitted GPU counters** — the Mesa Vulkan drivers (RADV, ANV, Turnip) can write to Perfetto's shared memory ring buffer using the `MESA_VK_TRACE=perfetto` environment variable
-- **Kernel-level GPU activity events** — arrive via DRM scheduler tracepoints (`drm_sched_job_wait_dep`, `dma_fence_signaled`) and driver-specific ftrace events such as `amdgpu_cs_ioctl`
+- **Driver-submitted GPU counters and render stages** — Mesa's PPS (Perfetto Producer Service, `src/tool/pps/`) registers custom Perfetto data sources for Freedreno/Turnip (`gpu.counters.msm`), Intel ANV/Iris (`gpu.counters.i915`), Panfrost/PanVK (`gpu.counters.panfrost`), and V3D/V3DV (`gpu.counters.v3d`); GPU render-stage slices (command-buffer-level begin/end markers) are enabled per-application with `MESA_GPU_TRACES=perfetto`. RADV/RadeonSI has no PPS backend as of this writing — AMD's Perfetto-adjacent path is instead the RGP-format trace capture described in §3, triggered by `MESA_VK_TRACE=rgp` (Note: needs verification for future AMD PPS support — track via [Mesa's perfetto docs](https://docs.mesa3d.org/perfetto.html)).
+- **Kernel-level GPU activity events** — arrive via DRM scheduler tracepoints (`drm_sched_job_wait_dep`, `dma_fence_signaled`) and driver-specific ftrace events such as `amdgpu_cs_ioctl`, captured through Perfetto's standard `linux.ftrace` data source rather than a driver-specific one.
 
-The result is a unified timeline showing CPU thread execution, GPU command buffer submission, fence signaling, and hardware counter samples aligned on a single timestamp axis.
+The result is a unified timeline showing CPU thread execution, GPU command buffer submission, fence signaling, and hardware counter samples aligned on a single timestamp axis. §9.1 walks through building Mesa with Perfetto support, starting the PPS producer, capturing a trace with `tracebox`, and querying the result with `trace_processor_shell`.
 
 Perfetto fills the "system tracing" tier in this chapter's profiling stack. It is the appropriate tool when the bottleneck hypothesis involves CPU-GPU synchronization, scheduler latency, or multi-process GPU contention — scenarios where neither an API-level frame debugger nor a hardware wavefront profiler gives a complete picture. The Perfetto project is maintained at [https://perfetto.dev](https://perfetto.dev) and [https://github.com/google/perfetto](https://github.com/google/perfetto).
 
@@ -209,7 +209,7 @@ vkReleaseProfilingLockKHR(device);
 
 ### 2.4 Linux Kernel perf PMU for GPU Counters
 
-The Linux `perf` subsystem provides a unified interface to hardware PMU events. GPU drivers expose their counters through the PMU framework under `/sys/bus/event_source/devices/`:
+The Linux `perf` subsystem provides a unified interface to hardware PMU events, documented in the kernel tree at [`Documentation/admin-guide/perf/`](https://docs.kernel.org/admin-guide/perf/index.html) and in the `perf-stat(1)`/`perf-list(1)` man pages. GPU drivers that register a PMU appear as a `devices/<driver>` entry under `/sys/bus/event_source/devices/`, each exposing its counters as files under an `events/` subdirectory — the file names are the exact strings passed to `perf stat -e <pmu>/<event>/`:
 
 ```bash
 # AMD GPU events (requires CONFIG_PERF_EVENTS_AMD in kernel)
@@ -223,7 +223,40 @@ ls /sys/bus/event_source/devices/i915/events/
 perf stat -e i915/rcs-busy/ -e i915/vcs-busy/ -- ./vulkan-app
 ```
 
-GPU PMU counters through `perf` are system-wide rather than per-process, and GPU ring counters cannot be attributed to individual draw calls — they are best used to establish system-level baselines and detect GPU frequency throttling.
+`perf list` is the discoverability entry point for every PMU registered on the running kernel, not just GPU ones — it merges `sysfs` PMU events with the tracepoint and software-event namespaces:
+
+```bash
+# Every event perf knows about, filtered to GPU-related PMUs
+perf list | grep -A2 'amdgpu\|i915\|xe'
+
+# perf list also prints each PMU's raw config format, useful when an event
+# is missing a symbolic alias and must be addressed by raw config value:
+cat /sys/bus/event_source/devices/amdgpu/format/event
+```
+
+**Attaching to an already-running process** instead of launching the workload under `perf`: use `-p <pid>` in place of the trailing `-- command`. This is the common case for a compositor or long-lived game process that was already started:
+
+```bash
+perf stat -e amdgpu/ta_busy_cnt/ -p $(pgrep -f vulkan-app) -- sleep 5
+```
+
+**Periodic sampling instead of a single aggregate.** A plain `perf stat` prints one aggregate count for the entire run, which hides transients (a shader-compilation stall, a frame-time spike). `-I <ms>` prints a new line of counter values every `<ms>` milliseconds, and `-x ,` (or `-j` for JSON) makes the output machine-parseable for feeding into a spreadsheet or a custom dashboard:
+
+```bash
+# Print counter deltas every 100ms, comma-separated, for 10 seconds
+perf stat -I 100 -x , -e amdgpu/ta_busy_cnt/,i915/rcs-busy/ -- sleep 10
+
+# JSON Lines output — one JSON object per interval, easy to pipe into jq
+perf stat -I 1000 -j -e amdgpu/ta_busy_cnt/ -- ./vulkan-app
+```
+
+**Run-to-run variance.** GPU PMU counters can be noisy across runs due to clock-throttling and scheduling jitter; `-r <N>` repeats the whole measured command `N` times and reports the mean and standard deviation:
+
+```bash
+perf stat -r 5 -e amdgpu/ta_busy_cnt/ -- ./vulkan-app
+```
+
+GPU PMU counters through `perf` are system-wide rather than per-process, and GPU ring counters cannot be attributed to individual draw calls — they are best used to establish system-level baselines and detect GPU frequency throttling. Full worked `perf record`/`perf report`/`perf script` workflows that add CPU callstack correlation are covered in §8.2.
 
 ---
 
@@ -874,6 +907,44 @@ perf stat -e xe/rcs-busy/ -- ./vulkan-app
 
 `perf record` with GPU PMU events records the CPU callstack at each hardware counter overflow — enabling correlation between application code paths and GPU counter activity, even though the counter is system-wide.
 
+**Controlling sample density with `-c`.** A GPU busy-cycle counter overflows extremely fast at full clock rate, so an unqualified `perf record -e amdgpu/ta_busy_cnt/` can generate an unmanageable number of samples. `-c <period>` sets the counter overflow period explicitly — sample once every N events rather than on every overflow:
+
+```bash
+# One sample every 100,000 texture-addresser-busy events
+perf record -e amdgpu/ta_busy_cnt/ -c 100000 -g --call-graph dwarf -- ./vulkan-app
+```
+
+**Reading the report.** `perf report --stdio` prints a flat, sorted-by-overhead symbol table; `perf report` (no `--stdio`) opens the ncurses TUI, where pressing Enter on a hot symbol expands its callers/callees. For scripting or feeding a third-party visualizer, `perf script` dumps the raw per-sample event stream — timestamp, PID/TID, and resolved callstack — instead of an aggregated table:
+
+```bash
+# Raw per-sample stream: one line per counter-overflow sample
+perf script --input=perf.data | head -40
+
+# Restrict to samples from a specific thread name once TIDs are known
+perf script --input=perf.data --tid=$(pgrep -f vulkan-app)
+```
+
+Because `perf script`'s output format is what `stackcollapse-perf.pl` and other flamegraph tooling expect on stdin, this is also the entry point into the CPU/GPU flamegraph workflow in §9.2 — the difference there is that the *sampling event* is a CPU cycle-count timer (`-F 999`) rather than a GPU PMU counter, since GPU PMU events only record a callstack, they do not tell `perf` which CPU instruction was "responsible" for the GPU activity beyond the submission-time callstack.
+
+**Correlating with scheduler/off-CPU behavior.** GPU-bound frames often show up as CPU threads blocked waiting on a fence rather than as CPU busy-time, which a cycle-sampling profile alone will not surface. Adding the kernel's `dma_fence` and DRM scheduler tracepoints to the same `perf record` session ties GPU counter activity to the exact submission and completion events the kernel scheduler observed:
+
+```bash
+# Discover the available DRM/fence tracepoints on this kernel
+perf list 'dma_fence:*' 'drm:*' 'amdgpu:*'
+
+# Combine a GPU PMU counter with fence-signal tracepoints in one recording
+perf record \
+    -e amdgpu/ta_busy_cnt/ -c 100000 \
+    -e dma_fence:dma_fence_signaled \
+    -e amdgpu:amdgpu_cs_ioctl \
+    -g --call-graph dwarf \
+    -- ./vulkan-app
+
+perf script --input=perf.data
+```
+
+The interleaved timeline in `perf script`'s output — GPU counter overflow samples alongside `dma_fence_signaled` and `amdgpu_cs_ioctl` tracepoint hits, all on the same monotonic clock — is the `perf`-only equivalent of the CPU/GPU correlated view Perfetto renders graphically in §9.1; it is coarser (text, not a timeline UI) but requires no daemon setup beyond `perf` itself.
+
 ### 8.3 gputop for Intel OA
 
 `gputop` ([GitHub](https://github.com/rib/gputop)) is Intel-specific and accesses the i915 OA (Observation Architecture) PMU, which exposes correlated counter metric sets that cannot be accessed through standard `perf stat`:
@@ -916,41 +987,111 @@ cat /sys/class/drm/card0/device/hwmon/hwmon*/power1_average  # AMD/Intel
 
 ### 9.1 Perfetto on Linux
 
-[Perfetto](https://perfetto.dev/) is Google's system tracing framework, originally developed for Android but now supported on Linux. Mesa has experimental Perfetto integration for driver-level GPU counter and render stage traces:
+[Perfetto](https://perfetto.dev/) is Google's system tracing framework, originally developed for Android but now supported on Linux. Mesa has integration for driver-level GPU counter and render-stage traces built on top of it, documented at [docs.mesa3d.org/perfetto.html](https://docs.mesa3d.org/perfetto.html). Getting a first GPU trace end-to-end requires four pieces working together: a Mesa build with Perfetto enabled, the Perfetto tracing toolkit itself (`tracebox`), a running PPS producer for the target driver, and a trace config describing what to capture.
+
+**Building Mesa with Perfetto support.** The `perfetto` Meson option is off by default:
 
 ```bash
-# Capture a 10-second system trace with GPU counters (AMD/Intel)
-tracebox -- perfetto \
-    -o /tmp/trace.pb \
-    -t 10s \
-    -c - <<EOF
-buffers { size_kb: 65536 }
-data_sources { config { name: "gpu.counters.amdgpu" } }
-data_sources { config { name: "gpu.renderstages.amdgpu" } }
-data_sources { config { name: "linux.process_stats" } }
-EOF
-
-# Open in Perfetto UI
-# Upload /tmp/trace.pb to https://ui.perfetto.dev/
+mesa $ meson setup build -Dperfetto=true -Dvulkan-drivers=intel,amd -Dgallium-drivers=
+mesa $ meson compile -C build
 ```
 
-Mesa driver datasource names:
+**Building the Perfetto toolkit.** `tracebox` is a single self-contained binary that bundles `traced` (the tracing daemon), `traced_probes` (the ftrace/procfs producer), and the `perfetto` CLI frontend, so nothing needs to be installed system-wide:
+
+```bash
+src $ git clone --branch v56.1 --depth 1 https://github.com/google/perfetto.git
+src $ cd perfetto
+perfetto $ ./tools/install-build-deps
+perfetto $ ./tools/gn gen --args='is_debug=false' out/linux
+perfetto $ ./tools/ninja -C out/linux
+```
+
+**Driver support for the PPS (Perfetto Producer Service) GPU counter and render-stage data sources**, as of the Mesa documentation cited above:
 
 | Driver | Counter source | Render stage source |
 |--------|----------------|---------------------|
-| RadeonSI / RADV | `gpu.counters.amdgpu` | `gpu.renderstages.amdgpu` |
-| ANV / Iris (Intel) | `gpu.counters.i915` | `gpu.renderstages.intel` |
 | Freedreno / Turnip | `gpu.counters.msm` | `gpu.renderstages.msm` |
+| ANV / Iris (Intel, i915) | `gpu.counters.i915` | `gpu.renderstages.intel` |
 | Panfrost / PanVK | `gpu.counters.panfrost` | `gpu.renderstages.panfrost` |
+| V3D / V3DV | `gpu.counters.v3d` | — |
 
-The **pps-producer** daemon collects system-wide GPU counters (requires root for AMD and Intel OA):
+RADV/RadeonSI is **not** in this table — AMD has no Mesa PPS backend at the time of writing. AMD's counter and event capture instead goes through the RGP-format trace path (`MESA_VK_TRACE=rgp`, §3), which the standalone Radeon GPU Profiler consumes; it is a separate mechanism from Perfetto's `gpu.counters.*`/`gpu.renderstages.*` data sources (Note: needs verification if this changes — check `src/tool/pps/` in current Mesa for a new `amdgpu` backend before citing this table in a later edition).
+
+**Starting the PPS producer daemon** for the driver under test (Intel example — the producer needs root to read hardware counters):
 
 ```bash
-sudo pps-producer --backend=i915 &
-# then capture a perfetto trace as above
+mesa $ sudo meson devenv -C build pps-producer
 ```
 
-Source: [Mesa Perfetto documentation](https://docs.mesa3d.org/perfetto.html).
+**Capturing a trace.** With the producer running, launch the application to be profiled and then start `tracebox` with a config naming the data sources to record. Mesa ships a ready-made config at `src/tool/pps/cfg/system.cfg`; a hand-written equivalent looks like this:
+
+```bash
+# Terminal 1: application under test
+meson devenv -C build vkcube
+
+# Terminal 2: capture using a config file
+sudo ./perfetto/out/linux/tracebox --system-sockets --txt \
+    -c src/tool/pps/cfg/system.cfg -o vkcube.trace
+```
+
+```
+# Minimal equivalent config, e.g. my_gpu_trace.cfg — one data_sources block
+# per source, plus a ring buffer and periodic flush so partial captures
+# survive if tracebox is interrupted:
+buffers {
+    size_kb: 65536
+    fill_policy: RING_BUFFER
+}
+data_sources { config { name: "gpu.counters.i915" } }
+data_sources { config { name: "gpu.renderstages.intel" } }
+data_sources { config { name: "linux.process_stats" } }
+write_into_file: true
+file_write_period_ms: 250
+duration_ms: 10000
+```
+
+```bash
+sudo ./perfetto/out/linux/tracebox --system-sockets --txt \
+    -c my_gpu_trace.cfg -o /tmp/trace.pb
+```
+
+If GPU counter tracks appear in the resulting trace as unlabeled `gpu_counter(#)` entries rather than named counters, the ring buffer is overflowing before counter-descriptor packets are emitted — increase `buffers.size_kb` or lower `file_write_period_ms`, per Mesa's documented troubleshooting guidance.
+
+**Viewing the trace.** Open [https://ui.perfetto.dev](https://ui.perfetto.dev) and use "Open trace file" to load `/tmp/trace.pb` (or `vkcube.trace`) directly in the browser — no upload to a remote server occurs, the file is parsed client-side in WebAssembly. GPU counter tracks appear as expandable lanes alongside CPU thread tracks, and (where the driver's render-stage source is enabled) command-buffer-level slices appear nested under the submitting queue.
+
+**Querying a trace with `trace_processor_shell`.** For anything beyond eyeballing the timeline — extracting a specific counter's values into a script, joining GPU render-stage slices against CPU thread slices, or computing per-frame aggregates — the same trace-parsing engine behind the web UI is available standalone as a SQL shell:
+
+```bash
+curl -LO https://get.perfetto.dev/trace_processor
+chmod +x ./trace_processor
+./trace_processor /tmp/trace.pb
+```
+
+Once inside the interactive shell, `slice` holds every timeline event (CPU thread slices and GPU render-stage slices alike) and `counter`/`gpu_counter_track` hold the sampled counter values:
+
+```sql
+-- Every counter track the trace contains, with its GPU-counter descriptor id
+SELECT id, name, description FROM gpu_counter_track;
+
+-- Value-over-time for one named counter track
+SELECT counter.ts, counter.value
+FROM counter
+JOIN gpu_counter_track ON counter.track_id = gpu_counter_track.id
+WHERE gpu_counter_track.name = 'GPU Frequency'
+ORDER BY counter.ts;
+
+-- Longest render-stage slices, to find the most expensive GPU pass
+SELECT slice.name, slice.dur, slice.ts
+FROM slice
+JOIN track ON slice.track_id = track.id
+WHERE track.name LIKE 'Render Stages%'
+ORDER BY slice.dur DESC
+LIMIT 10;
+```
+
+Because both `tracebox` and `trace_processor` are pulled from a tagged Perfetto release (`v56.1` above), a trace captured with one version should be queried with a `trace_processor_shell` from the same or a newer release to avoid schema drift between the SQL tables the shell exposes.
+
+Source: [Mesa Perfetto documentation](https://docs.mesa3d.org/perfetto.html), [Perfetto trace_processor documentation](https://perfetto.dev/docs/analysis/trace-processor).
 
 ### 9.2 CPU Flamegraph + GPU Timestamp Correlation
 
