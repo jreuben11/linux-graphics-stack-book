@@ -111,21 +111,63 @@ When `qrenderdoc` replays a capture, it does so in-process (within the `qrenderd
 
 ### Distribution Packages
 
-Most major distributions ship RenderDoc from their standard repositories:
+Several major distributions ship RenderDoc from their standard repositories, though the packaged version usually trails well behind upstream and coverage is inconsistent across releases:
 
 ```bash
 # Fedora / RHEL
 sudo dnf install renderdoc
 
-# Ubuntu / Debian (backports PPA recommended for current versions)
-sudo add-apt-repository ppa:baldurk/renderdoc
+# Debian (bookworm/12 ships 1.24+dfsg-1; not present in every suite)
+sudo apt install renderdoc
+
+# Ubuntu (universe component; present in 22.04 "jammy" as 1.18+dfsg-1,
+# but dropped from the repository as of 24.04 "noble" — check before relying on it)
 sudo apt install renderdoc
 
 # Arch Linux
 sudo pacman -S renderdoc
 ```
 
-The distribution package installs `librenderdoc.so`, `qrenderdoc`, `renderdoccmd`, the Python module (`renderdoc.so`), and the Vulkan implicit layer manifest.
+[Source: Debian package tracker](https://packages.debian.org/search?keywords=renderdoc) · [Source: Ubuntu package search](https://packages.ubuntu.com/search?keywords=renderdoc)
+
+> **Note:** an earlier edition of this chapter recommended adding a `ppa:baldurk/renderdoc` PPA for current Ubuntu/Debian builds. That PPA does not exist — Baldur Karlsson does not maintain a Launchpad PPA under that name. The only PPA matching "renderdoc" on Launchpad is the unrelated, unmaintained `ppa:cheako/renderdoc`, last built in February 2018 for Ubuntu 17.10 ("artful") and not usable on any supported release. Given how far behind the distro packages run — and that Ubuntu dropped the package entirely from 24.04 — the AppImage or a from-source build (below) is the more reliable way to get a current version on Ubuntu/Debian.
+
+The distribution package, where available, installs `librenderdoc.so`, `qrenderdoc`, `renderdoccmd`, the Python module (`renderdoc.so`), and the Vulkan implicit layer manifest.
+
+### Nix and NixOS
+
+RenderDoc has no dedicated `flake.nix` in the upstream `baldurk/renderdoc` repository, but it does not need one: it is packaged directly in nixpkgs at `pkgs/by-name/re/renderdoc/package.nix`, built from a `fetchFromGitHub baldurk/renderdoc` source pin (currently tracking v1.45, in step with the current upstream release, unlike the Debian/Ubuntu packages above). Because nixpkgs itself is a flake (`github:NixOS/nixpkgs`), this is reachable from any flake-enabled Nix install without a separate third-party flake:
+
+```bash
+# One-off run, no install (quote or escape the '#' under zsh, which
+# otherwise treats it as an extended-glob operator and fails with
+# "no matches found")
+nix run 'nixpkgs#renderdoc'
+
+# Install into the user profile
+nix profile install 'nixpkgs#renderdoc'
+```
+
+On NixOS, or in a flake-based devShell, reference the package directly:
+
+```nix
+# environment.systemPackages in configuration.nix, or a devShell's packages list
+environment.systemPackages = [ pkgs.renderdoc ];
+```
+
+The nixpkgs build enables Qt5, the Vulkan loader, and PCRE2 by default, with an optional Wayland build input (`waylandSupport`) for layer registration under Wayland compositors. The build installs the implicit layer manifest into the package's own Nix store output (`-DVULKAN_LAYER_FOLDER=$out/share/vulkan/implicit_layer.d/`), and the derivation defines no `setupHook` or environment wrapping that adds this path to the Vulkan loader's search locations — `wrapProgram` is used only to set `LD_LIBRARY_PATH` on `renderdoccmd`. In practice this means the layer frequently is *not* auto-discovered by applications outside the package's own environment: if `VK_LAYER_RENDERDOC_Capture` does not appear in `vulkaninfo`'s layer list after installing via `nix profile install` or `environment.systemPackages`, point the loader at the store path explicitly:
+
+```bash
+# Find the manifest actually installed by the store path (path varies by store hash/version)
+find /nix/store -maxdepth 2 -path '*renderdoc*/share/vulkan/implicit_layer.d/*.json' 2>/dev/null
+
+# Point the Vulkan loader at it directly
+VK_LAYER_PATH=/nix/store/<hash>-renderdoc-1.45/share/vulkan/implicit_layer.d ./myapp
+```
+
+> **Note: needs verification.** Whether NixOS's graphics/Vulkan modules perform any additional system-wide layer-path aggregation beyond what the `renderdoc` derivation itself provides was not confirmed against nixpkgs source for this chapter; treat the explicit `VK_LAYER_PATH` approach above as the reliable fallback regardless.
+
+[Source: nixpkgs `renderdoc/package.nix`](https://github.com/NixOS/nixpkgs/blob/master/pkgs/by-name/re/renderdoc/package.nix)
 
 ### AppImage Distribution
 
