@@ -10,7 +10,7 @@
    - [1.1 What is OpenCASCADE Technology (OCCT)?](#11-what-is-opencascade-technology-occt)
    - [1.2 What is Boundary Representation (BRep)?](#12-what-is-boundary-representation-brep)
    - [1.3 What is NURBS and B-Spline Geometry?](#13-what-is-nurbs-and-b-spline-geometry)
-2. [Architecture: Six Modules](#2-architecture-six-modules)
+2. [Architecture: Seven Modules](#2-architecture-seven-modules)
 3. [Topology and Geometry: The BRep Model](#3-topology-and-geometry-the-brep-model)
    - 3.1 [Topology vs. Geometry — The Core Distinction](#31-topology-vs-geometry--the-core-distinction)
    - 3.2 [TopoDS_Shape and the Shape Hierarchy](#32-topods_shape-and-the-shape-hierarchy)
@@ -29,28 +29,33 @@
    - 5.5 [Shader-Based Rendering and PBR](#55-shader-based-rendering-and-pbr)
    - 5.6 [Selection and BVH Picking](#56-selection-and-bvh-picking)
    - 5.7 [Vulkan: Current Status](#57-vulkan-current-status)
+   - 5.8 [VTK Bridge (TKIVtk)](#58-vtk-bridge-tkivtk)
 6. [Data Exchange](#6-data-exchange)
    - 6.1 [STEP](#61-step)
    - 6.2 [IGES and STL](#62-iges-and-stl)
    - 6.3 [glTF 2.0](#63-gltf-20)
    - 6.4 [OBJ and PLY](#64-obj-and-ply)
    - 6.5 [XDE: Extended Data Framework](#65-xde-extended-data-framework)
+   - 6.6 [PMI and GD&T in AP242](#66-pmi-and-gdt-in-ap242)
 7. [OCAF: The Application Framework](#7-ocaf-the-application-framework)
 8. [FreeCAD: OCCT as a CAD Kernel](#8-freecad-occt-as-a-cad-kernel)
-9. [OCCT Alternatives and Higher-Level Abstractions](#9-occt-alternatives-and-higher-level-abstractions)
-   - 9.1 [CodeCAD: Code-First Solid Modeling as a Paradigm](#91-codecad-code-first-solid-modeling-as-a-paradigm)
-   - 9.2 [Rust-Native and Constraint-Solver Alternatives](#92-rust-native-and-constraint-solver-alternatives)
-   - 9.3 [SolveSpace](#93-solvespace)
-   - 9.4 [Python Bindings and Frameworks Built on OCCT](#94-python-bindings-and-frameworks-built-on-occt)
-   - 9.5 [Web and WebAssembly Frameworks Built on OCCT](#95-web-and-webassembly-frameworks-built-on-occt)
-   - 9.6 [AI-Assisted and Generative CAD](#96-ai-assisted-and-generative-cad)
-10. [Building and Packaging on Linux](#10-building-and-packaging-on-linux)
-    - 10.1 [CMake Build](#101-cmake-build)
-    - 10.2 [Distribution Packages](#102-distribution-packages)
-    - 10.3 [Linking](#103-linking)
-11. [Pipeline Comparison Diagram](#11-pipeline-comparison-diagram)
+9. [Salome: A CAE Platform Built on OCCT](#9-salome-a-cae-platform-built-on-occt)
+10. [DRAW: The Interactive Test Harness and Tcl Console](#10-draw-the-interactive-test-harness-and-tcl-console)
+11. [OCCT Alternatives and Higher-Level Abstractions](#11-occt-alternatives-and-higher-level-abstractions)
+    - 11.1 [CodeCAD: Code-First Solid Modeling as a Paradigm](#111-codecad-code-first-solid-modeling-as-a-paradigm)
+    - 11.2 [Rust-Native and Constraint-Solver Alternatives](#112-rust-native-and-constraint-solver-alternatives)
+    - 11.3 [SolveSpace](#113-solvespace)
+    - 11.4 [Python Bindings and Frameworks Built on OCCT](#114-python-bindings-and-frameworks-built-on-occt)
+    - 11.5 [Web and WebAssembly Frameworks Built on OCCT](#115-web-and-webassembly-frameworks-built-on-occt)
+    - 11.6 [AI-Assisted and Generative CAD](#116-ai-assisted-and-generative-cad)
+    - 11.7 [Commercial B-Rep Kernels: Parasolid, ACIS, and C3D Toolkit](#117-commercial-b-rep-kernels-parasolid-acis-and-c3d-toolkit)
+12. [Building and Packaging on Linux](#12-building-and-packaging-on-linux)
+    - 12.1 [CMake Build](#121-cmake-build)
+    - 12.2 [Distribution Packages](#122-distribution-packages)
+    - 12.3 [Linking](#123-linking)
+13. [Pipeline Comparison Diagram](#13-pipeline-comparison-diagram)
 - [GPU-Accelerated Shape Analysis](#gpu-accelerated-shape-analysis)
-12. [Integrations](#12-integrations)
+14. [Integrations](#14-integrations)
 
 ---
 
@@ -64,7 +69,7 @@ OCCT is not a game engine. Its design goals differ sharply from Vulkan-oriented 
 - **Topology matters.** A solid in OCCT is a directed graph of faces, edges, and vertices carrying adjacency and orientation. Boolean operations (union, intersection, cut) operate on this graph, not on triangle soups.
 - **Data exchange matters.** Engineering CAD formats — STEP, IGES — encode the full BRep graph with tolerances. Importing them faithfully requires the full OCCT stack.
 
-The current stable release is **OCCT 8.0.0p1** (released 17 June 2026), which moved from C++11/14 to a mandatory **C++17** baseline and reorganised the source tree into six clearly delimited module directories. [Source: [OCCT 8.0.0 Release](https://github.com/Open-Cascade-SAS/OCCT/releases/tag/V8_0_0); `adm/cmake/version.cmake` sets `OCC_VERSION_MAJOR=8`]
+The current stable release is **OCCT 8.0.0p1** (released 17 June 2026), which moved from C++11/14 to a mandatory **C++17** baseline and reorganised the source tree into seven clearly delimited module directories — six of them the core geometry/visualization/data-exchange stack this chapter is built around, plus a seventh, `Draw` (§10), that builds an interactive Tcl test console rather than runtime library code. [Source: [OCCT 8.0.0 Release](https://github.com/Open-Cascade-SAS/OCCT/releases/tag/V8_0_0); `adm/cmake/version.cmake` sets `OCC_VERSION_MAJOR=8`]
 
 The rendering backend remains **OpenGL 3.2+ core profile** (`TKOpenGl`). A Vulkan prototype exists (tracker issue #30631) but has not merged into mainline as of 8.0.0p1.
 
@@ -72,7 +77,7 @@ The rendering backend remains **OpenGL 3.2+ core profile** (`TKOpenGl`). A Vulka
 
 OpenCASCADE Technology (OCCT) is an open-source C++ library providing a complete framework for 3D geometric modeling, visualization, and data exchange. Unlike game-engine renderers that operate on triangle meshes, OCCT represents shapes using exact mathematical geometry — B-spline curves, NURBS surfaces, and boundary representation solids. This distinction makes OCCT the preferred foundation for engineering CAD and CAE applications where dimensional accuracy, manufacturing tolerances, and format fidelity to standards such as STEP and IGES are non-negotiable.
 
-On Linux, OCCT integrates with the graphics stack through its `TKOpenGl` visualization driver, which targets an OpenGL 3.2+ core profile and supports both X11/GLX and EGL/Wayland window systems. Its CMake build system produces a set of modular toolkit libraries (`TK*`) that applications link selectively. Those toolkits are organized into six functional areas — Foundation Classes, Modeling Data, Modeling Algorithms, Visualization, Data Exchange, and Application Framework — each corresponding to a source directory in OCCT 8.0.0's C++17-based tree. Applications including FreeCAD, Salome, and Code_Aster use OCCT as their geometric kernel, operating on exact solid models that are triangulated only at render time or for export.
+On Linux, OCCT integrates with the graphics stack through its `TKOpenGl` visualization driver, which targets an OpenGL 3.2+ core profile and supports both X11/GLX and EGL/Wayland window systems. Its CMake build system produces a set of modular toolkit libraries (`TK*`) that applications link selectively. Those toolkits are organized into seven functional areas — Foundation Classes, Modeling Data, Modeling Algorithms, Visualization, Data Exchange, Application Framework, and Draw — each corresponding to a source directory in OCCT 8.0.0's C++17-based tree. The first six ship runtime libraries applications link against; Draw is the odd one out, building an interactive Tcl console (§10) used for OCCT's own regression testing rather than a library any downstream application links. Applications including FreeCAD, Salome, and Code_Aster use OCCT as their geometric kernel, operating on exact solid models that are triangulated only at render time or for export.
 
 ### 1.2 What is Boundary Representation (BRep)?
 
@@ -92,9 +97,9 @@ NURBS surfaces are the standard geometric primitive in STEP and IGES files. When
 
 ---
 
-## 2. Architecture: Six Modules
+## 2. Architecture: Seven Modules
 
-OCCT 8.0.0 reorganised its historically flat `src/` layout into six module directories. Each module maps to one or more CMake `BUILD_MODULE_*` flags and a set of toolkit libraries (`TK*`).
+OCCT 8.0.0 reorganised its historically flat `src/` layout into seven module directories. Each module maps to one or more CMake `BUILD_MODULE_*` flags and a set of toolkit libraries (`TK*`).
 
 ```
 src/
@@ -104,6 +109,7 @@ src/
   Visualization/       # TKOpenGl, TKOpenGles, TKV3d, TKService
   DataExchange/        # TKDESTEP, TKDEIGES, TKDEGLTF, TKDEOBJ, TKDESTL, ...
   ApplicationFramework/ # TKCAF, TKLCAF, TKXCAF, TKBin, TKXml, ...
+  Draw/                # TKDraw, TKTopTest, TKViewerTest, TKDCAF, ... (§10)
 ```
 
 **Foundation Classes** (`TKernel`, `TKMath`) provide the runtime: `Standard_Transient` (OCCT's reference-counted base class — the equivalent of a smart pointer base), `Handle<T>` (intrusive reference count, analogous to `std::shared_ptr` but with less overhead), `NCollection_List`/`NCollection_Map`/`NCollection_Array1` (generic containers), `OSD` (OS abstraction: files, signals, threads), `Message` (progress indication, warnings, errors), and `gp` — the geometric primitives package containing `gp_Pnt`, `gp_Vec`, `gp_Dir`, `gp_Ax1`, `gp_Ax2`, `gp_Trsf` (transformation), `gp_Lin`, `gp_Pln`, `gp_Circ`. [Source: `src/FoundationClasses/TKernel/Standard/Standard_Transient.hxx`; `src/FoundationClasses/TKMath/gp/gp_Pnt.hxx`]
@@ -118,7 +124,7 @@ src/
 - `TKMesh` — triangulation (`BRepMesh_IncrementalMesh`)
 - `TKShHealing` — shape healing (`ShapeFix`, `ShapeAnalysis`) — critical for imported geometry
 
-**Visualization** is covered in detail in §5. **Data Exchange** in §6. **Application Framework** in §7.
+**Visualization** is covered in detail in §5. **Data Exchange** in §6. **Application Framework** in §7. **Draw** — the seventh module, built only when `BUILD_MODULE_Draw=ON` — is covered in §10; it ships no library any downstream application links against, which is why it's easy to miss in a module count that focuses on runtime toolkits.
 
 ---
 
@@ -588,6 +594,23 @@ As of OCCT 8.0.0p1 (June 2026), **there is no shipped Vulkan backend**. The tool
 
 All GPU rendering in OCCT currently goes through `OpenGl_GraphicDriver`, using OpenGL 3.2+ core profile (minimum) up to 4.5 with extensions. Applications that require Vulkan for their own rendering (e.g., using RADV or ANV via Mesa) must handle OCCT geometry on a separate OpenGL context and composite manually, or wait for the Vulkan driver to mature.
 
+### 5.8 VTK Bridge (TKIVtk)
+
+§12.1's build listing shows `USE_VTK=OFF` as an 8.0.0 default without explaining what that flag actually builds. It builds **VIS** (Vtk Integration Services) — a one-directional bridge, packaged as toolkit `TKIVtk`, that converts an OCCT shape into VTK actors for display inside `vtkRenderWindow`-based applications. It exists because some downstream tools (Salome's Mesh module among them, §9) standardize their 3D viewer on VTK rather than on OCCT's own `V3d`/AIS stack (§5.1–§5.3), and need a supported way to hand VTK a picture of an OCCT `TopoDS_Shape` without reimplementing tessellation and picking from scratch.
+
+TKIVtk is organized into four packages, split cleanly along which side of the OCCT/VTK boundary each one faces:
+
+- **`IVtk`** — toolkit-agnostic interfaces (`IVtk_IShape`, `IVtk_IShapeData`, `IVtk_IShapeMesher`) that the OCCT-side and VTK-side implementations both satisfy, keeping the bridge's core free of a hard dependency on either library's concrete types.
+- **`IVtkOCC`** — the OCCT-side implementation: `IVtkOCC_Shape` wraps a `TopoDS_Shape` behind the `IVtk_IShape` interface, and `IVtkOCC_ShapeMesher` drives OCCT's own tessellation (the same `BRepMesh`-family machinery §4.4 covers) to produce mesh data VTK can consume — the bridge does not reimplement triangulation, it reuses OCCT's.
+- **`IVtkVTK`** — the VTK-side implementation: `IVtkVTK_ShapeData` holds the resulting mesh as a `vtkPolyData`-compatible structure, with sub-shape IDs preserved as VTK cell data so a picked VTK cell can be mapped back to the originating `TopoDS_Face` or `TopoDS_Edge`.
+- **`IVtkTools`** — glue classes for embedding the bridge in a real VTK pipeline: `IVtkTools_ShapeDataSource` is a `vtkPolyDataAlgorithm` source that can sit directly in a `vtkRenderer`'s pipeline, and `IVtkTools_ShapePicker` adapts VTK's picking machinery to resolve OCCT sub-shapes.
+
+A separate toolkit, `TKIVtkDraw`, layers DRAW commands (`IVtkDraw_HighlightAndSelectionPipeline`, `IVtkDraw_Interactor`) on top of `TKIVtk` so the bridge can be exercised interactively from the DRAW console (§10) without writing a full VTK application — useful for isolating whether a rendering problem is in OCCT's tessellation or in the downstream VTK pipeline.
+
+The data flow is strictly one-directional: `TopoDS_Shape → IVtkOCC_ShapeMesher → IVtkVTK_ShapeData → vtkPolyData`. Nothing in `BRepMesh_IncrementalMesh` (§4.4) or the core BRep data structures (§3) depends on VTK; a build with `USE_VTK=OFF` omits `TKIVtk`/`TKIVtkDraw` entirely and every other toolkit compiles and links exactly as before. `USE_VTK` has defaulted to `OFF` since OCCT 8.0.0, so applications that want the bridge — including a Salome build — must request it explicitly at configure time.
+
+**Salome's actual viewer split.** It's tempting to assume an OCCT application with a VTK dependency uses VTK for all its 3D display, but Salome's own module boundaries argue against that: the **Geometry** module (GEOM, §9) defaults to Salome's **OCC 3D Viewer** — built on OCCT's native `V3d`/AIS stack, not on `TKIVtk` — while only the **Mesh** module (SMESH, §9) defaults to the **VTK 3D Viewer**, because mesh data (produced by external meshers like NETGEN, not by `BRepMesh_IncrementalMesh`) is already VTK's native domain. `TKIVtk` is one available bridge for getting an OCCT BRep shape onto a VTK canvas when an application's viewer architecture calls for it — not evidence that VTK has displaced OCCT's own viewer wherever both libraries appear in the same address space. [Source: `src/Visualization/TKIVtk/` toolkit layout, OCCT 8.0.0 source tree]
+
 ---
 
 ## 6. Data Exchange
@@ -825,6 +848,33 @@ XDE (`TKXCAF`) extends OCAF with CAD-specific attributes for assembly management
 
 XDE labels form a hierarchy: the root at `doc->Main()` contains a shape tool root, under which shapes and assemblies are nested with `TDF_Label` paths like `0:1:1:1`. Assembly references use `TNaming_NamedShape` to share a `TopoDS_Shape` across multiple instances with different `TopLoc_Location` transformations.
 
+### 6.6 PMI and GD&T in AP242
+
+§6.1 introduced AP242's schema name (`AP242MANAGEDMODELBASED3DENGINEERINGMIMLF`) without explaining its headline feature over AP214: **PMI** (Product Manufacturing Information) — dimensions, geometric tolerances, and datums per ASME Y14.5 / ISO 1101, attached directly to BRep faces and edges as an alternative to a 2D drawing. AP242 formally is ISO 10303-242, "Managed Model Based 3D Engineering," and its CAx-IF/MBX-IF Recommended Practices define **two parallel PMI representations** carried in the same file: a *semantic* representation (structured entities an application can query programmatically — "this face pair has a 0.05mm parallelism tolerance") and a *tessellated* representation (pre-rendered graphical annotation geometry — the same tolerance frame as it should look on screen), so a receiving system can use whichever it supports. [Source: CAx-IF/MBX-IF "Recommended Practices for PMI (AP242)" v4.0](https://www.mbx-if.org/home/wp-content/uploads/2024/05/rec_pracs_pmi_v40.pdf)
+
+XDE represents semantic PMI with its own family of classes and attributes alongside `XCAFDoc_ShapeTool`/`ColorTool`/`LayerTool` (§6.5), stored under XDE label `0.1.4`:
+
+```
+src/DataExchange/TKXCAF/
+  XCAFDoc/
+    XCAFDoc_Dimension.hxx        # a single dimension attribute on a label
+    XCAFDoc_GeomTolerance.hxx    # a single geometric-tolerance attribute
+    XCAFDoc_Datum.hxx            # a datum feature reference
+    XCAFDoc_DimTol.hxx           # shared base for dimension/tolerance data
+    XCAFDoc_DimTolTool.hxx       # manager class — the GD&T analog of XCAFDoc_ShapeTool
+  XCAFDimTolObjects/
+    XCAFDimTolObjects_DimensionObject.hxx     # dimension value, type, modifiers
+    XCAFDimTolObjects_GeomToleranceObject.hxx # tolerance zone, type, value
+    XCAFDimTolObjects_DatumObject.hxx         # datum label and target
+    XCAFDimTolObjects_Tool.hxx
+```
+
+[Source: OCCT GitHub source tree, `src/DataExchange/TKXCAF/XCAFDoc/` and `.../XCAFDimTolObjects/`](https://github.com/Open-Cascade-SAS/OCCT/tree/master/src/DataExchange/TKXCAF) `XCAFDoc_DimTolTool` plays the same role for GD&T that `XCAFDoc_ShapeTool` plays for shapes: it's the entry point an application calls to enumerate, add, or query dimensions, tolerances, and datums on a document, via methods like `AddDimension()`/`AddGeomTolerance()`/`AddDatum()` — so an application can author PMI from scratch in OCAF, not merely inspect PMI imported from an existing STEP file. Tessellated (human-readable) PMI presentation shapes are retrieved separately via `XCAFDoc_DimTolTool::GetGDTPresentations(...)`. Both representations round-trip through `STEPCAFControl_Reader`/`Writer` (§6.1) alongside the shape, color, and layer data those classes already transfer.
+
+**Maturity note.** Basic GD&T infrastructure (`XCAFDoc_DimTolTool`, `XCAFDoc_Datum`) predates OCCT 7.x, but semantic-PMI name translation from STEP into XCAF was still being extended as late as the 7.3.0 release notes, and FreeCAD's own PMI-workbench design work treats **OCCT 7.6** as the practical minimum for reliable semantic PMI import via the `XCAFDimTolObjects` enums. [Source: FreeCAD PMI Workbench issue #29772](https://github.com/FreeCAD/FreeCAD/issues/29772) Note: needs verification — the exact OCCT release that first introduced semantic PMI reading could not be pinned down from available release notes. A concrete current limitation, per the same FreeCAD source: as of OCCT 8.0, **export** of AP242 drawing Views is not supported, though import is.
+
+**Why this matters beyond geometry exchange.** PMI is squarely a metrology and quality-control feature, not a modeling one — Open Cascade's own positioning for it is aggregating PMI from STEP AP242, JT, and proprietary CAD sources into a single queryable source of truth for automated inspection against ISO 1101:2012 / ISO 16792:2015, rather than for constructing shapes. [Source: Open Cascade PMI/Metrology use case](https://www.opencascade.com/use_cases/mastering-product-manufacturing-information-pmi-data-for-metrology-and-quality-control/) An application receiving an AP242 file with PMI can, in principle, drive a CMM (coordinate measuring machine) inspection plan directly from the semantic tolerance data XDE exposes, without a human re-reading a drawing.
+
 ---
 
 ## 7. OCAF: The Application Framework
@@ -916,17 +966,71 @@ Part.export([fuse], "/tmp/result.step")  # calls STEPControl_Writer
 
 ---
 
-## 9. OCCT Alternatives and Higher-Level Abstractions
+## 9. Salome: A CAE Platform Built on OCCT
 
-OCCT is not the only open-source geometric kernel on Linux, and it is rarely consumed directly by end users — most people who touch B-rep CAD do so through a scripting layer, a browser tab, or an application (like SolveSpace) that solves a problem OCCT itself does not address. This section surveys four adjacent parts of the ecosystem: the code-first paradigm that CadQuery, build123d, and OpenSCAD all belong to; kernels written to compete with or wrap OCCT from Rust; a standalone constraint-based CAD tool that uses no OCCT code at all; and the scripting/web layers that make OCCT itself easier to drive.
+§1 named Salome, alongside FreeCAD, as a major consumer of OCCT — but unlike FreeCAD, which deliberately avoids OCAF (§7), Salome is a CORBA-component platform where geometry is one module among several feeding a simulation pipeline, and its use of OCCT reflects that broader scope.
 
-### 9.1 CodeCAD: Code-First Solid Modeling as a Paradigm
+**Architecture: components, not a monolith.** Salome is built as a set of independently versioned CORBA components communicating through a shared study document, rather than as a single application binary. The modules most relevant to OCCT are:
+
+- **GEOM** — the geometry module, and the one that maps most directly onto what FreeCAD's Part workbench does with OCCT (§8). Unlike FreeCAD's `Part::TopoShape`, GEOM builds its parametric model *on top of* OCAF: `GEOM_Engine` drives construction through `GEOM_Function` objects attached to a `TDocStd_Document`, with `TFunction_Driver` implementations replaying each construction step — the same OCAF undo/redo and persistence machinery §7 describes, applied to CAD history the way OCAF's design intends and FreeCAD's own architecture explicitly declines to use.
+- **SHAPER** — a newer, more modern parametric modeler built on OCCT, developed to eventually supersede GEOM's older Python-macro-recording workflow with a feature-tree UI closer to what FreeCAD or a commercial parametric CAD package offers.
+- **SMESH** — the meshing module. This is the clearest architectural divergence from OCCT's own tools: rather than using `BRepMesh_IncrementalMesh` (§4.4) — which produces a display-quality triangulation, not an FEA-quality mesh — SMESH wraps external mesh generators. `NETGENPlugin_Mesher` constructs a `netgen::OCCGeometry` directly from OCCT BRep data and hands it to NETGEN's own volume-meshing algorithms; Gmsh and MeshGems plugins follow the same pattern. OCCT's role in SMESH is supplying exact BRep geometry as meshing input, not doing the meshing itself.
+
+**Two viewers, not one.** Salome ships both an **OCC 3D Viewer**, built on OCCT's native `V3d`/AIS stack (§5.1–§5.3), and a **VTK 3D Viewer**, built on the `TKIVtk` bridge (§5.8). The default is per-module, not global: GEOM defaults to the OCC Viewer, since geometry is exact BRep and OCCT's own viewer displays it directly; SMESH defaults to the VTK Viewer, since mesh data arrives already in a VTK-friendly form from NETGEN/Gmsh/MeshGems. A Salome session can have both viewers open on the same study simultaneously.
+
+**Document model.** Salome's study document (`SalomeApp_Study`, built on `LightApp_Study`) is the container every module's data attaches to — analogous in role to XDE's `TDocStd_Document` (§6.5) but scoped to an entire multi-module simulation study (geometry, mesh, and downstream solver setup) rather than to a single CAD assembly.
+
+**Licensing and the Code_Aster/Code_Saturne relationship.** Salome itself is LGPL v2.1 — the same license family as OCCT (§1). §1 also names Code_Aster as an OCCT consumer; the connection runs through Salome, not directly: Code_Aster (structural mechanics) and Code_Saturne (CFD) are separate, independently developed GPL solvers that consume Salome-prepared geometry and meshes as input. "Salome-Meca" bundles Salome with Code_Aster for convenience, but the solvers themselves have no direct OCCT dependency — they consume SMESH's mesh output, several steps removed from the BRep geometry OCCT produced.
+
+---
+
+## 10. DRAW: The Interactive Test Harness and Tcl Console
+
+§2's module list includes `Draw` as the seventh, non-runtime module: rather than building a `TK*` library other applications link, `BUILD_MODULE_Draw=ON` builds **DRAWEXE**, an interactive Tcl interpreter console that exposes OCCT's own modeling, visualization, and data-exchange APIs as Tcl commands. It exists primarily so OCCT's own developers — and, by extension, anyone debugging OCCT-level geometry problems without writing a C++ test harness — can construct shapes, run algorithms, and inspect results interactively, one command at a time.
+
+**Toolkit layout.** DRAW's functionality is split across several toolkits, each adding a family of commands to the base interpreter:
+
+- **`TKDraw`** — the interpreter core itself: `Draw_Interpretor` (the Tcl command dispatcher) and `Draw_Appli` (application bootstrap), plus 3D-viewer plumbing shared by every DRAW command family.
+- **`TKTopTest`** — general modeling commands: primitive construction (`box`, `pcylinder`, `psphere`), Boolean operations (`bfuse`, `bcut`, `bcommon`), and shape inspection (`whatis`, `dump`).
+- **`TKViewerTest`** — 3D viewer commands: `vinit` (open a view), `vdisplay` (show a shape), `vfit` (fit view to content), `vsetdispmode` (shaded/wireframe).
+- **`TKDCAF`** — OCAF commands, for exercising `TDocStd_Document`/`TDF_Label` (§7) interactively.
+- **`TKIVtkDraw`** — VTK-bridge commands (§5.8), for exercising `TKIVtk` without writing a VTK application.
+- **`TKOpenGlTest` / `TKOpenGlesTest`** — low-level OpenGL/OpenGL ES driver diagnostics.
+- **`TKQADraw`** — quality-assurance-specific test commands.
+- **`TKTObjDRAW`**, **`TKXSDRAW*`** family — commands for OCCT's TObj framework and its various data-exchange readers/writers (STEP, IGES, etc.), letting a STEP import be driven and inspected from the console rather than a compiled reader program.
+
+**A representative session.** DRAW's command style favors short, composable verbs over the C++ API's long class names — closer to a shell than to a scripted API binding:
+
+```tcl
+pload MODELING VISUALIZATION
+box b 10 20 30
+pcylinder c 5 40
+bfuse result b c
+vinit
+vdisplay result
+vfit
+vsetdispmode result 1
+whatis result
+dump result
+```
+
+`pload` loads the command families a session needs (here, modeling primitives/Booleans and the viewer) rather than registering every DRAW command unconditionally. Note: needs verification — the exact set of `pload` aliases (e.g. whether `MODELING` maps to a fixed toolkit list or is itself DEFAULT-derived) is not confirmed against current source; the commands and workflow shape above are accurate, but exact `pload`/`bfuse` argument forms should be checked against `docs/user_guides/test_harness/` for a given OCCT release before being copied verbatim into a script.
+
+**Regression testing.** DRAW is not only an interactive console — it is the execution engine for OCCT's own test suite. OCCT's regression tests are `.tcl` scripts (organized under `tests/` in the source tree) run non-interactively through `DRAWEXE`, each script building geometry, running an algorithm, and asserting on the result — the same commands shown above, scripted rather than typed. Demo scripts distributed alongside OCCT (e.g. `resources/samples/tcl/bottle.tcl`, the canonical "build a bottle with a Boolean-fused body and a filleted neck" tutorial model) use the identical command vocabulary, making DRAW simultaneously OCCT's test harness, its interactive debugger, and its own teaching tool for newcomers to the modeling API.
+
+---
+
+## 11. OCCT Alternatives and Higher-Level Abstractions
+
+OCCT is not the only open-source geometric kernel on Linux, and it is rarely consumed directly by end users — most people who touch B-rep CAD do so through a scripting layer, a browser tab, or an application (like SolveSpace) that solves a problem OCCT itself does not address. This section surveys four adjacent parts of the ecosystem: the code-first paradigm that CadQuery, build123d, and OpenSCAD all belong to; kernels written to compete with or wrap OCCT from Rust; a standalone constraint-based CAD tool that uses no OCCT code at all; and the scripting/web layers that make OCCT itself easier to drive — plus, closing the section, the commercial B-rep kernels OCCT competes with directly.
+
+### 11.1 CodeCAD: Code-First Solid Modeling as a Paradigm
 
 Before surveying individual tools, it's worth naming the pattern several of them share: "Code-CAD" (also written CodeCAD) describes software that lets a user define a 3D CAD model *entirely* as source code — the model's shape is a program's output, not a sequence of mouse-driven sketch-and-extrude operations recorded behind the scenes — with a viewport that re-renders whenever the code changes. A community-curated survey of the space defines it plainly: "software that allows you to define 3D CAD models with code," explicitly distinguishing Code-CAD tools from general-purpose 3D geometry libraries by their "opinionated abstractions for quickly developing mechanical parts." [Source](https://github.com/Irev-Dev/curated-code-cad) **OpenSCAD** ([Source](https://openscad.org/)) is the paradigm's acknowledged originator and is still referred to as "the OG" in that same survey — first released in February 2010 [Source](https://en.wikipedia.org/wiki/OpenSCAD), built on CGAL for exact Boolean operations on its own CSG/mesh representation (not a B-rep kernel), with a small declarative language (`difference() { cube(10); translate([5,5,5]) sphere(6); }`) that predates CadQuery, build123d, and every other tool this chapter covers by roughly a decade.
 
-Code-CAD splits along the same kernel-representation axis this chapter has already covered for OCCT itself: **B-rep tools** — CadQuery, build123d, CascadeStudio, pythonocc-core (§9.4–9.5, below) — get exact NURBS surfaces and reliable STEP export by wrapping OCCT or an equivalent kernel; **mesh/CSG tools** — OpenSCAD, and the more recent **Manifold** ([Source](https://github.com/elalish/manifold), a fast, geometrically robust mesh-Boolean library increasingly used as an OpenSCAD backend) — trade exact surfaces for simpler, more predictable Boolean robustness on triangulated geometry; and a third, less common category represents shapes **implicitly** as signed-distance functions evaluated at query points rather than as an explicit boundary at all — **libfive** ([Source](https://libfive.com/), a solid-modeling library with its own Lisp-based scripting language), the unrelated **Curv** ([Source](https://github.com/curv3d/curv), a separate language for mathematical art that also compiles down to SDFs), and **sdfx** (Go) are examples — which sidesteps B-rep/mesh Boolean robustness problems entirely at the cost of needing a final meshing (marching-cubes-family) pass before the result can be exported to STL or 3D-printed. [Source](https://github.com/Irev-Dev/curated-code-cad) The appeal cutting across all three representations is the same: parametric models fall out "almost by default" from writing a program rather than a click history, and the resulting scripts version-control, diff, and code-review like any other source file — a property no mouse-driven sketch-and-extrude history in a conventional CAD GUI can match as cleanly. [Source](https://learn.cadhub.xyz/blog/curated-code-cad/)
+Code-CAD splits along the same kernel-representation axis this chapter has already covered for OCCT itself: **B-rep tools** — CadQuery, build123d, CascadeStudio, pythonocc-core (§11.4–11.5, below) — get exact NURBS surfaces and reliable STEP export by wrapping OCCT or an equivalent kernel; **mesh/CSG tools** — OpenSCAD, and the more recent **Manifold** ([Source](https://github.com/elalish/manifold), a fast, geometrically robust mesh-Boolean library increasingly used as an OpenSCAD backend) — trade exact surfaces for simpler, more predictable Boolean robustness on triangulated geometry; and a third, less common category represents shapes **implicitly** as signed-distance functions evaluated at query points rather than as an explicit boundary at all — **libfive** ([Source](https://libfive.com/), a solid-modeling library with its own Lisp-based scripting language), the unrelated **Curv** ([Source](https://github.com/curv3d/curv), a separate language for mathematical art that also compiles down to SDFs), and **sdfx** (Go) are examples — which sidesteps B-rep/mesh Boolean robustness problems entirely at the cost of needing a final meshing (marching-cubes-family) pass before the result can be exported to STL or 3D-printed. [Source](https://github.com/Irev-Dev/curated-code-cad) The appeal cutting across all three representations is the same: parametric models fall out "almost by default" from writing a program rather than a click history, and the resulting scripts version-control, diff, and code-review like any other source file — a property no mouse-driven sketch-and-extrude history in a conventional CAD GUI can match as cleanly. [Source](https://learn.cadhub.xyz/blog/curated-code-cad/)
 
-### 9.2 Rust-Native and Constraint-Solver Alternatives
+### 11.2 Rust-Native and Constraint-Solver Alternatives
 
 None of the Rust-ecosystem projects below are "a Rust OpenCascade" in the same sense — they split into bindings around the real OCCT and kernels that reimplement B-rep/NURBS from scratch, with materially different maturity trade-offs.
 
@@ -940,45 +1044,65 @@ None of the Rust-ecosystem projects below are "a Rust OpenCascade" in the same s
 
 None of the four projects above ship a constraint solver — the kind that drives sketch-based parametric design in SolidWorks or FreeCAD's Sketcher. That gap is architectural, not incidental: as this chapter's Roadmap notes, OCCT itself "has never shipped a constraint solver," leaving history-based parametric modeling to be built at the application layer (FreeCAD bundles its own `PlaneGCS`-family solver for exactly this reason). The most prominent open-source project built around a constraint solver as its core, rather than as an add-on, is covered next.
 
-### 9.3 SolveSpace
+### 11.3 SolveSpace
 
 **SolveSpace** ([Source](https://github.com/solvespace/solvespace), GPLv3, latest release v3.2, 2026-03-27) inverts OCCT's architecture: where OCCT is an exact B-rep/NURBS kernel that has never had a constraint solver, SolveSpace is a constraint solver first, with just enough surrounding modeling capability (extrudes, revolves, helixes, and Boolean union/difference/intersection) to produce real 3D solids from constrained 2D sketches. It uses no OCCT code.
 
 Its solver — isolable as a standalone library, `libslvs`, decoupled from the GUI — takes a sketch's entities (points, lines, arcs, circles, and the constraints between them: tangent, perpendicular, parallel, equal-length, symmetric, dimensional) and treats satisfying all constraints simultaneously as a system of nonlinear equations, solved by Newton-Raphson iteration; a later optimization pass moved the linear-algebra step onto the Eigen library and raised the maximum solvable unknowns from 1024 to 2048. [Source](https://github.com/solvespace/solvespace/blob/master/CHANGELOG.md) This is precisely the constraint-solving layer FreeCAD's Sketcher workbench implements independently of OCCT/OCAF — SolveSpace demonstrates the same capability as a complete, standalone application rather than a library embedded inside a larger OCCT-based tool. Solid modeling output — including STEP and STL export for CAM — is a comparatively thin layer on top of the solved sketch geometry, not the architectural center of the program the way `TopoDS_Shape` is for OCCT.
 
-### 9.4 Python Bindings and Frameworks Built on OCCT
+### 11.4 Python Bindings and Frameworks Built on OCCT
 
 A large share of real-world OCCT usage happens through a scripting layer rather than direct C++ `BRepBuilderAPI` calls, and Python is where that layer is most mature. `pythonocc-core` ([Source](https://github.com/tpaviot/pythonocc-core)) is the older, direct binding, exposing nearly all of OCCT's C++ classes to Python 1:1 — FreeCAD's own `TopoShape` already interoperates with it via a `__toPythonOCC__()`/`__fromPythonOCC__()` bridge (§8).
 
-More recent tooling centers on **OCP** ([Source](https://github.com/CadQuery/OCP)), a narrower Python wrapper maintained by the CadQuery project specifically to back CadQuery and its sibling, rather than exposing the entire OCCT surface. **CadQuery** ([Source](https://cadquery.readthedocs.io/en/latest/intro.html)) builds on OCP a fluent, jQuery-style method-chaining API for parametric solid modeling in plain Python — GUI-less by design, with STEP/STL/AMF/3MF export, and separate tools (`CQ-editor`, `jupyter-cadquery`) for visualization. **build123d** ([Source](https://build123d.readthedocs.io/en/stable/tips.html)) is CadQuery's more recent sibling on the same OCP foundation, trading CadQuery's method-chaining for Python context managers (`with BuildPart() as p:`); because both wrap the same underlying OCP objects, models can be passed between the two. build123d also has an experimental `OCP.wasm` build that runs the same Python-authored models in a browser — the bridge into the web layer below. [Source](https://github.com/CadQuery/cadquery/discussions/1876) Both CadQuery and build123d are, in the terms §9.1 lays out, B-rep-representation Code-CAD tools — the same paradigm OpenSCAD pioneered, but with OCCT's exact NURBS kernel underneath instead of OpenSCAD's CGAL-based mesh CSG.
+More recent tooling centers on **OCP** ([Source](https://github.com/CadQuery/OCP)), a narrower Python wrapper maintained by the CadQuery project specifically to back CadQuery and its sibling, rather than exposing the entire OCCT surface. **CadQuery** ([Source](https://cadquery.readthedocs.io/en/latest/intro.html)) builds on OCP a fluent, jQuery-style method-chaining API for parametric solid modeling in plain Python — GUI-less by design, with STEP/STL/AMF/3MF export, and separate tools (`CQ-editor`, `jupyter-cadquery`) for visualization. **build123d** ([Source](https://build123d.readthedocs.io/en/stable/tips.html)) is CadQuery's more recent sibling on the same OCP foundation, trading CadQuery's method-chaining for Python context managers (`with BuildPart() as p:`); because both wrap the same underlying OCP objects, models can be passed between the two. build123d also has an experimental `OCP.wasm` build that runs the same Python-authored models in a browser — the bridge into the web layer below. [Source](https://github.com/CadQuery/cadquery/discussions/1876) Both CadQuery and build123d are, in the terms §11.1 lays out, B-rep-representation Code-CAD tools — the same paradigm OpenSCAD pioneered, but with OCCT's exact NURBS kernel underneath instead of OpenSCAD's CGAL-based mesh CSG.
 
-### 9.5 Web and WebAssembly Frameworks Built on OCCT
+### 11.5 Web and WebAssembly Frameworks Built on OCCT
 
-The same fluent, code-first abstraction pattern §9.4 covers for Python recurs independently in the JavaScript/WASM ecosystem, by a different technical route. `opencascade.js` ([Source](https://ocjs.org/)) takes a different route to the browser than build123d's OCP.wasm — it compiles the actual C++ OCCT toolkit to WebAssembly via Emscripten, exposing OCCT's own classes (a selectable subset, since binding all of OCCT would bloat the WASM payload) directly to JavaScript, runnable "in browsers, on your server, or on pretty much any device that supports WebAssembly."
+The same fluent, code-first abstraction pattern §11.4 covers for Python recurs independently in the JavaScript/WASM ecosystem, by a different technical route. `opencascade.js` ([Source](https://ocjs.org/)) takes a different route to the browser than build123d's OCP.wasm — it compiles the actual C++ OCCT toolkit to WebAssembly via Emscripten, exposing OCCT's own classes (a selectable subset, since binding all of OCCT would bloat the WASM payload) directly to JavaScript, runnable "in browsers, on your server, or on pretty much any device that supports WebAssembly."
 
 It is the foundation for a small cluster of browser-native CAD tools: **CascadeStudio** ([Source](https://github.com/zalo/CascadeStudio)), a live-scripted CAD kernel and IDE running entirely client-side, with primitives, CSG, revolves, sweeps, fillets, STEP/IGES/STL import-export, and even an OpenSCAD-to-JavaScript transpiler; and **replicad** ([Source](https://github.com/sgenoud/replicad), MIT), a JS/TS library — "the library to build browser based 3D models with code" — whose own documentation states it took its fluent API design directly from "cadquery and cascade studio." replicad is, in effect, CadQuery's abstraction pattern reimplemented for the JavaScript/WASM stack rather than Python. Other `opencascade.js`-based projects in the same niche include ArchiYou, BitByBit, and Polygonjs. [Source](https://ocjs.org/docs/about)
 
 This Emscripten-to-WASM pattern — compiling a native C++ geometry or graphics library so it runs client-side — is architecturally the same technique Ch98 covers for Vulkan/WebGPU deployment targets, applied here to a CAD kernel instead of a rendering API.
 
-### 9.6 AI-Assisted and Generative CAD
+### 11.6 AI-Assisted and Generative CAD
 
-Two distinct AI-integration patterns exist for OCCT-based tooling, and they're worth keeping apart: LLMs that write code against the same CadQuery/build123d/OCP stack §9.4 describes, and Model Context Protocol (MCP) servers that expose an existing OCCT-based application's own scripting API as agent-callable tools.
+Two distinct AI-integration patterns exist for OCCT-based tooling, and they're worth keeping apart: LLMs that write code against the same CadQuery/build123d/OCP stack §11.4 describes, and Model Context Protocol (MCP) servers that expose an existing OCCT-based application's own scripting API as agent-callable tools.
 
-**Text-to-CAD as code generation.** Because CadQuery and build123d (§9.4, above) already express solid modeling as declarative Python rather than a sequence of mouse clicks, the natural way to point an LLM at parametric CAD is to have it write CadQuery/build123d source directly, then execute that code against the real OCP/OCCT kernel to get an exact, editable B-rep result rather than a mesh. Text-to-CadQuery demonstrated this by fine-tuning LLMs on a corpus of 170K paired (text description, CadQuery script) examples, with accuracy improving consistently with model scale. [Source](https://ar5iv.labs.arxiv.org/html/2505.06507) The approach is now benchmarked directly: CADGenBench scores submissions on geometric accuracy, topology correctness, and CAD validity, and requires the emitted model to be well-formed, watertight, and manifold — an automatic zero otherwise — accepting any backend (build123d, Fusion, Onshape, SolidWorks) so long as it produces a real solid. [Source](https://github.com/huggingface/cadgenbench) Text2CAD-Bench narrows the same evaluation to parametric CAD specifically, with 600 human-curated examples spanning four complexity levels from primitive geometry to real-world part topology. [Source](https://arxiv.org/abs/2605.18430) Ch176a surveys this Text-to-CAD research landscape in much greater depth, beyond the OCCT-specific tooling this section covers.
+**Text-to-CAD as code generation.** Because CadQuery and build123d (§11.4, above) already express solid modeling as declarative Python rather than a sequence of mouse clicks, the natural way to point an LLM at parametric CAD is to have it write CadQuery/build123d source directly, then execute that code against the real OCP/OCCT kernel to get an exact, editable B-rep result rather than a mesh. Text-to-CadQuery demonstrated this by fine-tuning LLMs on a corpus of 170K paired (text description, CadQuery script) examples, with accuracy improving consistently with model scale. [Source](https://ar5iv.labs.arxiv.org/html/2505.06507) The approach is now benchmarked directly: CADGenBench scores submissions on geometric accuracy, topology correctness, and CAD validity, and requires the emitted model to be well-formed, watertight, and manifold — an automatic zero otherwise — accepting any backend (build123d, Fusion, Onshape, SolidWorks) so long as it produces a real solid. [Source](https://github.com/huggingface/cadgenbench) Text2CAD-Bench narrows the same evaluation to parametric CAD specifically, with 600 human-curated examples spanning four complexity levels from primitive geometry to real-world part topology. [Source](https://arxiv.org/abs/2605.18430) Ch176a surveys this Text-to-CAD research landscape in much greater depth, beyond the OCCT-specific tooling this section covers.
 
 **MCP servers as the agent-facing layer.** MCP servers wrap an OCCT-based tool's existing scripting API as tool calls an LLM agent can invoke directly, closing the loop between "write code" and "see the result." `build123d-mcp` (Apache-2.0) exposes build123d as a persistent session an agent can drive — creating models, rendering PNG/SVG/DXF previews, measuring volume/area/bounding box, detecting features like holes and countersinks, and validating printability — and reports a concrete effect on benchmark performance: adding it to an existing model on the CADGenBench leaderboard raised that model's score from 0.360 to 0.457 and CAD validity from 88% to 100%, because tool-verified geometry catches the non-manifold and non-watertight failures a blind code-generation pass cannot. [Source](https://github.com/pzfreo/build123d-mcp) `cadquery-mcp-server` provides the equivalent generation-and-verification loop for CadQuery. [Source](https://github.com/rishigundakaram/cadquery-mcp-server) For FreeCAD (§8, above) rather than the bare CadQuery/build123d libraries, several independent MCP servers (`neka-nat/freecad-mcp`, MIT, among others) expose FreeCAD's own document/object API directly — letting an assistant create and edit `TopoShape`-backed objects, run Boolean operations, execute arbitrary Python inside FreeCAD, and capture a viewport screenshot to visually check its own work before proceeding. That last step marks a design pattern distinct from Text-to-CAD's one-shot code generation: the agent iterates against a live document rather than generating a script once. [Source](https://github.com/neka-nat/freecad-mcp)
 
-**OCCT itself as an LLM tool target.** `opencascade.js` (§9.5, above) is now explicitly positioned this way by at least one community WASM binding, which advertises TypeScript bindings across OCCT's class surface running "in a browser tab, a Node CLI, or an LLM tool call" — the same WASM deployment already covered in §9.5 doubling as the sandboxed execution environment an agent's generated OCCT calls run inside, with no separate native build step. [Source](https://opencascade-js.vercel.app/)
+**OCCT itself as an LLM tool target.** `opencascade.js` (§11.5, above) is now explicitly positioned this way by at least one community WASM binding, which advertises TypeScript bindings across OCCT's class surface running "in a browser tab, a Node CLI, or an LLM tool call" — the same WASM deployment already covered in §11.5 doubling as the sandboxed execution environment an agent's generated OCCT calls run inside, with no separate native build step. [Source](https://opencascade-js.vercel.app/)
 
 **What is not built on OCCT.** Zoo (formerly KittyCAD)'s Text-to-CAD and Zoo Design Studio are worth naming here precisely because they are easy to mistake for part of this ecosystem, and are not: Zoo's Design API runs on its own from-scratch, GPU-native geometry engine (built for Vulkan, not OpenGL/OCCT), with the open-source Zoo Design Studio / `modeling-app` client (MIT license) streaming rendered frames from that remote engine over WebSockets rather than embedding OCCT or any OCCT-derived kernel. [Source](https://github.com/kittycad/modeling-app) Every other tool in this subsection — Text-to-CadQuery, build123d-mcp, the FreeCAD MCP servers, opencascade.js — ultimately bottoms out in OCCT's own B-rep kernel; Zoo's stack is a parallel, independent one.
 
-This section's LLM/MCP pattern is the CAD-kernel analog of Ch205's coverage of Blender MCP and Claude Code integration — both wrap an existing, mature scripting API (`bpy` there, CadQuery/build123d/FreeCAD's Python API here) behind agent-callable tools rather than training a model to emit raw geometry.
+This section's LLM/MCP pattern is the CAD-kernel analog of Ch244's coverage of Blender MCP and Claude Code integration — both wrap an existing, mature scripting API (`bpy` there, CadQuery/build123d/FreeCAD's Python API here) behind agent-callable tools rather than training a model to emit raw geometry.
+
+### 11.7 Commercial B-Rep Kernels: Parasolid, ACIS, and C3D Toolkit
+
+Every alternative surveyed so far in this section is open-source. It's worth closing with the reminder that OCCT is not competing only against Code-CAD scripts and hobbyist kernels — the mainstream mechanical CAD industry runs almost entirely on a small number of **commercial** B-rep kernels, and OCCT is the only widely-used **open-source** kernel in that same category (exact NURBS BRep, STEP-grade tolerancing, professional Boolean robustness).
+
+- **Parasolid** (Siemens Digital Industries Software) traces back to Shape Data Ltd.'s original kernel of the late 1980s, later acquired through EDS/Unigraphics and consolidated under Siemens PLM. It underlies Siemens NX and Solid Edge, and — notably — is also licensed by Siemens's own competitor Dassault Systèmes as the geometry kernel inside SolidWorks, making Parasolid the closest thing the industry has to a shared substrate beneath otherwise-competing CAD products.
+- **ACIS** (Spatial Corporation, a Dassault Systèmes subsidiary) originated at Three-Space Ltd./Spatial Technology Inc. around 1989. Its most consequential fork came in 2001–2002, when Autodesk licensed and then forked ACIS into its own **ShapeManager** kernel — which is what actually underlies **AutoCAD** and Autodesk Inventor today, not a live ACIS dependency. This makes AutoCAD, by a wide measure the best-known CAD brand among the kernels discussed here, an ACIS-lineage product rather than a fifth kernel of its own: its geometry engine descends from ACIS but has been independently maintained by Autodesk for two decades. ACIS was also forked a second time into CoCreate SolidDesigner, later PTC Creo Elements/Direct; current ACIS licensees include IronCAD.
+- **C3D Toolkit** (C3D Labs, an ASCON subsidiary) is the youngest of the three and the only one with meaningful ties to the Linux/open ecosystem's newer entrants: it originated in 1995 as ASCON's in-house kernel for KOMPAS-3D, and was spun off and opened for third-party licensing only in 2012 — decades after Parasolid and ACIS had already established their commercial licensee bases.
+
+All three are proprietary, licensed-per-seat SDKs — there is no source availability comparable to OCCT's LGPL-2.1-with-exception (§1). That license difference, more than any specific feature gap, is why OCCT rather than any commercial kernel underlies FreeCAD (§8), Salome (§9), and the entire Code-CAD/Python/WASM ecosystem this section surveys: an open-source application cannot ship a Parasolid or ACIS dependency, but can ship OCCT.
+
+License is not the only difference, though. A dedicated technical comparison of OCCT against ACIS — [*Comparing Open Cascade Kernel with ACIS Modeler*](https://quaoar.su/files/papers/cascade/ACIS_OCCT_comparison_v2.0.pdf) (Quaoar Studio LLC; v1.0 2014, revised v2.0 December 2023, author Sergey Slyadnev, who also develops the OCCT-based feature-recognition SDK Analysis Situs) — together with OCCT's own developer forum, documents a handful of capability gaps that are acknowledged rather than merely inferred:
+
+- **Feature recognition.** Given a seed face and a target feature type (hole, pocket, boss, fillet chain), returning the set of faces that define that feature is a standard ACIS capability that core OCCT does not provide; the Quaoar comparison scores OCCT "not available" on this axis. [Source](https://quaoar.su/files/papers/cascade/ACIS_OCCT_comparison_v2.0.pdf) OCCT's own ecosystem confirms the gap by working around it rather than closing it: Analysis Situs is a *separate* open-source SDK built on top of the OCCT kernel specifically to add "the algorithmic infrastructure to recognize features from 'dumb' B-rep geometry" ([Source](https://analysissitus.org/features/features_feature-recognition-framework.html)), and Open Cascade SAS itself sells "CAD Processor" as a commercial add-on product providing hole/pocket detection and fillet-chain recognition on top of the free OCCT platform ([Source](https://www.opencascade.com/products/cad-processor/)) — feature recognition is monetized as an extension, not shipped in the open-source kernel.
+- **Direct/synchronous modeling.** OCCT has no built-in equivalent to ACIS's Local Operations or Siemens Synchronous Technology — push/pull face editing that locally re-solves adjacent geometry. Asked about this directly on the OCCT developer forum, an OCCT team member confirmed: "What you are describing is a set of direct modeling features (push/pull, face tweaking, etc.) which are not readily available in OpenCascade," with Boolean operations against local prismatic solids offered as the only built-in workaround. [Source](https://dev.opencascade.org/content/concept-changing-shapes-after-their-creation) In practice this forces applications to approximate the effect: Shapr3D, which was originally built on OCCT, implemented its push/pull tool as a Boolean fuse rather than true face-local editing. [Source](https://analysis-situs.medium.com/push-pull-for-the-poor-1b7401e33905)
+- **Sheet-metal modeling.** Bend/unfold/K-factor sheet-metal operations are not part of OCCT itself — the Quaoar comparison explicitly excludes sheet-metal processing from its scope as "a commercial package (API extension) by OCC that [is] not provided in open source." [Source](https://quaoar.su/files/papers/cascade/ACIS_OCCT_comparison_v2.0.pdf) FreeCAD's Sheet Metal Workbench builds unfold/bend logic entirely at the application layer atop generic OCCT Boolean and offset primitives, and its own documentation warns the Unfold tool "has some limitations, and will fail in certain complex situations," including a "frequent case of crash" when cuts cross hinge faces. [Source](https://github.com/FreeCAD/FreeCAD-documentation/blob/main/wiki/SheetMetal_Workbench.md) That workbench also inherits FreeCAD's topological-naming problem — face indices assigned by OCCT can shift across edits, silently reattaching a later bend feature to the wrong face — which FreeCAD's documentation attributes directly to "the way internal FreeCAD routines handle updates of geometrical shapes created with the OCCT kernel." [Source](https://github.com/FreeCAD/FreeCAD-documentation/blob/main/wiki/Topological_naming_problem.md)
+- **Boolean-operation parallelism, opt-in and partial.** `BOPAlgo` (TKBO) supports a parallel execution mode (`SetRunParallel()` / `brunparallel` in DRAW) added incrementally from OCCT 6.7.1 (parallel interference detection) through 6.8.0 (broader BOP parallelization) — but it is **disabled by default**, and a forum thread on OCCT multithreading reports internal mutex contention in memory allocation as a remaining bottleneck under parallel load. [Source](https://github.com/Open-Cascade-SAS/OCCT/wiki/boolean_operations) [Source](https://dev.opencascade.org/content/parallelizing-bops) [Source](https://dev.opencascade.org/content/occt-run-separate-threads-multithreading-too-slow) No source comparing this against Parasolid's or ACIS's own Boolean-parallelism maturity could be found; the comparison stops at OCCT's own documented opt-in default and mutex caveat.
+- **Narrower advanced-surfacing and topology vocabulary.** The Quaoar comparison's own conclusions list, verbatim, "the robustness of OpenCascade leaves much better to be desired" as an acknowledged (if unquantified) weakness relative to ACIS, and note that OCCT "does not provide an alternative to the cellular topology of ACIS and remains limited with traditional B-rep (there is no API related to voxelization, mesh-based modeling, cellular structures, etc.)." [Source](https://quaoar.su/files/papers/cascade/ACIS_OCCT_comparison_v2.0.pdf) The same document scores OCCT "not available" for procedural (Laws-based) curves and surfaces and for dedicated point-cloud/reverse-engineering tooling, both present in ACIS. An older OPEN CASCADE company blog post corroborates the surfacing gap independently, noting OCCT's procedural-surface set lacks ACIS's variable-blend/net/skin/tube/law surfaces and Parasolid's rolling-ball blends with surface supports, since OCCT's surface types track the STEP ISO 10303-42 standard rather than each vendor's extensions. [Source](https://opencascade.blogspot.com/2010/10/data-model-highlights-parasolid-acis.html)
+
+These gaps compound the Roadmap's own acknowledgment (below) that OCCT has never shipped a first-party parametric constraint solver — feature recognition, direct editing, and constraint solving are exactly the trio of capabilities that let a commercial MCAD system treat a model as an editable design history rather than a fixed B-rep. Note: needs verification — large-assembly/production-scale performance relative to Parasolid or ACIS is frequently claimed informally on the OCCT forum (viewer stalls on large STL/mesh loads, degraded performance with high primitive counts, XCAF overhead on large assemblies) but no quantitative, sourced benchmark against a commercial kernel exists; this section deliberately omits performance as a confirmed gap rather than assert an unverified comparison.
 
 ---
 
-## 10. Building and Packaging on Linux
+## 12. Building and Packaging on Linux
 
-### 10.1 CMake Build
+### 12.1 CMake Build
 
 OCCT 8.0.0 requires CMake 3.10+ and a C++17 compiler (GCC 7+ or Clang 5+). [Source: `CMakeLists.txt` root, `adm/cmake/version.cmake`]
 
@@ -1009,7 +1133,7 @@ make install
 
 Dependencies (Ubuntu 24.04): `libx11-dev`, `libxext-dev`, `libgl-dev`, `libegl-dev`, `libgles2-mesa-dev`, `libfreetype-dev`, `libfontconfig-dev`, `libtbb-dev` (for `OSD_ThreadPool` on some configs).
 
-### 10.2 Distribution Packages
+### 12.2 Distribution Packages
 
 **Ubuntu/Debian** (Ubuntu 24.04 Noble Numbat): OCCT packages are split per module under the `opencascade` source package. [Source: [Ubuntu packages](https://packages.ubuntu.com)]
 
@@ -1031,7 +1155,7 @@ Note: there is no single `occt-dev` package. Runtime libraries are versioned: `l
 sudo dnf install opencascade-devel
 ```
 
-### 10.3 Linking
+### 12.3 Linking
 
 With the CMake `find_package` approach:
 
@@ -1051,7 +1175,7 @@ Manual library names map to toolkit names: `libTKernel.so`, `libTKBRep.so`, `lib
 
 ---
 
-## 11. Pipeline Comparison Diagram
+## 13. Pipeline Comparison Diagram
 
 The following diagram shows the four primary data-flow paths through OCCT on Linux:
 
@@ -1193,7 +1317,7 @@ These GPU analysis stages complement OCCT's CPU-side `BRepGProp` and `ShapeAnaly
 
 ---
 
-## 12. Integrations
+## 14. Integrations
 
 - **Ch12 (Mesa Loader and Dispatch):** `OpenGl_GraphicDriver` targets the Mesa OpenGL ICD (`libGL.so`) or a proprietary OpenGL driver. OCCT negotiates OpenGL 3.2+ core profile via GLX or EGL — the same path described in Ch12's dispatch table.
 
@@ -1203,7 +1327,7 @@ These GPU analysis stages complement OCCT's CPU-side `BRepGProp` and `ShapeAnaly
 
 - **Ch26 (Hardware Video):** Applications combining OCCT visualization with video overlays (e.g., a CAD tool displaying a camera feed on a design surface) must manage EGL context sharing between OCCT's `OpenGl_GraphicDriver` and VA-API decode paths.
 
-- **Ch40 (Bevy and wgpu):** §9.2's `opencascade-rs` and `truck` are the two Rust CAD kernels most likely to appear alongside Bevy in a Rust application — both `opencascade-rs`'s experimental viewer and `truck-platform`/`truck-rendimpl` render through `wgpu`, the same abstraction layer Ch40 covers, making a Bevy scene a plausible visualization front end for either kernel's output.
+- **Ch40 (Bevy and wgpu):** §11.2's `opencascade-rs` and `truck` are the two Rust CAD kernels most likely to appear alongside Bevy in a Rust application — both `opencascade-rs`'s experimental viewer and `truck-platform`/`truck-rendimpl` render through `wgpu`, the same abstraction layer Ch40 covers, making a Bevy scene a plausible visualization front end for either kernel's output.
 
 - **Ch42 (Blender GPU):** Blender's geometry kernel and OCCT share conceptual architecture — both separate exact geometry from mesh representation — but Blender uses its own BMesh + Depsgraph stack rather than OCCT. FreeCAD can import Blender meshes as STL for OCCT post-processing.
 
@@ -1217,11 +1341,11 @@ These GPU analysis stages complement OCCT's CPU-side `BRepGProp` and `ShapeAnaly
 
 - **Ch150 (EGL Architecture and DMA-BUF):** OCCT's EGL integration uses `EGLSurface` backed by a `wl_egl_window` or a pbuffer. DMA-BUF texture import (`EGL_EXT_image_dma_buf_import`) is not directly used by OCCT's own rendering, but an application compositing OCCT output with VA-API decoded frames or camera captures will use the DMA-BUF paths described in Ch150.
 
-- **Ch98 (WebAssembly and WebGPU as a Deployment Target):** §9.5's `opencascade.js` applies the same Emscripten-to-WASM compilation pattern Ch98 covers for rendering APIs to a geometry kernel instead — the actual C++ OCCT toolkit runs client-side, with CascadeStudio and replicad as application-layer consumers of the resulting WASM module.
+- **Ch98 (WebAssembly and WebGPU as a Deployment Target):** §11.5's `opencascade.js` applies the same Emscripten-to-WASM compilation pattern Ch98 covers for rendering APIs to a geometry kernel instead — the actual C++ OCCT toolkit runs client-side, with CascadeStudio and replicad as application-layer consumers of the resulting WASM module.
 
-- **Ch124 (Local LLM Inference on Linux):** §9.6's Text-to-CAD code-generation approach and the MCP servers driving CadQuery/build123d/FreeCAD are model-agnostic — they call whatever LLM the MCP client is configured with, including a locally served model along the lines Ch124 describes, rather than requiring a specific cloud provider.
+- **Ch124 (Local LLM Inference on Linux):** §11.6's Text-to-CAD code-generation approach and the MCP servers driving CadQuery/build123d/FreeCAD are model-agnostic — they call whatever LLM the MCP client is configured with, including a locally served model along the lines Ch124 describes, rather than requiring a specific cloud provider.
 
-- **Ch205 (AI-Driven 3D Creation — Blender MCP, Claude Code, and Generative Tools):** §9.6's OCCT-ecosystem MCP servers (`build123d-mcp`, `cadquery-mcp-server`, the FreeCAD MCP servers) are the CAD-kernel counterpart to Ch205's Blender MCP integration — both patterns wrap a mature, pre-existing Python scripting API (`bpy` vs. CadQuery/build123d/FreeCAD's own API) behind agent-callable tools rather than training a model to emit geometry directly.
+- **Ch244 (AI-Driven 3D Creation — Blender MCP, Claude Code, and Generative Tools):** §11.6's OCCT-ecosystem MCP servers (`build123d-mcp`, `cadquery-mcp-server`, the FreeCAD MCP servers) are the CAD-kernel counterpart to Ch244's Blender MCP integration — both patterns wrap a mature, pre-existing Python scripting API (`bpy` vs. CadQuery/build123d/FreeCAD's own API) behind agent-callable tools rather than training a model to emit geometry directly.
 
 ---
 

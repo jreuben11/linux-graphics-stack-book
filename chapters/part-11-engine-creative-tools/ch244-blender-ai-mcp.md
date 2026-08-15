@@ -1,4 +1,4 @@
-# Chapter 205: AI-Driven 3D Creation — Blender MCP, Claude Code, and Generative Tools
+# Chapter 244: AI-Driven 3D Creation — Blender MCP, Claude Code, and Generative Tools
 
 > **Part**: Part XI — Engines and Creative Tools
 > **Audience**: Graphics application developers and technical artists who want to integrate AI language models and generative tools into Blender workflows; systems developers building headless Blender pipelines; tooling engineers embedding bpy in web services or CI pipelines

@@ -154,7 +154,7 @@ No row satisfies every column — which is the structural answer to why no singl
 - **Chapter 64** (glTF 2.0 — The 3D Asset Pipeline Standard) — the runtime geometry format that Voyager (§6) and the Wikimedia Commons 3D prototype (§4) build their metadata layer on top of, and the target format IFC/STEP tooling (§2–§3) typically converts to for real-time visualization.
 - **Chapter 176** (Open CASCADE Technology and CAD Kernels) — the open-source geometry kernel whose `STEPControl` reader/writer is the concrete Linux implementation of the STEP interchange described in §3.
 - **Chapter 42** (Blender GPU — Cycles and EEVEE) — Bonsai/BlenderBIM and IfcOpenShell (§2) make Blender a Linux-native IFC authoring and viewing environment.
-- **Chapter 205** (Blender AI and MCP) — generative and AI-assisted 3D asset pipelines increasingly draw training and reference data from the ML-scale corpora in §5.
+- **Chapter 244** (Blender AI and MCP) — generative and AI-assisted 3D asset pipelines increasingly draw training and reference data from the ML-scale corpora in §5.
 - **Chapter 212** (Python 3D ML Libraries — Open3D, PyTorch3D, and Kaolin) — the tooling most commonly used to load and process ShapeNet and Objaverse/Objaverse-XL data (§5) for research and training workloads.
 - **Chapter 115** (NeRFStudio, Neural Radiance Fields, and 3D Gaussian Splatting) — photogrammetry-derived object scans of the kind Objaverse-XL aggregates (§5) are frequently produced by the same NeRF/splatting pipelines this chapter covers.
 - **Chapter 241** (GIMP, Krita, and darktable) — texture-authoring tooling relevant to preparing material maps for glTF/Voyager publication pipelines (§6).

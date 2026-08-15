@@ -1083,7 +1083,7 @@ groups) with no direct Vulkan equivalents as of mid-2025.
   front-ends; hardware timestamping for sub-millisecond IMU-camera synchronisation;
   DMA-BUF zero-copy from kernel capture buffers to SLAM feature extractors.
 
-- **Chapter 205 (ROS 2 middleware)** — `sensor_msgs/PointCloud2`, `sensor_msgs/Imu`, and
+- **Chapter 211 (ROS 2 middleware)** — `sensor_msgs/PointCloud2`, `sensor_msgs/Imu`, and
   `nav_msgs/Odometry` message types; intra-process zero-copy via REP-2007 type adaptation
   (relevant to LIO-SAM's composable-node point-cloud pipeline); TF2 transform tree
   publication by all SLAM systems.

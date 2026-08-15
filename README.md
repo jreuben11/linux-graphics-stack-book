@@ -282,13 +282,15 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 176: OpenCASCADE Technology — The BRep Kernel and 3D Visualization Stack](chapters/part-11-engine-creative-tools/ch176-opencascade-cad-kernel.md)
 - [Ch 176a: State-of-the-Art CAD AI — Generative Models, Reverse Engineering, and Agentic Design](chapters/part-11-engine-creative-tools/ch176a-sota-cad-ai.md)
 - [Ch 190: VTK — Scientific Visualization on the Linux Graphics Stack](chapters/part-11-engine-creative-tools/ch190-vtk-scientific-visualization.md)
-- [Ch 205: AI-Driven 3D Creation — Blender MCP, Claude Code, and Generative Tools](chapters/part-11-engine-creative-tools/ch205-blender-ai-mcp.md)
-- [Ch 205a: Programmable Games and Competitive-Code Sandboxes](chapters/part-11-engine-creative-tools/ch205a-programmable-games.md)
-- [Ch 205b: AI Agents in Games — RL Environments and LLM-Driven NPCs](chapters/part-11-engine-creative-tools/ch205b-ai-agents-in-games.md)
-- [Ch 205c: Open-Source 2D Simulation-Game Engines](chapters/part-11-engine-creative-tools/ch205c-2d-simulation-engines.md)
-- [Ch 205d: Modding Architectures — Scripting, Sandboxing, and Hot-Reload on Linux](chapters/part-11-engine-creative-tools/ch205d-modding-architectures.md)
-- [Ch 205e: FOSS Simulation-Game Frameworks — Data Models, Rules Engines, and Modding as SDKs](chapters/part-11-engine-creative-tools/ch205e-simulation-game-frameworks.md)
-- [Ch 205f: Artificial Life on the GPU — Cellular Automata, Lenia, and Digital-Organism Simulators](chapters/part-11-engine-creative-tools/ch205f-artificial-life-gpu.md)
+- [Ch 241: GIMP, Krita, and darktable — GPU-Accelerated Raster and RAW Photo Editing on Linux](chapters/part-11-engine-creative-tools/ch241-gimp-krita-darktable-photo-editing.md)
+- [Ch 242: DaVinci Resolve — Professional Color Grading and the Linux GPU Pipeline](chapters/part-11-engine-creative-tools/ch242-davinci-resolve-color-grading.md)
+- [Ch 244: AI-Driven 3D Creation — Blender MCP, Claude Code, and Generative Tools](chapters/part-11-engine-creative-tools/ch244-blender-ai-mcp.md)
+- [Ch 244a: Programmable Games and Competitive-Code Sandboxes](chapters/part-11-engine-creative-tools/ch244a-programmable-games.md)
+- [Ch 244b: AI Agents in Games — RL Environments and LLM-Driven NPCs](chapters/part-11-engine-creative-tools/ch244b-ai-agents-in-games.md)
+- [Ch 244c: Open-Source 2D Simulation-Game Engines](chapters/part-11-engine-creative-tools/ch244c-2d-simulation-engines.md)
+- [Ch 244d: Modding Architectures — Scripting, Sandboxing, and Hot-Reload on Linux](chapters/part-11-engine-creative-tools/ch244d-modding-architectures.md)
+- [Ch 244e: FOSS Simulation-Game Frameworks — Data Models, Rules Engines, and Modding as SDKs](chapters/part-11-engine-creative-tools/ch244e-simulation-game-frameworks.md)
+- [Ch 244f: Artificial Life on the GPU — Cellular Automata, Lenia, and Digital-Organism Simulators](chapters/part-11-engine-creative-tools/ch244f-artificial-life-gpu.md)
 
 ---
 
@@ -318,6 +320,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 60b: Video Streaming Protocols and Adaptive Bitrate Delivery](chapters/part-13-video-streaming/ch60b-video-streaming-protocols.md)
 - [Ch 60c: WebRTC Server Infrastructure on Linux](chapters/part-13-video-streaming/ch60c-webrtc-server-infrastructure.md)
 - [Ch 60d: BitTorrent Adaptive Streaming on Linux — libtorrent, WebTorrent, and the GPU Decode Pipeline](chapters/part-13-video-streaming/ch60d-bittorrent-streaming.md)
+- [Ch 60e: Media Source Extensions and Encrypted Media Extensions](chapters/part-13-video-streaming/ch60e-mse-eme-browser-drm.md)
 - [Ch 142: V4L2 and the Linux Media Subsystem](chapters/part-13-video-streaming/ch142-v4l2-media-subsystem.md)
 - [Ch 189: VLC Media Player — Architecture, GPU Acceleration, and the Linux Graphics Stack](chapters/part-13-video-streaming/ch189-vlc-architecture-gpu-linux.md)
 
@@ -335,6 +338,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 65: Vulkan Safety Critical and OpenVX](chapters/part-14-khronos-ecosystem/ch65-vulkan-sc-openvx.md)
 - [Ch 110: SPIR-V Tooling — spirv-tools, SPIRV-Cross, and the Shader Ecosystem](chapters/part-14-khronos-ecosystem/ch110-spirv-tooling.md)
 - [Ch 134: OpenCL on Linux](chapters/part-14-khronos-ecosystem/ch134-opencl-linux.md)
+- [Ch 243: Object Metadata and Interchange Standards — BIM, STEP, Wikidata, and 3D Object Catalogs](chapters/part-14-khronos-ecosystem/ch243-object-metadata-interchange-standards.md)
 
 ---
 
@@ -466,6 +470,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 
 **Shader Algorithm Catalog (Ch 204–207)**
 - [Ch 204: Shader Algorithm Catalog — Rendering Pipeline, Lighting, and Shadows](chapters/part-29-graphics-algorithms/ch204-shader-algorithm-catalog.md)
+- [Ch 204a: Physically Based Rendering — Theory and Foundations](chapters/part-29-graphics-algorithms/ch204a-pbr-theory-and-foundations.md)
 - [Ch 205: Shader Algorithm Catalog — Global Illumination and Materials](chapters/part-29-graphics-algorithms/ch205-shader-gi-and-materials.md)
 - [Ch 206: Shader Algorithm Catalog — Ray Tracing and Procedural Content](chapters/part-29-graphics-algorithms/ch206-shader-raytracing-and-procedural.md)
 - [Ch 207: Shader Algorithm Catalog — Visual Effects, Post-Processing, and GPU Compute](chapters/part-29-graphics-algorithms/ch207-shader-vfx-postprocess-compute.md)
@@ -713,13 +718,15 @@ chapters/
     ch176-opencascade-cad-kernel.md
     ch176a-sota-cad-ai.md
     ch190-vtk-scientific-visualization.md
-    ch205-blender-ai-mcp.md
-    ch205a-programmable-games.md
-    ch205b-ai-agents-in-games.md
-    ch205c-2d-simulation-engines.md
-    ch205d-modding-architectures.md
-    ch205e-simulation-game-frameworks.md
-    ch205f-artificial-life-gpu.md
+    ch241-gimp-krita-darktable-photo-editing.md
+    ch242-davinci-resolve-color-grading.md
+    ch244-blender-ai-mcp.md
+    ch244a-programmable-games.md
+    ch244b-ai-agents-in-games.md
+    ch244c-2d-simulation-engines.md
+    ch244d-modding-architectures.md
+    ch244e-simulation-game-frameworks.md
+    ch244f-artificial-life-gpu.md
   part-12-terminal-graphics/
     ch43-terminal-pixel-protocols.md
     ch44-terminal-gpu-rendering.md
@@ -735,6 +742,7 @@ chapters/
     ch60b-video-streaming-protocols.md
     ch60c-webrtc-server-infrastructure.md
     ch60d-bittorrent-streaming.md
+    ch60e-mse-eme-browser-drm.md
     ch142-v4l2-media-subsystem.md
     ch189-vlc-architecture-gpu-linux.md
   part-14-khronos-ecosystem/
@@ -745,6 +753,7 @@ chapters/
     ch65-vulkan-sc-openvx.md
     ch110-spirv-tooling.md
     ch134-opencl-linux.md
+    ch243-object-metadata-interchange-standards.md
   part-15-nvidia-stack/
     ch66-cuda-runtime.md
     ch67-optix.md
@@ -806,6 +815,7 @@ chapters/
   part-29-graphics-algorithms/
     part-intro.md
     ch204-shader-algorithm-catalog.md
+    ch204a-pbr-theory-and-foundations.md
     ch205-shader-gi-and-materials.md
     ch206-shader-raytracing-and-procedural.md
     ch207-shader-vfx-postprocess-compute.md

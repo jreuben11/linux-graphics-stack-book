@@ -1,4 +1,4 @@
-# Chapter 205b: AI Agents in Games — RL Environments and LLM-Driven NPCs
+# Chapter 244b: AI Agents in Games — RL Environments and LLM-Driven NPCs
 
 > **Part**: Part XI — Engines and Creative Tools
 > **Audience**: Graphics and engine developers who need to attach a learning agent or an LLM-driven NPC to an existing render loop. The central question is not "which algorithm" but "where does the agent's control flow attach, and what does that attachment cost in frames, readbacks, and IPC round-trips?"
