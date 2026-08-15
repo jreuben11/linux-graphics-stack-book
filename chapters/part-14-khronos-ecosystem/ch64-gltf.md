@@ -45,6 +45,7 @@
     - 10.2 [Godot's GLTFDocument API](#102-godots-gltfdocument-api)
     - 10.3 [Blender's glTF Import/Export Addon](#103-blenders-gltf-importexport-addon)
     - 10.4 [gltf-transform CLI for Pre-Processing](#104-gltf-transform-cli-for-pre-processing)
+    - 10.5 [Three.js's GLTFLoader](#105-threejss-gltfloader)
 11. [glTF 3.0 Roadmap](#11-gltf-30-roadmap)
 12. [Integrations](#integrations)
 13. [References](#references)
@@ -55,7 +56,7 @@
 
 **glTF 2.0** (**GL Transmission Format**, version 2) is the **Khronos Group**'s open standard for runtime-efficient delivery and interchange of 3D assets. Where formats like **FBX** or **OBJ** were designed primarily for **DCC** tool interchange, **glTF** is explicitly designed for the **GPU** upload path: its binary layout maps directly to **WebGL**, **OpenGL ES**, and **Vulkan** buffer objects, its material model corresponds to physically-based rendering as implemented in real-time engines, and its extension mechanism allows layering of lossless and lossy compression without breaking older renderers.
 
-This chapter is aimed at developers who need to build or maintain production 3D asset pipelines on Linux — integrating asset loading into **Vulkan**-based renderers, shipping compressed assets to web and embedded targets, and connecting to the **Bevy**, **Godot**, and **Blender** ecosystems. The chapter assumes familiarity with **Vulkan** buffers and pipelines (Chapters 24–25) and with shader compilation (Chapter 61).
+This chapter is aimed at developers who need to build or maintain production 3D asset pipelines on Linux — integrating asset loading into **Vulkan**-based renderers, shipping compressed assets to web and embedded targets, and connecting to the **Bevy**, **Godot**, **Blender**, and **Three.js** ecosystems. The chapter assumes familiarity with **Vulkan** buffers and pipelines (Chapters 24–25) and with shader compilation (Chapter 61).
 
 Readers of this chapter will learn:
 
@@ -75,6 +76,7 @@ Readers of this chapter will learn:
 - How to use the two dominant C/C++ loaders — **tinygltf** (header-only C++ with **nlohmann/json** and **stb_image**) and **cgltf** (**C99** zero-copy, direct pointer arithmetic into mapped buffers) — with enough **API** detail to write a production loader without referencing additional documentation; and when to consider **fastgltf** (**C++17**, **simdjson**-accelerated) for throughput-critical workloads.
 - The **Vulkan** upload path: staging buffers, vertex and index **`VkBuffer`** creation with **`vkCmdCopyBuffer`**, **`VkVertexInputAttributeDescription`** / **`VkVertexInputBindingDescription`** mapping, pipeline specialisation for **OPAQUE**/**MASK**/**BLEND** alpha modes, and the modern bindless approach using **buffer device addresses** and **`VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT`**.
 - How **Bevy**'s **`GltfAssetPlugin`** (**bevy_gltf** crate), **Godot**'s **`GLTFDocument`** API, and **Blender**'s **`io_scene_gltf2`** addon (**Principled BSDF** ↔ **PBR** metallic-roughness) consume **glTF** natively, and how **`gltf-transform`** pre-processes assets in a **CI** pipeline.
+- How **Three.js**'s **`GLTFLoader`** parses a **GLB**/**glTF** asset into an **`Object3D`** scene graph in the browser, which official extensions it supports out of the box, and how **`DRACOLoader`**, **`KTX2Loader`**, and the **meshopt** decoder attach as pluggable dependencies for compressed assets.
 - The **glTF 3.0** roadmap as of mid-2026, including planned **MaterialX** integration, **KHR_audio_emitter**, **EXT_mesh_gpu_instancing**, and promotion of **EXT_meshopt_compression** to a **KHR** extension.
 
 ### 1.1 What is glTF 2.0?
@@ -1277,10 +1279,12 @@ graph TD
     Bevy["Bevy GltfAssetPlugin\n(bevy_gltf, gltf Rust crate)\nSpawns ECS entities"]
     Godot["Godot GLTFDocument API\n(built-in importer + GLTFDocumentExtension)"]
     Blender["Blender io_scene_gltf2 addon\n(Principled BSDF ↔ PBR metallic-roughness)"]
+    ThreeJS["Three.js GLTFLoader\n(DRACOLoader, KTX2Loader,\nmeshopt decoder)\nBuilds Object3D scene graph"]
     Source --> GltfTransform
     GltfTransform --> Optimized
     Optimized --> Bevy
     Optimized --> Godot
+    Optimized --> ThreeJS
     Blender -- "export" --> Source
     Blender -- "import" --> Optimized
 ```
@@ -1400,6 +1404,62 @@ await io.write('output.glb', document);
 
 Properties in the Document API are object references rather than integer indices. `Buffer`, `BufferView`, `Accessor`, `Mesh`, `Primitive`, `Material`, `Texture`, `Node`, and `Scene` are all first-class typed objects with `get`/`set` methods. This avoids index-slippage bugs common when manipulating raw JSON.
 
+### 10.5 Three.js's GLTFLoader
+
+Where Bevy, Godot, and Blender consume glTF as native engine/DCC assets, **Three.js** consumes it as the primary delivery format for browser-based **WebGL** and **WebGPU** rendering. `GLTFLoader` lives outside the Three.js core bundle, under `examples/jsm/loaders/GLTFLoader.js` (imported as `three/addons/loaders/GLTFLoader.js`), and is by a wide margin the most common entry point into a Three.js scene graph for anything beyond primitive procedural geometry. [Source](https://threejs.org/docs/#examples/en/loaders/GLTFLoader)
+
+**Loading API** — `GLTFLoader` follows the same callback/Promise dual API as every other Three.js `Loader` subclass:
+
+```javascript
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const loader = new GLTFLoader();
+
+// Promise-based
+const gltf = await loader.loadAsync('/assets/scene.glb');
+
+// Callback-based
+loader.load(
+    '/assets/scene.glb',
+    (gltf) => scene.add(gltf.scene),
+    (progressEvent) => { /* ProgressEvent: loaded / total */ },
+    (error) => console.error(error),
+);
+```
+
+The resolved `gltf` object exposes `scene` (the default scene, a `THREE.Group`), `scenes` (all scenes in the file), `cameras`, `animations` (an array of `THREE.AnimationClip`, ready for `AnimationMixer`), and `asset` (the glTF `asset` object described in Section 3.0 — `version`, `generator`, `copyright`). Internally, `parse()` resolves every `Buffer`/`BufferView`/`Accessor`/texture dependency concurrently before walking the node hierarchy, so a scene with many external `.bin`/image references does not serialize its network fetches. [Source](https://threejs.org/docs/#examples/en/loaders/GLTFLoader)
+
+**Schema-to-scene-graph mapping.** `GLTFLoader` translates every core object from Section 3 of this chapter into a concrete Three.js class:
+
+| glTF object | Three.js class |
+|---|---|
+| `scene` | `THREE.Group` |
+| `node` | `THREE.Object3D` (or `THREE.Bone` when referenced by a `skin.joints` array) |
+| `mesh.primitive` | `THREE.Mesh`, `THREE.SkinnedMesh`, `THREE.Points`, `THREE.Line`, `THREE.LineSegments`, or `THREE.LineLoop`, selected by `primitive.mode` (Section 3.3) |
+| `accessor` + `bufferView` | `THREE.BufferAttribute`, sliced directly from the decoded `ArrayBuffer` — no intermediate per-vertex copy for tightly packed data |
+| `material` (`pbrMetallicRoughness`) | `THREE.MeshStandardMaterial`, or `THREE.MeshPhysicalMaterial` when transmission, volume, iridescence, sheen, clearcoat, or anisotropy extensions are present (Section 4) |
+| `animation` | `THREE.AnimationClip`, played back via `THREE.AnimationMixer` |
+
+[Source](https://github.com/mrdoob/three.js/blob/dev/examples/jsm/loaders/GLTFLoader.js)
+
+**Extension support.** `GLTFLoader` implements every Khronos extension covered in Section 6 of this chapter natively — `KHR_mesh_quantization`, `KHR_texture_transform`, `KHR_materials_transmission`, `KHR_materials_volume`, `KHR_materials_unlit`, and `KHR_materials_emissive_strength` all parse with no extra setup, each backed by its own internal extension class (`GLTFMeshQuantizationExtension`, `GLTFMaterialsTransmissionExtension`, and so on). `KHR_lights_punctual` and the broader `KHR_materials_*` family (`clearcoat`, `sheen`, `specular`, `ior`, `iridescence`, `anisotropy`, `dispersion`) are likewise handled internally. Two categories require an explicit companion loader supplied via a `setXLoader()` call before `parse()` runs, because they depend on a WASM decoder or GPU texture transcoder that the core loader does not bundle:
+
+- **`KHR_draco_mesh_compression`** and **`EXT_meshopt_compression`**/`KHR_meshopt_compression` require `loader.setDRACOLoader(dracoLoader)` and `loader.setMeshoptDecoder(MeshoptDecoder)` respectively, wiring in the same Draco and meshoptimizer decode paths described in Sections 6.1 and 6.6.
+- **`KHR_texture_basisu`** (KTX2/Basis Universal textures, Chapter 63) requires `loader.setKTX2Loader(ktx2Loader)`, where `KTX2Loader.detectSupport(renderer)` selects the GPU-native transcode target (BC7, ASTC, ETC2, …) at runtime.
+
+The complete wiring code for all three companion loaders, plus `KHR_materials_emissive_strength`'s interaction with Three.js's bloom post-processing pass, is covered in Chapter 205 §17.6 as part of the Blender-export-to-Three.js pipeline; it is not repeated here. [Source](https://threejs.org/docs/#examples/en/loaders/GLTFLoader)
+
+**Custom extensions.** Beyond the built-in set, `GLTFLoader.register(callback)` accepts a plugin factory — a function that receives the internal `GLTFParser` and returns an object implementing hooks such as `createNodeMesh`, `createNodeAttachment`, or `loadMaterial`. This is the same mechanism the loader uses internally to implement every extension listed above, and it is the supported path for consuming draft or vendor extensions (`OMI_physics_body`, `EXT_mesh_gpu_instancing`) ahead of native support landing in the loader itself:
+
+```javascript
+// Registering a custom/draft extension parser
+loader.register((parser) => new MyCustomExtension(parser));
+```
+
+[Source](https://github.com/mrdoob/three.js/blob/dev/examples/jsm/loaders/GLTFLoader.js)
+
+Three.js's `WebXRManager` consumes the resulting `Object3D` scene graph unmodified for immersive rendering — see Chapter 203 §"Three.js VRButton/ARButton" for the WebXR-specific rendering path once a glTF scene has been loaded.
+
 ---
 
 ## 11. glTF 3.0 Roadmap
@@ -1433,6 +1493,10 @@ Note: The glTF 3.0 specification had not been finalised as of the writing of thi
 **Chapter 41 — Godot**: Godot's built-in glTF importer and scripting-accessible `GLTFDocument` API handle the same format, with `GLTFDocumentExtension` for custom extension support.
 
 **Chapter 42 — Blender**: Blender exports to glTF for runtime delivery via `io_scene_gltf2`, mapping Principled BSDF to metallic-roughness. `gltf-transform` is commonly used in CI pipelines downstream of Blender export.
+
+**Chapter 203 — WebXR**: Three.js's `WebXRManager` renders the `Object3D` scene graph produced by `GLTFLoader` (Section 10.5) directly into immersive VR/AR sessions; A-Frame's entity-component scene graph is itself built on the same Three.js `GLTFLoader`.
+
+**Chapter 205 — AI-Driven 3D Creation (Blender MCP)**: §17.6 of Chapter 205 covers the full `DRACOLoader`/`KTX2Loader`/meshopt companion-loader wiring code for `GLTFLoader`, plus the Blender `io_scene_gltf2` export parameters that determine what a Three.js scene receives; §17.7 covers the React Three Fiber (`@react-three/drei` `useGLTF`) wrapper around the same loader.
 
 **Chapter 60 — Block Compression and DCT**: The Draco geometry codec (`KHR_draco_mesh_compression`) uses connectivity-based entropy coding and attribute compression conceptually related to the DCT and entropy coding techniques in JPEG/video. Draco attribute compression for normals uses octahedral encoding similar to the oct-normal schemes used in GPU texture compression.
 
@@ -1480,6 +1544,8 @@ Note: The glTF 3.0 specification had not been finalised as of the writing of thi
 34. glTF — Wikipedia (origins in the COLLADA working group): https://en.wikipedia.org/wiki/GlTF
 35. NVIDIA Omniverse Asset Converter extension documentation: https://docs.omniverse.nvidia.com/extensions/latest/ext_asset-converter.html
 36. google/usd_from_gltf — glTF/GLB to USDZ converter: https://github.com/google/usd_from_gltf
+37. Three.js GLTFLoader documentation: https://threejs.org/docs/#examples/en/loaders/GLTFLoader
+38. Three.js GLTFLoader.js source: https://github.com/mrdoob/three.js/blob/dev/examples/jsm/loaders/GLTFLoader.js
 
 ## Roadmap
 
