@@ -45,6 +45,7 @@
    - 9.1 [`sycl_ext_oneapi_bindless_images` and External Memory Import](#91-sycl_ext_oneapi_bindless_images-and-external-memory-import)
    - 9.2 [External Semaphore Synchronisation](#92-external-semaphore-synchronisation)
    - 9.3 [When to Prefer Native Vulkan Compute vs. SYCL](#93-when-to-prefer-native-vulkan-compute-vs-sycl)
+   - 9.4 [SYCL vs. Directive-Based Offload: OpenMP and OpenACC](#94-sycl-vs-directive-based-offload-openmp-and-openacc)
 10. [Migration from CUDA to SYCL: `dpct` / SYCLomatic](#10-migration-from-cuda-to-sycl-dpct--syclomatic)
     - 10.1 [Migration Workflow](#101-migration-workflow)
     - 10.2 [CUDA-to-SYCL Programming Model Mapping](#102-cuda-to-sycl-programming-model-mapping)
@@ -1201,6 +1202,27 @@ SYCL portability justifies the interop overhead when:
 - The compute algorithm is complex enough that the JIT optimisation benefit (specialisation constants, kernel fusion) outweighs synchronisation cost
 - The compute workload runs on a different physical device than the Vulkan renderer (e.g., Vulkan on iGPU, SYCL on dGPU — a topology common in Intel Arc laptop configurations)
 - The team maintains a SYCL codebase shared across AMD/NVIDIA/Intel targets and does not want per-vendor Vulkan compute shaders
+
+### 9.4 SYCL vs. Directive-Based Offload: OpenMP and OpenACC
+
+SYCL's single-source C++ model is not the only portable route off CUDA. OpenMP's `#pragma omp target` and OpenACC's `#pragma acc` directives take an entirely different approach: rather than expressing a kernel as an explicit `parallel_for` lambda over a `sycl::queue`, an existing sequential loop is annotated in place and the compiler generates the offload code.
+
+```cpp
+// SYCL: kernel is an explicit, separately-compiled lambda
+q.parallel_for(sycl::range<1>(n), [=](sycl::id<1> i) {
+    a[i] = a[i] * 2.0;
+});
+```
+
+```c
+/* OpenMP: same operation, existing loop annotated in place */
+#pragma omp target teams distribute parallel for map(tofrom: a[0:n])
+for (int i = 0; i < n; i++) {
+    a[i] = a[i] * 2.0;
+}
+```
+
+Both Clang and GCC compile OpenMP/OpenACC target regions straight to NVPTX or AMDGPU machine code — the same LLVM/GCC backends CUDA and HIP use — rather than through SPIR-V and a runtime loader. [Source](https://clang.llvm.org/docs/OffloadingDesign.html) This makes directive-based offload attractive for exactly the case SYCL is weakest at: incrementally porting a large, already-working Fortran or C/C++ HPC codebase to a GPU with the fewest possible source changes, rather than rewriting compute kernels as SYCL source. It is a weaker fit where SYCL is strongest: a from-scratch, type-safe, single-source C++ codebase with buffer/accessor dependency tracking and template metaprogramming across kernels. Teams choosing between them are usually choosing between "port an existing loop-based HPC application" (OpenMP/OpenACC) and "write new portable GPU code with modern C++ abstractions" (SYCL), not evaluating the same use case twice. See §11.5 of Chapter 134 for the OpenCL-side view of this same pressure, including OpenACC's current compiler landscape (NVIDIA HPC SDK, GCC's `-fopenacc`, and Clacc's OpenACC-to-OpenMP translation in Clang).
 
 ---
 

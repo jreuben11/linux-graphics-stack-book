@@ -41,7 +41,8 @@ It covers the full OpenCL ecosystem on Linux:
     - 11.2 [OpenCL 3.0's Voluntary Extension Model: A Strategic Retreat](#112-opencl-30s-voluntary-extension-model-a-strategic-retreat)
     - 11.3 [Remaining Strongholds](#113-remaining-strongholds)
     - 11.4 [The SYCL and Vulkan Pressure](#114-the-sycl-and-vulkan-pressure)
-    - 11.5 [OpenCL's Future: Convergence or Maintenance Mode?](#115-opencls-future-convergence-or-maintenance-mode)
+    - 11.5 [Directive-Based Offload: The OpenMP and OpenACC Pressure](#115-directive-based-offload-the-openmp-and-openacc-pressure)
+    - 11.6 [OpenCL's Future: Convergence or Maintenance Mode?](#116-opencls-future-convergence-or-maintenance-mode)
 12. [Integrations](#12-integrations)
 
 ---
@@ -1141,7 +1142,26 @@ The two Khronos standards that most directly pressure OpenCL's remaining use cas
 
 **The SPIR-V convergence that reduces the distinction.** OpenCL 3.0's `clCreateProgramWithIL` and Vulkan's `vkCreateShaderModule` both ingest SPIR-V. At the IR level, an OpenCL kernel compiled to SPIR-V and a Vulkan compute shader compiled to SPIR-V are structurally similar; Mesa's `spirv_to_nir()` handles both. This convergence means that in the long term, the distinction between OpenCL and Vulkan compute becomes a question of the host API (verbose C vs verbose C) and the memory model (buffer/accessor vs descriptor sets), not the hardware path or the IR.
 
-### 11.5 OpenCL's Future: Convergence or Maintenance Mode?
+### 11.5 Directive-Based Offload: The OpenMP and OpenACC Pressure
+
+A second, structurally different competitive pressure comes from directive-based offload: OpenMP's `#pragma omp target` and OpenACC's `#pragma acc` annotations, both of which let existing C, C++, and Fortran code acquire GPU offload with minimal rewriting. Neither is a Khronos standard — OpenMP is governed by the OpenMP Architecture Review Board and OpenACC by OpenACC.org — but both compete directly with OpenCL for the same HPC and scientific-computing developers who would otherwise hand-write OpenCL kernels.
+
+**OpenMP target offload.** Since OpenMP 4.0 (2013), the `target` construct offloads a code region to an accelerator:
+
+```c
+#pragma omp target teams distribute parallel for map(tofrom: a[0:n])
+for (int i = 0; i < n; i++) {
+    a[i] = a[i] * 2.0;
+}
+```
+
+Clang compiles this with `-fopenmp -fopenmp-targets=nvptx64-nvidia-cuda` for NVIDIA GPUs or `-fopenmp-targets=amdgcn-amd-amdhsa` for AMD GPUs, generating device code through LLVM's NVPTX and AMDGPU backends directly — the same backends CUDA and HIP use. [Source](https://clang.llvm.org/docs/OffloadingDesign.html) GCC supports the same model via `-fopenmp -foffload=nvptx-none` (NVIDIA) or `-foffload=amdgcn-amdhsa` (AMD GCN/CDNA/RDNA), and as of GCC 16 implements all of OpenMP 4.5, most of OpenMP 5.0/5.1/5.2, and the first OpenMP 6.0 features across C, C++, and Fortran. [Source](https://www.openmp.org/resources/openmp-compilers-tools/)
+
+**OpenACC.** OpenACC predates OpenMP's offload model (first released 2011) and uses a similar pragma syntax (`#pragma acc parallel loop`) aimed specifically at incremental GPU porting of existing Fortran and C HPC codes. NVIDIA's HPC SDK (`nvc`, `nvc++`, `nvfortran` — the compilers formerly shipped as PGI) is the most complete OpenACC implementation and is the de facto reference for the current OpenACC 3.3 specification. [Source](https://docs.nvidia.com/hpc-sdk/compilers/openacc-gs/) GCC has supported OpenACC since GCC 5 (2015) via `-fopenacc`, targeting both NVIDIA (nvptx) and AMD GPU offload. [Source](https://www.openacc.org/tools/gcc-for-openacc) LLVM/Clang's OpenACC story is less mature: Clacc, an Oak Ridge National Laboratory–led project, adds OpenACC parsing to Clang by translating it into OpenMP's offload runtime rather than implementing a native OpenACC backend. [Source](https://www.exascaleproject.org/highlight/clacc-an-open-source-openacc-compiler-and-source-code-translation-project/) NVIDIA has proposed adding native OpenACC 3.3 offload support directly to upstream LLVM/Clang, which as of this writing has not landed in mainline. [Source](https://www.phoronix.com/news/NVIDIA-Wants-OpenACC-3.3-Clang)
+
+**Why this bypasses the SPIR-V story entirely.** §11.4 described SYCL and Vulkan compute as pressure that shares SPIR-V as a common IR with OpenCL 3.0 — a convergence at the intermediate-representation level. OpenMP and OpenACC offload take a different architectural path: Clang and GCC both compile target regions straight to NVPTX or AMDGPU machine code through the same backend infrastructure used for CUDA and HIP, never passing through SPIR-V or an ICD loader at all. This makes directive-based offload a structurally separate competitive axis from OpenCL: it does not compete on portability abstractions or IR convergence, it competes by letting existing sequential HPC source code gain GPU offload with a handful of added pragmas, at the cost of the vendor-specific NVPTX/AMDGPU compilation path replacing OpenCL's portable ICD/SPIR-V model. For HPC teams with large existing Fortran or C codebases, that incremental-porting story is often more attractive than rewriting kernels in OpenCL C, SYCL, or Vulkan compute.
+
+### 11.6 OpenCL's Future: Convergence or Maintenance Mode?
 
 The honest answer is that OpenCL occupies different trajectories in different segments:
 
