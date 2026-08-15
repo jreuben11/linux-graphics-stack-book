@@ -52,6 +52,9 @@ This chapter covers five such frameworks on their own architectural terms — da
   - [11.2 Freeciv PBEM: Strict Alternation, Not Longturn Under Another Name](#112-freeciv-pbem-strict-alternation-not-longturn-under-another-name)
   - [11.3 FreeCol and OXCE: Outside This Axis Entirely](#113-freecol-and-oxce-outside-this-axis-entirely)
   - [11.4 Thousand Parsec: Simultaneous Resolution on a Deadline](#114-thousand-parsec-simultaneous-resolution-on-a-deadline)
+- [12. A Sibling DSL Space: Narrative Scripting with Ink and Yarn Spinner](#12-a-sibling-dsl-space-narrative-scripting-with-ink-and-yarn-spinner)
+  - [12.1 Ink: Knots, Weaves, and a Monorepo Compiler](#121-ink-knots-weaves-and-a-monorepo-compiler)
+  - [12.2 Yarn Spinner: Nodes, Options, and Official Everywhere](#122-yarn-spinner-nodes-options-and-official-everywhere)
 - [Integrations](#integrations)
 - [References](#references)
 - [Roadmap](#roadmap)
@@ -506,13 +509,95 @@ Across all four live comparison points, the chapter's projects turn out to cover
 
 ---
 
+## 12. A Sibling DSL Space: Narrative Scripting with Ink and Yarn Spinner
+
+Every DSL surveyed so far in this chapter encodes *simulation rules* — what a unit costs, what a tech unlocks, how damage rolls resolve. None of the five frameworks embeds a second, complementary category of content DSL that is common in narrative-heavy commercial games: a dedicated language for branching dialogue and story text. Wesnoth's WML, covered in §7, is the closest any of them come, and §7 already characterizes it precisely: "a declarative content format with a macro preprocessor layered on top, not a general-purpose scripting language." Where a scenario needs in-fiction narration, WML expresses it as more tags in the same ruleset format it uses for units and terrain, rather than reaching for an external tool built specifically for branching dialogue. A check of `wesnoth/wesnoth` finds no dependency on either project below — an absence-of-evidence finding for that one repository, not a claim independently verified against the other four, but consistent with the broader pattern that this chapter's five frameworks, as a group, simply don't need this category of DSL because none of them centers a heavily-branching, writer-authored narrative.
+
+**Ink** (inkle) and **Yarn Spinner** are the two dominant open-source answers to that adjacent problem. They're worth a brief, honest look here specifically *because* of the contrast: both are content-authoring DSLs compiled ahead of time into a runtime format, exactly the shape of the rules DSLs in §2–§5, but built for prose and branching choice rather than stat blocks.
+
+### 12.1 Ink: Knots, Weaves, and a Monorepo Compiler
+
+Ink structures a story as **knots** (`== knot_name ==`) and nested **stitches**, connected by **diverts** (`->`), with weave-style branching choices written as `*` (once-only) or `+` (sticky/repeatable), variable state declared with `VAR`, and inline logic on `~`-prefixed lines. Two real, separately-cited fragments from inkle's own documentation show the pieces individually — global state declarations,
+
+```
+VAR knowledge_of_the_cure = false
+VAR players_name = "Emilia"
+VAR number_of_infected_people = 521
+VAR current_epilogue = -> they_all_die_of_the_plague
+```
+[Source](https://raw.githubusercontent.com/inkle/ink/master/Documentation/WritingWithInk.md)
+
+and a knot with weave-style choices conditioned on a variable declared elsewhere in the same story:
+
+```
+=== the_train ===
+The train jolted and rattled. { mood > 0:I was feeling positive enough, however, and did not mind the odd bump|It was more than I could bear}.
+*   { not knows_about_wager } 'But, Monsieur, why are we travelling?'[] I asked.
+*   { knows_about_wager} I contemplated our strange adventure[]. Would it be possible?
+```
+[Source](https://raw.githubusercontent.com/inkle/ink/master/Documentation/WritingWithInk.md)
+
+The compiler (`inklecate`), the parser/codegen pipeline (`compiler/`), and the C# runtime (`ink-engine-runtime/`) all live as directories inside the single `inkle/ink` monorepo, not as separate repositories — `inklecate` compiles `.ink` source through a `Parsed.Object` intermediate representation down to `Runtime.Object` and exports it as JSON, which the runtime then loads and walks at play time. The repository is MIT-licensed, with roughly 4,900 stars and commits as recently as May 2026 [Source](https://github.com/inkle/ink).
+
+Engine integration is uneven across platforms. Unity has an official package, `ink-unity-integration`, maintained by inkle itself (MIT, ~700 stars) [Source](https://github.com/inkle/ink-unity-integration). Godot has no first-party inkle package; the community-maintained `godot-ink` (MIT, ~770 stars, no inkle endorsement stated in the repository) is the more actively developed of two options, alongside `inkgd`, a from-scratch pure-GDScript reimplementation (MIT, ~390 stars) rather than a binding to the C# runtime [Source](https://github.com/paulloz/godot-ink) [Source](https://github.com/ephread/inkgd). Unreal Engine has never had an inkle-maintained integration at all; the best-known community effort, `UnrealInk`, has had no commits since September 2021 and ships without a license file [Source](https://github.com/DavidColson/UnrealInk). Ink's own track record is with inkle's own titles — 80 Days and Sorcery! are cited on inklestudios.com as proof of "millions of words of highly branching narrative" written against the language, alongside an inkle-maintained list of third-party titles [Source](https://www.inklestudios.com/ink/).
+
+### 12.2 Yarn Spinner: Nodes, Options, and Official Everywhere
+
+Yarn Spinner structures a story as **nodes**: a `title:` header, a `---` separator, dialogue and options, and a terminating `===`. Options use `->`, and `<<if>>/<<else>>/<<endif>>` (plus `<<elseif>>`, not shown below) and `<<set $var = value>>` handle branching and state. Two real fragments, from the project's own test fixtures, show both halves of the syntax. The first is trimmed from a larger node — its `tags:`/`colorID:`/`position:` header metadata and per-line `#line:` ID tags are elided for brevity, and its dialogue is German because the source file is a Unity plugin's localization test fixture, not an English-language sample. The second is quoted in full and untrimmed:
+
+```
+title: Start
+---
+Spieler: Kannst du mich hören?
+NPC: Klar und deutlich.
+-> Mir reicht es.
+    <<jump Exit>>
+-> Nochmal!
+    <<jump Start>>
+===
+```
+[Source](https://github.com/YarnSpinnerTool/YarnSpinner-Unity/blob/main/Tests/Editor/Editor%20Test%20Resources/TestYarnScript.yarn)
+
+```
+title: Start
+---
+whoa what here's some text
+<<set $foo to (1+3*3/9)-1>>
+
+<<if $foo is 1>> // testing a comment
+    this should appear :)
+    <<if 1 is 1>>
+        NESTED IF BLOCK WHAAAT
+        <<set $foo += 47 + 6>>
+    <<endif>>
+<<else>>
+    oh noooo it didn't work :(
+<<endif>>
+
+<<if $foo is 54>>
+    haha nice now 'set' works even when deeply nested
+<<else>>
+    aaargh :(
+<<endif>>
+===
+```
+[Source](https://github.com/YarnSpinnerTool/YarnSpinner/blob/main/Tests/Basic.yarn) — quoted in full; it is a compiler test fixture rather than a narrative sample, hence the informal placeholder text
+
+The compiler is grammar-driven — the repository contains ANTLR `.g4` lexer/parser grammar files — and a `yarn_spinner.proto` file in the same repository suggests a protobuf-defined bytecode format underneath the compiled output. *Note: needs verification* — the exact VM instruction set and execution model were not confirmed beyond the presence of that `.proto` schema. The core `YarnSpinner` repository is MIT-licensed, with roughly 2,800 stars and commits within the past week of writing [Source](https://github.com/YarnSpinnerTool/YarnSpinner).
+
+Unlike Ink, every major engine integration is first-party, living under the `YarnSpinnerTool` GitHub organization: `YarnSpinner-Unity` (MIT, ~810 stars), `YarnSpinner-Godot` for C# (MIT, ~220 stars) with a separate pure-GDScript variant, and `YarnSpinner-UnrealEngine` (~50 stars, actively pushed within the month of writing) [Source](https://github.com/orgs/YarnSpinnerTool/repositories). Yarn Spinner's own showcase page lists Night in the Woods, A Short Hike, DREDGE, Venba, and Lost in Random among the shipped titles built on it [Source](https://www.yarnspinner.dev/).
+
+Set beside each other, the two projects tell a story about maturity of *tooling* independent of maturity of *language*: Ink's engine coverage is a byproduct of what inkle itself needed (Unity, because that's what inkle ships on) plus whatever the community filled in around it, unevenly; Yarn Spinner was built from early on as an engine-agnostic core with dedicated, equally-maintained official bindings for all three major engines. Neither pattern makes the underlying scripting language better or worse — both remain squarely in the same category this chapter's five frameworks avoid entirely: an external DSL for branching narrative content, compiled ahead of time and interpreted by a small runtime, sitting one level up from the stat-block rulesets in §2–§5.
+
+---
+
 ## Integrations
 
 **Chapter 205d — Modding Architectures** covers the general engineering problem this chapter's frameworks each answer once, for one domain: embedded Lua as a modding substrate (§2.4's OpenCiv3/MoonSharp is a second, independently engineered instance of the `mlua`-style embedded-interpreter pattern Ch205d surveys generically, though built on MoonSharp rather than `mlua`; Freeciv's `tolua`-bound `api_edit_*`/`api_server_*` surface, §3.4, is a third, hand-curated instance of the same pattern), and data-driven rulesets more broadly as the domain-specific, code-free counterpart to Ch205d's scripting-and-sandboxing survey. Where Ch205d asks what an extension is allowed to *reach* — the file descriptor, the GPU, another mod's private state — OXCE's declarative YAML merging (§4) sidesteps that question by never running arbitrary code in the first place. OpenCiv3 and Freeciv both reopen it, but at different points on the same axis: a mod script reaching live engine objects through OpenCiv3's `GAME_DATA()` is a trust decision with almost no boundary, while Freeciv's `signal.connect`-hooked Lua is scoped to whatever the curated `api_edit_*`/`api_server_*` functions choose to expose — the hand-curated-binding pattern Ch205d treats as the norm, against which OpenCiv3's reflection-based approach is the outlier.
 
 **Chapter 205c — Open-Source 2D Simulation-Game Engines** is this chapter's companion "reimplementation" chapter, there scoped to rendering architecture for a related family of projects and here scoped to rules and data-model architecture. Read together, the two chapters cover the same genre of open-source strategy/simulation project from its two structural halves: how it draws itself, and what it is actually simulating underneath.
 
-**Chapter 205b — AI Agents in Games** covers the classical game-AI techniques (navmeshes, behaviour trees, GOAP, utility systems) and their modern/LLM-driven successors that sit underneath opponent implementations like Freeciv's `ai/classic/classicai.c` and OpenCiv3's `C7Engine/AI/PlayerAI.cs` (§3.5) — this chapter deliberately stops at naming those AI modules as engine-native, non-data-driven code, and defers the AI architecture itself to Ch205b.
+**Chapter 205b — AI Agents in Games** covers the classical game-AI techniques (navmeshes, behaviour trees, GOAP, utility systems) and their modern/LLM-driven successors that sit underneath opponent implementations like Freeciv's `ai/classic/classicai.c` and OpenCiv3's `C7Engine/AI/PlayerAI.cs` (§3.5) — this chapter deliberately stops at naming those AI modules as engine-native, non-data-driven code, and defers the AI architecture itself to Ch205b. Ch205b's §3.5 also covers Charisma.ai's LLM-backed "structured story graph" as a hybrid, runtime-generated alternative to the ahead-of-time-compiled Ink/Yarn Spinner model this chapter's §12 surveys — the two sit at opposite ends of the same authoring problem, one compiling a writer's fixed branches and the other generating branches at runtime around a graph skeleton.
 
 **Chapter 205f — Artificial Life on the GPU** is a sibling Part XI chapter covering a different class of simulation software — deliberately GPU-compute-focused where this chapter is deliberately non-graphics. The two chapters share little architectural overlap but sit side by side in the Part XI survey of simulation-oriented software; Ch205f links back to this chapter as its data-driven, rules-engine-first counterpart.
 
@@ -606,6 +691,18 @@ Across all four live comparison points, the chapter's projects turn out to cover
 - [OpenXcom `src/version.h` (`master`)](https://raw.githubusercontent.com/OpenXcom/OpenXcom/master/src/version.h) — `OPENXCOM_VERSION_SHORT "1.0"`, `OPENXCOM_VERSION_GIT " Dev"`; no tagged release since 1.0 (Roadmap)
 - [FreeCol releases](https://github.com/FreeCol/freecol/releases) — Last tagged stable v1.2.0 dated 2024-07-23; rolling `latest` "Development Build" prerelease regenerated per commit (Roadmap)
 - [thousandparsec organisation repository listing](https://github.com/orgs/thousandparsec/repositories) — Last push to `tpserver-cpp` 2011-05-03; last push to any code repository (`schemepy`) 2017-08-28; no repository archived (§5, §10.3, Roadmap)
+- [inkle `ink` — `Documentation/WritingWithInk.md` (master)](https://github.com/inkle/ink/blob/master/Documentation/WritingWithInk.md) — Knot/weave/`VAR` syntax reference (§12.1)
+- [GitHub — inkle/ink](https://github.com/inkle/ink) — MIT license, `compiler`/`inklecate`/`ink-engine-runtime` as directories in one repository, ~4,900 stars (§12.1)
+- [GitHub — inkle/ink-unity-integration](https://github.com/inkle/ink-unity-integration) — Official inkle-maintained Unity package, MIT, ~700 stars (§12.1)
+- [GitHub — paulloz/godot-ink](https://github.com/paulloz/godot-ink) — Community-maintained Godot 4 integration, MIT, ~770 stars, no stated inkle endorsement (§12.1)
+- [GitHub — ephread/inkgd](https://github.com/ephread/inkgd) — Pure-GDScript reimplementation of the ink runtime, MIT, ~390 stars (§12.1)
+- [GitHub — DavidColson/UnrealInk](https://github.com/DavidColson/UnrealInk) — Community Unreal integration, no license file, no commits since 2021-09-11 (§12.1)
+- [inklestudios.com — ink](https://www.inklestudios.com/ink/) — 80 Days/Sorcery! as proof-of-scale titles, link to community `ink-library` (§12.1)
+- [YarnSpinner-Unity `Tests/Editor/Editor Test Resources/TestYarnScript.yarn` (main)](https://github.com/YarnSpinnerTool/YarnSpinner-Unity/blob/main/Tests/Editor/Editor%20Test%20Resources/TestYarnScript.yarn) — Node header, `---`, `->` options, `<<jump>>`, `===` (§12.2)
+- [YarnSpinner `Tests/Basic.yarn` (main)](https://github.com/YarnSpinnerTool/YarnSpinner/blob/main/Tests/Basic.yarn) — `<<set>>`/`<<if>>`/`<<endif>>` command syntax (§12.2)
+- [GitHub — YarnSpinnerTool/YarnSpinner](https://github.com/YarnSpinnerTool/YarnSpinner) — MIT license, ANTLR grammar files, `yarn_spinner.proto`, ~2,800 stars (§12.2)
+- [YarnSpinnerTool organisation repository listing](https://github.com/orgs/YarnSpinnerTool/repositories) — Official first-party Unity/Godot/Unreal integration repositories (§12.2)
+- [yarnspinner.dev](https://www.yarnspinner.dev/) — Games showcase: Night in the Woods, A Short Hike, DREDGE, Venba, Lost in Random (§12.2)
 
 ---
 
