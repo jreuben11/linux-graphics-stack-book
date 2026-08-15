@@ -18,7 +18,8 @@ Chapter 64 covers glTF 2.0, the runtime-delivery standard for a *renderable scen
 - [8. Electronics Part Catalogs: Octopart, Digi-Key, SnapEDA, and Ultra Librarian](#8-electronics-part-catalogs-octopart-digi-key-snapeda-and-ultra-librarian)
 - [9. Metadata Without Geometry: schema.org Product and GS1 GTIN/GDSN](#9-metadata-without-geometry-schemaorg-product-and-gs1-gtingdsn)
 - [10. Comparing the Landscape](#10-comparing-the-landscape)
-- [11. Integrations](#11-integrations)
+- [11. Roadmap](#11-roadmap)
+- [12. Integrations](#12-integrations)
 
 ---
 
@@ -51,6 +52,51 @@ ENTITY IfcRelAggregates
 END_ENTITY;
 ```
 
+**Data format: the .ifc STEP physical file.** IFC's default serialization is the same `ISO-10303-21` "STEP physical file" (SPF) syntax §3 covers for mechanical CAD: a flat, comma-separated entity-instance list where every object is a numbered `#id = ENTITY_NAME(...)` line, and every relationship is expressed by cross-referencing another instance's number rather than by nesting. A real excerpt from a public IFC4 coordination-view test model shows the pattern directly — note `#41`'s `IFCRELAGGREGATES` referencing `#38` and `#34` by number, the same composition mechanism sketched in the EXPRESS excerpt above, now as it actually appears on disk:
+
+```
+ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION (
+        ('ViewDefinition [CoordinationView, QuantityTakeOffAddOnView]'),
+        '2;1');
+FILE_NAME (
+        'example.ifc', '2012-09-24T14:40:06', ('Architect'),
+        ('Building Designer Office'), 'IFC Engine DLL version 1.03 beta',
+        'IFC Engine DLL version 1.03 beta', 'The authorising person');
+FILE_SCHEMA (('IFC4RC4'));
+ENDSEC;
+DATA;
+#2  = IFCOWNERHISTORY(#3, #6, $, .NOTDEFINED., $, $, $, 1348486806);
+#41 = IFCRELAGGREGATES('0iL9EJKq95bRo5gB3il1c2', #2, 'BuildingContainer',
+        'BuildingContainer for BuildigStories', #34, (#38));
+#45 = IFCPROPERTYSET('3tHNUXbZH5vxePn_rLyQFg', #2, 'Pset_WallCommon', $,
+        (#46, #47, #48, #49, #50, #51, #52, #53, #54, #55));
+#46 = IFCPROPERTYSINGLEVALUE('Reference', 'Reference', IFCIDENTIFIER(''), $);
+#60 = IFCWALL('3IclONJQ5D5gm$TM3V7U1j', #2, 'Outer Wall Back',
+        'Description of Wall', $, #61, #65, $, .STANDARD.);
+ENDSEC;
+END-ISO-10303-21;
+```
+[Source](https://github.com/opensourceBIM/TestFiles/blob/master/TestData/data/ifc4.ifc)
+
+**API: IfcOpenShell.** [IfcOpenShell](https://ifcopenshell.org/) is the open-source C++/Python library underlying Bonsai and most Linux IFC tooling; its Python API opens a model, queries entities by IFC type, and resolves attached property sets in a few lines:
+
+```python
+import ifcopenshell
+import ifcopenshell.util.element
+
+model = ifcopenshell.open('model.ifc')
+
+for wall_type in model.by_type("IfcWallType"):
+    print(wall_type.Name)
+
+wall = model.by_type("IfcWall")[0]
+psets = ifcopenshell.util.element.get_psets(wall)
+# {"Pset_WallCommon": {"id": 123, "FireRating": "2HR", ...}}
+```
+[Source](https://docs.ifcopenshell.org/ifcopenshell-python/code_examples.html)
+
 IFC is the "real deal" for objects + metadata + assemblies **within its domain**: it is scoped to the built environment (buildings and, since IFC4.3, civil infrastructure), not general consumer or mechanical products, and there is no public, Wikipedia-style browsable index of IFC models — IFC files circulate as project deliverables between architecture, engineering, and construction (AEC) software (Revit, ArchiCAD, Bonsai/BlenderBIM, IfcOpenShell-based tooling), not as a searchable public catalog. Chapter 42's Blender coverage is relevant here: [Bonsai](https://bonsaibim.org/) (formerly BlenderBIM) is an open-source Blender add-on built on [IfcOpenShell](https://ifcopenshell.org/) that makes Blender a full IFC authoring and viewing environment on Linux, geometry and property sets included.
 
 ---
@@ -60,6 +106,54 @@ IFC is the "real deal" for objects + metadata + assemblies **within its domain**
 **STEP**, formally [ISO 10303](https://www.iso.org/standard/66654.html) ("Industrial automation systems and integration — Product data representation and exchange"), is the broader manufacturing equivalent IFC's schema language and file format were built on. Where IFC is one purpose-built EXPRESS schema for one industry, STEP is a family of "Application Protocols" (APs) — each a separate EXPRESS schema targeting a specific industrial use case — sharing the same EXPRESS modeling language and `ISO 10303-21` physical-file (`.stp`/`.step`) encoding. The dominant AP for mechanical CAD interchange today is **AP242** ([ISO 10303-242](https://www.iso.org/standard/66654.html)), which unified and superseded the earlier AP203 (configuration-controlled 3D designs) and AP214 (automotive core data) application protocols, adding model-based definition (PMI — product manufacturing information, i.e. GD&T annotations bound directly to geometry) as a core capability. [Source](https://www.prostep.org/en/medialibrary/fact-sheets/iso-10303-242-step-ap242)
 
 STEP's assembly model is the mechanical-CAD counterpart to IFC's `IfcRelAggregates`: a **Next Assembly Usage Occurrence (NAUO)** entity ties a `product_definition` (a part or subassembly) into a parent product's structure, carrying its own placement transform — the same "product composed of positioned sub-products" pattern IFC expresses for buildings, generalized to arbitrary mechanical assemblies and bills of materials. AP242's breakdown-structure extensions additionally support functional, physical, system, and zonal breakdowns of the same product — multiple simultaneous decomposition views of one assembly, addressing the same "more than one kind of subcomponent relationship" need that IFC handles by keeping `IfcRelAggregates` (composition) and `IfcRelConnectsElements` (connectivity) as separate relationship types.
+
+**Data format: the .stp physical file.** Like IFC (§2), STEP's file encoding is `ISO-10303-21` SPF syntax — the two schemas share a physical-file format because IFC's authors deliberately reused STEP's existing serialization rather than inventing a new one. A minimal real excerpt (AP214, the automotive-core-data protocol AP242 superseded — no equivalently minimal AP242-labeled sample was located, though AP242 files use the identical SPF structure with a longer `FILE_SCHEMA` identifier, e.g. `AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF`; *Note: needs verification* for that exact current schema identifier string):
+
+```
+ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION(
+/* description */ ('A minimal AP214 example with a single part'),
+/* implementation_level */ '2;1');
+FILE_NAME(
+/* name */ 'demo',
+/* time_stamp */ '2003-12-27T11:57:53',
+/* author */ ('Lothar Klein'),
+/* organization */ ('LKSoft'),
+/* preprocessor_version */ ' ',
+/* originating_system */ 'IDA-STEP',
+/* authorization */ ' ');
+FILE_SCHEMA (('AUTOMOTIVE_DESIGN { 1 0 10303 214 2 1 1}'));
+ENDSEC;
+DATA;
+#14=PRODUCT_DEFINITION('0',$,#15,#11);
+#15=PRODUCT_DEFINITION_FORMATION('1',$,#16);
+#16=PRODUCT('A0001','Test Part 1','',(#18));
+#18=PRODUCT_CONTEXT('',#12,'');
+ENDSEC;
+END-ISO-10303-21;
+```
+[Source](https://en.wikipedia.org/wiki/ISO_10303-21)
+
+**API: OpenCASCADE `STEPControl`.** OCCT (Chapter 176) reads and writes STEP through a dedicated reader/writer pair that transfers between a `.stp` file and OCCT's own `TopoDS_Shape` B-rep representation:
+
+```cpp
+#include <STEPControl_Reader.hxx>
+
+STEPControl_Reader reader;
+reader.ReadFile("MyFile.stp");
+reader.TransferRoots();
+TopoDS_Shape result = reader.OneShape();
+```
+
+```cpp
+#include <STEPControl_Writer.hxx>
+
+STEPControl_Writer writer;
+writer.Transfer(shape, STEPControl_ManifoldSolidBrep);
+writer.Write("filename.stp");
+```
+[Source](https://dev.opencascade.org/doc/overview/html/occt_user_guides__step.html)
 
 STEP is explicitly an **interchange format**, not a browsable catalog: CAD tools (Siemens NX, CATIA, SolidWorks, and the open-source [Open CASCADE Technology](https://dev.opencascade.org/) kernel covered in Chapter 176) read and write `.step` files to move assemblies and their metadata between systems, but there is no public STEP repository analogous to what the question envisions for a "visual Wikipedia." Chapter 176's coverage of OCCT's `STEPControl` reader/writer is the concrete Linux-stack touchpoint for everything described in this section.
 
@@ -94,6 +188,21 @@ A second cluster of efforts approaches the same "taxonomy-organized visual catal
 
 **Objaverse** and its successor **Objaverse-XL**, from the Allen Institute for AI (AI2) in collaboration with several university and industry labs, scale the same idea by orders of magnitude rather than curating a taxonomy: [Objaverse-XL: A Universe of 10M+ 3D Objects (2023)](https://arxiv.org/abs/2307.05663) aggregates and deduplicates over ten million 3D objects from heterogeneous sources — manually modeled assets, photogrammetry scans, and professional scans of cultural artifacts — with per-object licensing that varies by source rather than a single blanket license, and the dataset as a whole distributed under an [ODC-By v1.0](https://github.com/allenai/objaverse-xl) attribution license. Objaverse-XL deliberately trades curation and taxonomic organization for scale: it is explicitly positioned as training data for generative 3D and multimodal models, not a browsable encyclopedia, and has no equivalent to ShapeNet's WordNet-grounded category structure or IFC/STEP's formal metadata schema.
 
+**API: the `objaverse` Python package.** Both generations are consumed as a Python library rather than a browsing UI, reinforcing that this cluster targets ML pipelines, not catalog visitors. The original Objaverse 1.0 API resolves UIDs to local downloaded `.glb` files:
+
+```python
+import objaverse
+
+uids = objaverse.load_uids()
+annotations = objaverse.load_annotations(uids[:10])
+
+objects = objaverse.load_objects(uids=uids[:10], download_processes=4)
+# -> {uid: local_glb_path, ...}
+```
+[Source](https://objaverse.allenai.org/docs/objaverse-1.0/)
+
+Objaverse-XL's own package exposes a broader, multi-source-aware surface (GitHub, Thingiverse, and other origins beyond Sketchfab) rather than this exact call shape — treat the snippet above as illustrative of the 1.0 API specifically. [Source](https://github.com/allenai/objaverse-xl)
+
 ---
 
 ## 6. Digital Heritage: Smithsonian Voyager as a Working Encyclopedia-Style 3D Catalog
@@ -111,7 +220,21 @@ Every system covered so far trades off rigor and browsability at a relatively sm
 Sketchfab is included in this chapter specifically because it is the **mass-market counterexample** to the rest of the survey: it has by far the best public browsability and the largest corpus, but close to the weakest metadata rigor and no subcomponent/assembly model at all — the inverse tradeoff from IFC or STEP.
 
 - **Upload and conversion pipeline.** Sketchfab accepts uploads in 50+ formats (OBJ, FBX, Collada, 3DS, Blender `.blend`, STL, VRML, USD, and glTF itself among them), with direct-export plugins for Blender, Maya, Cinema 4D, SketchUp, SolidWorks, and ZBrush. [Source](https://sketchfab.com/features) glTF/GLB is the platform's own recommended upload format, and Sketchfab converts whatever format is uploaded into glTF/GLB (and USDZ) for its download pipeline — the company has marketed itself as "the largest online repository of glTF files" since adding native glTF upload support in 2016 and a glTF-based Download API in 2018. [Source](https://www.khronos.org/blog/sketchfab-uses-gltf-to-bring-a-search-bar-to-the-world-of-3d) [Source](https://sketchfab.com/features/gltf) Note: needs verification — no primary source describes the specific rendering engine underlying Sketchfab's embedded WebGL viewer (whether Three.js-based or fully in-house); the feature page only advertises "no plugin required" cross-browser support.
-- **Metadata model.** The Data API (v3) exposes model-level fields — `uid`, `name`, `description`, `tags`, `categories`, `license`, `faceCount`, `vertexCount`, `isDownloadable` — all scoped to the whole model. [Source](https://sketchfab.com/developers/data-api/v3) No endpoint exposes per-node, per-mesh, or scene-graph metadata: unlike IFC's `IfcRelAggregates` (§2) or STEP's NAUO (§3), a Sketchfab listing carries exactly one license, one tag set, and one aggregate triangle count for the entire uploaded scene, however many named parts the underlying glTF or FBX hierarchy actually contains. Whatever compositional structure exists is invisible above the file format itself — Sketchfab solves discovery and browsability, not the "subcomponent metadata" half of this chapter's framing at all.
+- **Metadata model.** The Data API (v3) exposes model-level fields — `uid`, `name`, `description`, `tags`, `categories`, `license`, `faceCount`, `vertexCount`, `isDownloadable`, plus engagement and publication fields (`viewCount`, `likeCount`, `viewerUrl`, `embedUrl`, `thumbnails`, `user`) — all scoped to the whole model. A real (trimmed) response for `GET https://api.sketchfab.com/v3/models/{uid}`:
+  ```json
+  {
+    "uid": "70fa0927a36a4bc392f3e13c882d287e",
+    "name": "Chairs Pack / Chair Collection",
+    "viewerUrl": "https://sketchfab.com/3d-models/none-70fa0927a36a4bc392f3e13c882d287e",
+    "faceCount": 194582,
+    "isDownloadable": false,
+    "license": { "label": "Standard", "slug": "st", "url": "https://sketchfab.com/licenses" },
+    "categories": [{ "name": "Furniture & Home", "slug": "furniture-home" }],
+    "tags": [{ "name": "office", "slug": "office" }],
+    "user": { "username": "studiolab.dev", "displayName": "Studio Lab" }
+  }
+  ```
+  [Source](https://sketchfab.com/developers/data-api/v3) No endpoint exposes per-node, per-mesh, or scene-graph metadata: unlike IFC's `IfcRelAggregates` (§2) or STEP's NAUO (§3), a Sketchfab listing carries exactly one license, one tag set, and one aggregate triangle count for the entire uploaded scene, however many named parts the underlying glTF or FBX hierarchy actually contains. Whatever compositional structure exists is invisible above the file format itself — Sketchfab solves discovery and browsability, not the "subcomponent metadata" half of this chapter's framing at all.
 - **Licensing.** The default is Sketchfab's own **Standard license** (commercial use and derivatives permitted with restrictions — no standalone resale, no use in logos/trademarks, attribution required "where technically feasible"), with a separate restrictive **Editorial license** for news/commentary use. [Source](https://sketchfab.com/licenses) For downloadable models, uploaders can instead opt into **Creative Commons** terms (CC BY, with optional NC/ND/SA modifiers), filterable in search; [Source](https://sketchfab.com/blogs/community/an-introduction-to-creative-commons-licenses/) a **CC0/public-domain** option is offered specifically to cultural-heritage institutions publishing 3D scans. [Source](https://sketchfab.com/blogs/community/sketchfab-launches-public-domain-dedication-for-3d-cultural-heritage/) Note: needs verification — no single Sketchfab page was found enumerating the complete current license list in one place; this is assembled from three separate license/blog pages.
 - **API surface.** Beyond the Data API, a **Download API** returns glTF/GLB/USDZ download links for authenticated requests, and a separate **Viewer API** plus oEmbed support cover embedding the interactive viewer in third-party pages. [Source](https://sketchfab.com/developers) [Source](https://sketchfab.com/developers/download-api/guidelines) This is the API surface the `ahujasid/blender-mcp` community server's `search_sketchfab_models`/`download_sketchfab_model` tools (Chapter 244, §3) call.
 - **Role as an ML training corpus.** The original **Objaverse** dataset (Allen Institute for AI, 2022) was built entirely from Sketchfab: "objects selected for Objaverse have a distributable Creative Commons license and were obtained using Sketchfab's public API," yielding roughly 818K CC-licensed objects. [Source](https://ar5iv.labs.arxiv.org/html/2212.08051) When AI2 scaled this up to **Objaverse-XL** (2023, §5) to more than 10M objects, Sketchfab's contribution stayed essentially fixed at the original ~800K (≈8% of the expanded total) — the tenfold growth came almost entirely from GitHub (~56%) and Thingiverse (~35%) instead. [Source](https://arxiv.org/html/2307.05663) Sketchfab was Objaverse's entire seed corpus and remains a meaningful but no-longer-dominant slice of Objaverse-XL.
@@ -124,6 +247,24 @@ Set against the rest of this chapter, Sketchfab is the clearest illustration of 
 ## 8. Electronics Part Catalogs: Octopart, Digi-Key, SnapEDA, and Ultra Librarian
 
 Electronics distribution is the domain-specific example where "part metadata + CAD subcomponent model" is most thoroughly commercialized, though split across separate services rather than unified in one standard. **Octopart** aggregates distributor pricing, stock, and datasheet metadata across manufacturers and distributors, and integrates with **SnapEDA** (rebranded **SnapMagic Search**) for the CAD side of the same part records — schematic symbol, PCB footprint, and 3D step/CAD model — so that a single part search resolves to both commercial metadata (price, stock, lifecycle status) and design-ready CAD subcomponent geometry. [Digi-Key](https://www.digikey.com/) separately offers the same symbol/footprint/3D-model triad through a first-party integration with **Ultra Librarian**, covering roughly a million in-stock parts across more than twenty CAD tool export formats (KiCad, Altium, Eagle, OrCAD, and others). [Source](https://www.digikey.com/en/news/press-releases/2017/apr/digi-key-offers-free-ultra-librarian-symbols)
+
+**API: Nexar.** Octopart's original REST API has been superseded by **Nexar**, a GraphQL API (operated by Nexar/Altium) that now covers Octopart's supply-chain search alongside Altium 365 design data and Altium's manufacturing (Altimade) data under one schema, authenticated with OAuth2 rather than the old static API key:
+
+```graphql
+{
+  supSearchMpn(q: "SN74S74N") {
+    hits
+    results {
+      part {
+        mpn
+        manufacturer { name }
+        sellers { company { name } offers { prices { price quantity } } }
+      }
+    }
+  }
+}
+```
+[Source](https://nexar.com/api) [Source](https://support.nexar.com/support/solutions/articles/101000469281-migration-from-octopart-v4-nexar-legacy-api-)
 
 This cluster is worth including precisely because it demonstrates the "objects + subcomponent CAD models + structured metadata" combination working at commercial scale and public browsability — anyone can search Octopart or Digi-Key's catalog and download a part's 3D model for free — but the "assembly" relationship it captures is shallow relative to IFC or STEP: a part record links to *its own* CAD geometry, not to a formal composition hierarchy showing how that part nests into a board, enclosure, or product. KiCad (an open-source EDA tool that runs natively on Linux) is the most direct consumer of these libraries in the FOSS graphics/CAD ecosystem, importing SnapEDA/Ultra Librarian symbol-footprint-3D triples directly into a schematic and PCB layout project.
 
@@ -146,7 +287,32 @@ The final cluster drops geometry entirely and solves only the metadata half of t
 }
 ```
 
-The `gtin*` identifiers trace back to [GS1](https://www.gs1.org/), the standards body governing the barcode-encoded Global Trade Item Number, and to the [Global Data Synchronization Network (GDSN)](https://www.gs1.org/services/gdsn/global-data-model) — the interconnected data-pool infrastructure retailers and manufacturers use to exchange authoritative product master data (dimensions, packaging hierarchy, certifications) keyed by GTIN. The [GS1 Web Vocabulary](https://www.gs1.org/gs1-web-vocabulary) extends schema.org's `Product` type with the fuller GS1/GDSN attribute set for organizations that need more than schema.org's baseline covers. None of this layer carries or requires 3D geometry at all — it is the metadata-only end of the spectrum this chapter surveys, included because it is the standard e-commerce systems actually use at scale, and because `schema.org`'s `hasPart`/`isPartOf` properties are the same whole/part pattern seen in IFC's `IfcRelAggregates`, STEP's NAUO, and Wikidata's P527/P361 — the composition-relationship idea recurs in every domain in this chapter, independently reinvented at each layer of rigor.
+The `gtin*` identifiers trace back to [GS1](https://www.gs1.org/), the standards body governing the barcode-encoded Global Trade Item Number, and to the [Global Data Synchronization Network (GDSN)](https://www.gs1.org/services/gdsn/global-data-model) — the interconnected data-pool infrastructure retailers and manufacturers use to exchange authoritative product master data (dimensions, packaging hierarchy, certifications) keyed by GTIN. The [GS1 Web Vocabulary](https://www.gs1.org/gs1-web-vocabulary) extends schema.org's `Product` type with the fuller GS1/GDSN attribute set for organizations that need more than schema.org's baseline covers, using a `gs1:` namespace layered onto the same JSON-LD `@context` mechanism as the schema.org example above — GS1's own SmartSearch implementation guideline gives a real (trimmed) example of a food product extended with GS1-specific ingredient and allergen properties:
+
+```json
+{
+  "@context": {
+    "gs1": "https://ref.gs1.org/voc/",
+    "schema": "http://schema.org/",
+    "TradeItem": "schema:Product",
+    "gtin13": { "@id": "schema:gtin13" },
+    "healthClaimDescription": { "@id": "gs1:healthClaimDescription" },
+    "allergenStatement": { "@id": "gs1:allergenStatement" },
+    "hasAllergenRelatedInformation": { "@id": "gs1:hasAllergenRelatedInformation", "@type": "@id" }
+  },
+  "@id": "http://id.manufacturer.com/gtin/05011476100885",
+  "@type": ["TradeItem"],
+  "gtin13": "5011476100885",
+  "healthClaimDescription": "8 Vitamins & Iron, Source of Calcium & High in Fibre",
+  "hasAllergenRelatedInformation": {
+    "@type": "gs1:AllergenRelatedInformation",
+    "allergenStatement": "May contain nut traces"
+  }
+}
+```
+[Source](https://www.gs1.org/sites/default/files/docs/gs1-smartsearch/GS1_SmartSearch_Implementation_Guideline.pdf) GS1's own 2015 guideline document uses an older `http://gs1.org/voc/` namespace URI; current implementations should resolve the `gs1:` prefix to `https://ref.gs1.org/voc/` per GS1's present-day vocabulary page, shown corrected above. [Source](https://www.gs1.org/gs1-web-vocabulary)
+
+None of this layer carries or requires 3D geometry at all — it is the metadata-only end of the spectrum this chapter surveys, included because it is the standard e-commerce systems actually use at scale, and because `schema.org`'s `hasPart`/`isPartOf` properties are the same whole/part pattern seen in IFC's `IfcRelAggregates`, STEP's NAUO, and Wikidata's P527/P361 — the composition-relationship idea recurs in every domain in this chapter, independently reinvented at each layer of rigor.
 
 ---
 
@@ -168,7 +334,25 @@ No row satisfies every column — which is the structural answer to why no singl
 
 ---
 
-## 11. Integrations
+## 11. Roadmap
+
+**Near-term (6–12 months):**
+- The [mediawiki3d.org](https://mediawiki3d.org/index.php/Main_Page) textured-glTF prototype (§4) maturing from a community/Wikimedia-Foundation prototype into a stable Commons feature would be the single biggest near-term closer of the "browsable + rich metadata + real geometry" gap the comparison table (§10) shows no current row satisfying — worth revisiting once it graduates from prototype status.
+- Fallout from Sketchfab and ArtStation's August 2026 sale from Epic Games to KitBash (§7): whether the Data/Download API, licensing terms, and the existing Objaverse-sourced corpus (§5) stay stable under new ownership is worth tracking given how much downstream tooling — Objaverse itself, Chapter 244's `blender-mcp` Sketchfab tools — depends on API and licensing continuity.
+- Nexar's continued migration of Octopart's supply-chain search fully onto its GraphQL API (§8): any Linux EDA tooling (KiCad plugins, scripts) still targeting the legacy Octopart REST endpoints will need to migrate before those endpoints are retired.
+
+**Medium-term (1–3 years):**
+- Whether IFC4.3/ISO 16739-1:2024's infrastructure domains (rail, road, port, bridge, §2) see adoption in mainstream AEC tooling comparable to the buildings-only IFC4 schema they extend, or remain a specialist niche relative to buildings.
+- Whether AP242's model-based-definition (PMI) capability becomes the default STEP export mode industry-wide, or geometry-only exports in the AP214 style (§3's illustrative excerpt) remain the practical baseline most tools still produce day to day.
+- GS1's own reference material and partner implementations fully retiring the older `gs1.org/voc/` namespace URI still visible in some primary GS1 documentation (§9) in favor of the current `ref.gs1.org/voc/` form.
+
+**Long-term:**
+- Whether any effort actually closes the structural gap this chapter's comparison table (§10) surfaces — one system combining IFC/STEP-level subcomponent rigor with Wikidata/Sketchfab-level public browsability — remains genuinely open. Nothing surveyed in this chapter is currently positioned to become that system; §1's framing suggests the rigor-versus-browsability split is structural rather than a temporary gap the industry is converging to close.
+- ML-scale corpora (Objaverse-XL, §5) growing further on raw aggregation seem likely to keep outpacing curated, taxonomy-organized efforts (ShapeNet) rather than converging with them, absent a shift in incentives from scale back toward curation.
+
+---
+
+## 12. Integrations
 
 - **Chapter 64** (glTF 2.0 — The 3D Asset Pipeline Standard) — the runtime geometry format that Voyager (§6) and the Wikimedia Commons 3D prototype (§4) build their metadata layer on top of, the format Sketchfab converts every upload into for viewing and download (§7), and the target format IFC/STEP tooling (§2–§3) typically converts to for real-time visualization.
 - **Chapter 176** (Open CASCADE Technology and CAD Kernels) — the open-source geometry kernel whose `STEPControl` reader/writer is the concrete Linux implementation of the STEP interchange described in §3.
