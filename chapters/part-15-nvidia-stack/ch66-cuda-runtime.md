@@ -62,45 +62,168 @@ Sections 13–20 cover the major CUDA compute libraries that every ML and scient
 - **cuRAND** — GPU random number generation
 - **cuSolver** — GPU linear solvers
 
-Section 1 maps the library layering: **`libcuda.so`** (the **Driver API**, installed with the graphics driver) versus **`libcudart.so`** (the **Runtime API**, part of the **CUDA Toolkit**), how version compatibility is enforced, and the error **`CUDA_ERROR_INVALID_PTX`** that arises when the **PTX ISA** level emitted by **nvcc** exceeds what the installed driver's JIT understands. It covers loading **PTX** and **CUBIN** objects at runtime via **`cuModuleLoadData()`** and the newer context-independent **`CUlibrary`** API (**`cuLibraryLoadData()`**), as well as the primary context model (**`cuDevicePrimaryCtxRetain()`**) and the **Green Contexts** intra-process SM-partitioning alternative introduced in **CUDA 12.4**. Section 1.5 covers **ptxas** — NVIDIA's proprietary PTX-to-SASS assembler — including CLI flags (`--gpu-name`, `--maxrregcount`, `--opt-level`), `--verbose` per-kernel register/shared-memory accounting, occupancy analysis, and **`cuobjdump`**/**`nvdisasm`** for inspecting generated SASS output.
+**§1 — CUDA Library Layering: Driver API vs. Runtime API**
 
-Section 2 covers **CUDA streams** as ordered GPU work queues. It explains the **null stream** (stream 0) and its implicit barrier semantics — the most common source of unintentional serialization — and the **`cudaStreamNonBlocking`** flag that opts a stream out of those barriers. Stream creation flags, priority levels (**`cudaStreamCreateWithPriority()`**), and stream IDs (**`cudaStreamGetId()`**) are detailed, along with cross-stream synchronization using **`cudaStreamWaitEvent()`**, and host-function callbacks via **`cudaLaunchHostFunc()`** (the preferred replacement for the deprecated **`cudaStreamAddCallback()`**). The DRM GPU scheduler analogy maps **CUDA** stream priorities to **`drm_gpu_scheduler`** priority run-queues.
+- Library layering: **`libcuda.so`** (the **Driver API**, installed with the graphics driver) versus **`libcudart.so`** (the **Runtime API**, part of the **CUDA Toolkit**), and how version compatibility between them is enforced
+- The **`CUDA_ERROR_INVALID_PTX`** error, raised when the **PTX ISA** level emitted by **nvcc** exceeds what the installed driver's JIT understands
+- Loading **PTX** and **CUBIN** objects at runtime via **`cuModuleLoadData()`** and the newer context-independent **`CUlibrary`** API (**`cuLibraryLoadData()`**)
+- The primary context model (**`cuDevicePrimaryCtxRetain()`**) and the **Green Contexts** intra-process SM-partitioning alternative introduced in **CUDA 12.4**
+- §1.5: **ptxas**, NVIDIA's proprietary PTX-to-SASS assembler — CLI flags (`--gpu-name`, `--maxrregcount`, `--opt-level`), `--verbose` per-kernel register/shared-memory accounting, occupancy analysis, and **`cuobjdump`**/**`nvdisasm`** for inspecting generated SASS output
 
-Section 3 covers **CUDA events** — GPU-side timestamps used for asynchronous timing, cross-stream synchronization, and **IPC** synchronization across OS process boundaries. Event creation flags including **`cudaEventBlockingSync`**, **`cudaEventDisableTiming`**, and **`cudaEventInterprocess`** are explained, as is the canonical kernel timing pattern using **`cudaEventRecord()`** and **`cudaEventElapsedTime()`**. **IPC events** (Linux only, requiring **UVA**) allow GPU-side synchronization across processes via **`cudaIpcGetEventHandle()`** and **`cudaIpcOpenEventHandle()`** without CPU involvement.
+**§2 — CUDA Streams: Ordered GPU Work Queues**
 
-Section 4 details the **CUDA** memory model across four allocation kinds: device memory (**`cudaMalloc()`**/**`cudaFree()`**), pinned (page-locked) host memory (**`cudaMallocHost()`**, **`cudaHostAlloc()`**, **`cudaHostRegister()`**) for DMA-capable async transfers via **`cudaMemcpyAsync()`**, **Unified Memory** (**`cudaMallocManaged()`**) backed by **HMM** (Heterogeneous Memory Management) on Linux kernel ≥ 6.1.24 with the **Open Kernel Modules**, and the stream-ordered allocator (**`cudaMallocAsync()`**/**`cudaFreeAsync()`**, **CUDA 11.2+**) that eliminates the implicit global barrier of synchronous allocation. A **CUDA 13.0** breaking change to **`cudaMemAdvise()`** and **`cudaMemPrefetchAsync()`** — switching the device parameter from `int` to **`cudaMemLocation`** — is documented with the resulting compiler error.
+- **CUDA streams** as ordered GPU work queues
+- The **null stream** (stream 0) and its implicit barrier semantics — the most common source of unintentional serialization
+- The **`cudaStreamNonBlocking`** flag that opts a stream out of those barriers
+- Stream creation flags, priority levels (**`cudaStreamCreateWithPriority()`**), and stream IDs (**`cudaStreamGetId()`**)
+- Cross-stream synchronization via **`cudaStreamWaitEvent()`**
+- Host-function callbacks via **`cudaLaunchHostFunc()`** (the preferred replacement for the deprecated **`cudaStreamAddCallback()`**)
+- The DRM GPU scheduler analogy, mapping **CUDA** stream priorities to **`drm_gpu_scheduler`** priority run-queues
 
-Section 5 covers **NVRTC** (**`libnvrtc.so`**, **`nvrtc.h`**): runtime compilation of device-side **CUDA C++** source strings to **PTX** via **`nvrtcCreateProgram()`**, **`nvrtcCompileProgram()`**, **`nvrtcGetPTX()`**, and **`nvrtcGetLoweredName()`** for C++ template name mangling. Compiler options including **`--gpu-architecture`**, **`--use_fast_math`**, **`--maxrregcount`**, **`--device-c`**, and **`--dlto`** (for LTO) are covered, along with **CUDA 13.3** bundled header support (**`nvrtcInstallBundledHeaders()`**) that enables **Toolkit**-free deployment. Section 5 also covers **nvJitLink** (**`libnvJitLink.so`**) for link-time optimization across multiple separately-compiled **PTX** or **LTO IR** objects at runtime.
+**§3 — CUDA Events: Asynchronous Timing and Synchronization**
 
-Section 6 covers **CUDA Graphs** (**`cudaGraph_t`**, **`cudaGraphExec_t`**): capturing GPU work via **`cudaStreamBeginCapture()`**/**`cudaStreamEndCapture()`**, instantiating with **`cudaGraphInstantiate()`**, and relaunching with a single **`cudaGraphLaunch()`** call. Parameter update paths — per-node (**`cudaGraphExecKernelNodeSetParams()`**) and whole-graph (**`cudaGraphExecUpdate()`**) — avoid reinstantiation when topology is stable. Manual graph construction via **`cudaGraphAddKernelNode()`** and **`cudaGraphAddMemcpyNode()`** supports topologies that cannot be captured. **Conditional nodes** (**CUDA 12.4+**, **`cudaGraphCondTypeWhile`**; **CUDA 12.8** added IF-ELSE and SWITCH) enable on-device branching and looping without returning to the CPU.
+- **CUDA events** — GPU-side timestamps used for asynchronous timing, cross-stream synchronization, and **IPC** synchronization across OS process boundaries
+- Event creation flags: **`cudaEventBlockingSync`**, **`cudaEventDisableTiming`**, **`cudaEventInterprocess`**
+- The canonical kernel timing pattern using **`cudaEventRecord()`** and **`cudaEventElapsedTime()`**
+- **IPC events** (Linux only, requiring **UVA**) — GPU-side synchronization across processes via **`cudaIpcGetEventHandle()`** and **`cudaIpcOpenEventHandle()`** without CPU involvement
 
-Section 7 covers multi-tenant GPU sharing: time-sliced contexts (context-switch overhead, kernel-granularity preemption on **Pascal** and later), the **CUDA Multi-Process Service** (**`nvidia-cuda-mps-control`**, **`nvidia-cuda-mps-server`**) which replaces per-process contexts with a shared server context enabling concurrent kernel execution on **Volta** and later, and Linux **MPS** configuration via **`CUDA_MPS_PIPE_DIRECTORY`**, **`CUDA_MPS_ACTIVE_THREAD_PERCENTAGE`**, and the **CUDA 13.1** static partitioning mode. **MIG** (Multi-Instance GPU, **Ampere** and later) partitions the GPU into up to 7 hardware-isolated **GPU Instances** with dedicated SM slices, **L2** cache, and **DRAM** controllers, targeted via **`CUDA_VISIBLE_DEVICES=MIG-<uuid>`**. A comparison table and decision guide cover when to choose each strategy.
+**§4 — Memory Model: Device, Pinned, Unified, and Stream-Ordered**
 
-Section 8 covers **NVML** (**`libnvidia-ml.so`**, **`nvml.h`**) — the C API underlying **`nvidia-smi`** — for monitoring SM utilization, memory bandwidth, temperature, power draw, and clock frequencies via **`nvmlDeviceGetUtilizationRates()`**, **`nvmlDeviceGetMemoryInfo()`**, **`nvmlDeviceGetPowerUsage()`**, and **`nvmlDeviceGetClockInfo()`**. Per-process utilization sampling via **`nvmlDeviceGetProcessesUtilizationInfo()`** and fine-grained **GPM** (GPU Performance Monitoring) metrics on **Hopper** (**H100**) and later via **`nvmlGpmSampleGet()`** and **`nvmlGpmMetricsGet()`** are also covered.
+- The **CUDA** memory model across four allocation kinds:
+  - Device memory (**`cudaMalloc()`**/**`cudaFree()`**)
+  - Pinned (page-locked) host memory (**`cudaMallocHost()`**, **`cudaHostAlloc()`**, **`cudaHostRegister()`**) for DMA-capable async transfers via **`cudaMemcpyAsync()`**
+  - **Unified Memory** (**`cudaMallocManaged()`**) backed by **HMM** (Heterogeneous Memory Management) on Linux kernel ≥ 6.1.24 with the **Open Kernel Modules**
+  - The stream-ordered allocator (**`cudaMallocAsync()`**/**`cudaFreeAsync()`**, **CUDA 11.2+**), which eliminates the implicit global barrier of synchronous allocation
+- A **CUDA 13.0** breaking change to **`cudaMemAdvise()`** and **`cudaMemPrefetchAsync()`** — switching the device parameter from `int` to **`cudaMemLocation`** — documented with the resulting compiler error
 
-Section 9 covers the Linux kernel interfaces: **DKMS** (`dkms autoinstall`) management of **`nvidia.ko`**, **`nvidia-uvm.ko`**, **`nvidia-modeset.ko`**, and **`nvidia-drm.ko`** across kernel updates, and the source-available **Open Kernel Modules** (`NVIDIA/open-gpu-kernel-modules`) required for **HMM** support on **Turing** and later. Runtime diagnostics via the stable **`/proc/driver/nvidia/`** procfs interface (driver version, per-GPU state, **RTD3** power management status) and the driver-version-specific **`/sys/kernel/debug/nvidia/`** **debugfs** subtree (enabled by **`CONFIG_DEBUG_FS`**) are documented, including the diagnostic sequence for **`CUDA_ERROR_NO_DEVICE`** failures after kernel updates.
+**§5 — NVRTC: Runtime Compilation of CUDA C++ to PTX**
 
-Section 10 covers **CCCL** (CUDA Core Compute Libraries, unified in CUDA 12.4): **Thrust** provides STL-style GPU algorithms (`thrust::sort`, `thrust::reduce`, `thrust::transform_reduce`) with execution policies that dispatch to streams; **CUB** provides low-level block-wide and warp-wide collectives (`cub::BlockScan`, `cub::DeviceRadixSort`, `cub::WarpReduce`) used internally by Thrust and by custom kernels requiring cooperative primitives; **libcu++** provides a CUDA-compatible C++ standard library including `cuda::atomic`, `cuda::std::mdspan`, and `cuda::barrier` for heterogeneous synchronization.
+- **NVRTC** (**`libnvrtc.so`**, **`nvrtc.h`**): runtime compilation of device-side **CUDA C++** source strings to **PTX** via **`nvrtcCreateProgram()`**, **`nvrtcCompileProgram()`**, **`nvrtcGetPTX()`**, and **`nvrtcGetLoweredName()`** for C++ template name mangling
+- Compiler options: **`--gpu-architecture`**, **`--use_fast_math`**, **`--maxrregcount`**, **`--device-c`**, **`--dlto`** (for LTO)
+- **CUDA 13.3** bundled header support (**`nvrtcInstallBundledHeaders()`**), enabling **Toolkit**-free deployment
+- **nvJitLink** (**`libnvJitLink.so`**) for link-time optimization across multiple separately-compiled **PTX** or **LTO IR** objects at runtime
 
-Section 11 covers tile-based CUDA abstractions: **cuda-tile** is an NVIDIA-research MLIR dialect that compiles tile-level matrix operations to PTX/SASS, automatically selecting `wgmma.mma_async` (Hopper) or `wmma` (Ampere) tensor core instructions without hand-written warp-cooperative code; **Tilus** is a companion tile-level kernel language with Python syntax, similar in intent to Triton but targeting NVIDIA's own MLIR compiler stack. A comparison table maps the abstraction and compilation paths of CUTLASS, Triton, and cuda-tile/Tilus.
+**§6 — CUDA Graphs: Capturing and Replaying GPU Work**
 
-Section 12 covers **NVSHMEM**: an implementation of the OpenSHMEM one-sided communication model for NVIDIA GPUs. NVSHMEM allocates a **symmetric heap** — a memory region mapped at the same virtual address across all participating GPUs — and provides GPU-kernel-callable `nvshmem_float_put`/`nvshmem_float_get` primitives that transfer data to remote GPU memory via NVLink p2p (same node) or InfiniBand GPUDirect RDMA (across nodes), without returning to the CPU. NVSHMEM vs. NCCL and vs. MPI is clarified: NVSHMEM is for fine-grained one-sided operations from within a kernel; NCCL is for bulk collective operations; MPI is CPU-mediated.
+- **CUDA Graphs** (**`cudaGraph_t`**, **`cudaGraphExec_t`**): capturing GPU work via **`cudaStreamBeginCapture()`**/**`cudaStreamEndCapture()`**, instantiating with **`cudaGraphInstantiate()`**, and relaunching with a single **`cudaGraphLaunch()`** call
+- Parameter update paths that avoid reinstantiation when topology is stable: per-node (**`cudaGraphExecKernelNodeSetParams()`**) and whole-graph (**`cudaGraphExecUpdate()`**)
+- Manual graph construction via **`cudaGraphAddKernelNode()`** and **`cudaGraphAddMemcpyNode()`** for topologies that cannot be captured
+- **Conditional nodes** (**CUDA 12.4+**, **`cudaGraphCondTypeWhile`**; **CUDA 12.8** added IF-ELSE and SWITCH) for on-device branching and looping without returning to the CPU
 
-Section 13 covers **cuDNN** (CUDA Deep Neural Network library): the handle/stream lifecycle, tensor descriptor creation (`cudnnSetTensor4dDescriptor`, NCHW vs. NHWC layout), convolution workflow (filter descriptor, `cudnnFindConvolutionForwardAlgorithm` with EXHAUSTIVE vs. HEURISTIC search, workspace allocation, `CUDNN_TENSOR_OP_MATH` for TF32), batch normalization, pooling, and activation fused ops, and the **cuDNN v9 Graph API** (`cudnnGraph_t`, `cudnn_frontend`) that expresses fused operation graphs including Flash Attention SDPA. A comparison table maps cuDNN to AMD's **MIOpen** equivalent APIs.
+**§7 — Multi-Process Service (MPS) and MIG Partitioning**
 
-Section 14 covers **cuBLAS**: NVIDIA's GPU implementation of the BLAS (Basic Linear Algebra Subprograms) standard. Handle lifecycle, the column-major transpose convention (`CUBLAS_OP_T` swap trick), `cublasSgemm` for single-precision GEMM, `cublasGemmEx` with `CUBLAS_COMPUTE_32F_FAST_TF32` (Ampere Tensor Core) and `CUBLAS_COMPUTE_32F_FAST_16F` / FP8 (Hopper), `cublasLt` for lightweight GEMM with custom epilogues (RELU_BIAS, GELU_BIAS, DRELU, BGRADA) via `cublasLtMatmulDescSetAttribute`, and `cublasGemmStridedBatchedEx` for multi-head attention batched GEMM are all detailed. A comparison covers **rocBLAS** and **hipBLASLt** API equivalence.
+- Multi-tenant GPU sharing strategies:
+  - Time-sliced contexts — context-switch overhead, kernel-granularity preemption on **Pascal** and later
+  - The **CUDA Multi-Process Service** (**`nvidia-cuda-mps-control`**, **`nvidia-cuda-mps-server`**), which replaces per-process contexts with a shared server context enabling concurrent kernel execution on **Volta** and later
+  - Linux **MPS** configuration via **`CUDA_MPS_PIPE_DIRECTORY`**, **`CUDA_MPS_ACTIVE_THREAD_PERCENTAGE`**, and the **CUDA 13.1** static partitioning mode
+  - **MIG** (Multi-Instance GPU, **Ampere** and later), which partitions the GPU into up to 7 hardware-isolated **GPU Instances** with dedicated SM slices, **L2** cache, and **DRAM** controllers, targeted via **`CUDA_VISIBLE_DEVICES=MIG-<uuid>`**
+- A comparison table and decision guide covering when to choose each strategy
 
-Section 15 covers **CUTLASS** 3.x: NVIDIA's C++ template GEMM library. The **CuTe** layout algebra (`Layout<Shape,Stride>`, `Tensor`, `Copy_Atom`, `MMA_Atom`, `tiled_divide`) is explained as the algebraic foundation for expressing tile shapes and strides. CUTLASS 3.x's `CollectiveMainloop` + `CollectiveEpilogue` + `GemmUniversalAdapter` architecture is shown with a Hopper `sm_90a` wgmma example. **StreamK** work decomposition — which eliminates the fixed-shape wave quantisation inefficiency of data-parallel GEMM — is compared to standard grid decomposition. A three-way table contrasts CUTLASS, cuBLAS, and Triton on abstraction level, flexibility, and use cases.
+**§8 — NVML: GPU Monitoring API**
 
-Section 16 covers **cuSPARSE** and **cuSPARSELt**: CUDA's sparse linear algebra libraries. The five sparse matrix formats (COO, CSR, CSC, BSR, blocked ELL) are tabulated with their memory layout and use cases. The generic SpMM API (`cusparseCreateSpMat`, `cusparseCreateDnMat`, `cusparseSpMM`) is shown for sparse-dense matrix multiply with explicit buffer sizing and execution phases. **cuSPARSELt** extends this to NVIDIA's **2:4 structured sparsity** format (two non-zeros per four-element group): the prune–compress–matmul pipeline (`cusparseLtSpMMAPrune`, `cusparseLtSpMMACompress`, `cusparseLtMatmul`) delivers up to 2× Ampere Sparse Tensor Core throughput for inference. AMD equivalents **rocSPARSE** and **hipSPARSELt** are compared.
+- **NVML** (**`libnvidia-ml.so`**, **`nvml.h`**) — the C API underlying **`nvidia-smi`** — for monitoring SM utilization, memory bandwidth, temperature, power draw, and clock frequencies via **`nvmlDeviceGetUtilizationRates()`**, **`nvmlDeviceGetMemoryInfo()`**, **`nvmlDeviceGetPowerUsage()`**, and **`nvmlDeviceGetClockInfo()`**
+- Per-process utilization sampling via **`nvmlDeviceGetProcessesUtilizationInfo()`**
+- Fine-grained **GPM** (GPU Performance Monitoring) metrics on **Hopper** (**H100**) and later via **`nvmlGpmSampleGet()`** and **`nvmlGpmMetricsGet()`**
 
-Section 17 covers **cuFFT**: NVIDIA's GPU Fast Fourier Transform library. Plan creation (`cufftPlan1d`, `cufftPlan2d`, `cufftPlan3d`, `cufftPlanMany` for batched/strided), the six transform types (C2C, C2R, R2C, Z2Z, Z2D, D2Z) with Hermitian symmetry halving R2C storage, batched FFT for simultaneous multi-channel transforms, and the convolution-via-FFT pattern (R2C forward, pointwise multiply, C2R inverse) are all covered. **rocFFT** (AMD) and **vkFFT** (cross-vendor, Vulkan/CUDA/OpenCL) are compared.
+**§9 — CUDA on Linux: Kernel Interfaces and Diagnostic Paths**
 
-Section 18 covers **NCCL** (NVIDIA Collective Communications Library): the library underlying distributed training. Communicator initialization via `ncclCommInitAll` (single-node) and `ncclGetUniqueId`/`ncclCommInitRank` (multi-node) is shown. The five collective operations — `ncclAllReduce`, `ncclBroadcast`, `ncclReduce`, `ncclAllGather`, `ncclReduceScatter` — are documented as non-blocking stream-enqueued operations. The **ring-allreduce** algorithm (ReduceScatter phase followed by AllGather phase, achieving ~100% bus utilization at large message sizes) is explained, along with the switch to **tree-allreduce** for small tensors. Transport selection (NVLink, PCIe p2p, InfiniBand) and the `ncclGroupStart`/`ncclGroupEnd` API for fusing multiple collectives are covered. **RCCL** (AMD's drop-in replacement) is compared.
+- **DKMS** (`dkms autoinstall`) management of **`nvidia.ko`**, **`nvidia-uvm.ko`**, **`nvidia-modeset.ko`**, and **`nvidia-drm.ko`** across kernel updates
+- The source-available **Open Kernel Modules** (`NVIDIA/open-gpu-kernel-modules`), required for **HMM** support on **Turing** and later
+- Runtime diagnostics via the stable **`/proc/driver/nvidia/`** procfs interface (driver version, per-GPU state, **RTD3** power management status)
+- The driver-version-specific **`/sys/kernel/debug/nvidia/`** **debugfs** subtree (enabled by **`CONFIG_DEBUG_FS`**)
+- The diagnostic sequence for **`CUDA_ERROR_NO_DEVICE`** failures after kernel updates
 
-Section 19 covers **cuRAND**: CUDA's GPU random number generation library. The host API (`curandCreateGenerator`, `curandGenerateUniform`, `curandGenerateNormal`) and generator types (XORWOW, MRG32k3a, Philox4_32_10, MT19937, Sobol32) are detailed, with **Philox4_32_10** recommended for ML workloads due to its statistical quality and GPU-throughput characteristics. The device API (`curandStatePhilox4_32_10_t`, `curand_init` with unique sequence-per-thread, `curand_uniform`) enables in-kernel RNG, demonstrated with a fused dropout mask generation kernel that avoids a separate mask allocation. **rocRAND** (AMD) is compared.
+**§10 — CCCL: CUDA Core Compute Libraries**
 
-Section 20 covers **cuSolver**: NVIDIA's GPU dense and sparse linear solver library. The three sub-libraries are mapped: **cusolverDN** (dense factorisation — LU, SVD, Cholesky — via the three-step bufferSize→malloc→execute pattern), the **64-bit generic DN API** (`cusolverDnXgetrf`/`cusolverDnXgetrs`, CUDA 11+, avoiding 32-bit integer overflow for large matrices), **cusolverSP** (sparse direct solve via QR factorisation on host-memory CSR matrices), and **cusolverRF** (refactorisation for sequences of matrices with fixed sparsity pattern). **rocSOLVER** (AMD) gaps (no sparse or refactorisation sub-libraries) are noted.
+- **CCCL** (CUDA Core Compute Libraries, unified in CUDA 12.4):
+  - **Thrust** — STL-style GPU algorithms (`thrust::sort`, `thrust::reduce`, `thrust::transform_reduce`) with execution policies that dispatch to streams
+  - **CUB** — low-level block-wide and warp-wide collectives (`cub::BlockScan`, `cub::DeviceRadixSort`, `cub::WarpReduce`) used internally by Thrust and by custom kernels requiring cooperative primitives
+  - **libcu++** — a CUDA-compatible C++ standard library including `cuda::atomic`, `cuda::std::mdspan`, and `cuda::barrier` for heterogeneous synchronization
+
+**§11 — Tile-Based CUDA: cuda-tile and Tilus**
+
+- Tile-based CUDA abstractions:
+  - **cuda-tile** — an NVIDIA-research MLIR dialect that compiles tile-level matrix operations to PTX/SASS, automatically selecting `wgmma.mma_async` (Hopper) or `wmma` (Ampere) tensor core instructions without hand-written warp-cooperative code
+  - **Tilus** — a companion tile-level kernel language with Python syntax, similar in intent to Triton but targeting NVIDIA's own MLIR compiler stack
+- A comparison table mapping the abstraction and compilation paths of CUTLASS, Triton, and cuda-tile/Tilus
+
+**§12 — NVSHMEM: GPU-Side One-Sided Communication**
+
+- **NVSHMEM**: an implementation of the OpenSHMEM one-sided communication model for NVIDIA GPUs
+- The **symmetric heap** — a memory region mapped at the same virtual address across all participating GPUs
+- GPU-kernel-callable `nvshmem_float_put`/`nvshmem_float_get` primitives that transfer data to remote GPU memory via NVLink p2p (same node) or InfiniBand GPUDirect RDMA (across nodes), without returning to the CPU
+- NVSHMEM vs. NCCL vs. MPI, clarified: NVSHMEM for fine-grained one-sided operations from within a kernel; NCCL for bulk collective operations; MPI as CPU-mediated
+
+**§13 — cuDNN: Deep Learning Primitives**
+
+- **cuDNN** (CUDA Deep Neural Network library):
+  - The handle/stream lifecycle
+  - Tensor descriptor creation (`cudnnSetTensor4dDescriptor`, NCHW vs. NHWC layout)
+  - Convolution workflow: filter descriptor, `cudnnFindConvolutionForwardAlgorithm` with EXHAUSTIVE vs. HEURISTIC search, workspace allocation, `CUDNN_TENSOR_OP_MATH` for TF32
+  - Batch normalization, pooling, and activation fused ops
+  - The **cuDNN v9 Graph API** (`cudnnGraph_t`, `cudnn_frontend`), which expresses fused operation graphs including Flash Attention SDPA
+- A comparison table mapping cuDNN to AMD's **MIOpen** equivalent APIs
+
+**§14 — cuBLAS: GPU BLAS and cublasLt**
+
+- **cuBLAS**: NVIDIA's GPU implementation of the BLAS (Basic Linear Algebra Subprograms) standard
+- Handle lifecycle and the column-major transpose convention (`CUBLAS_OP_T` swap trick)
+- `cublasSgemm` for single-precision GEMM
+- `cublasGemmEx` with `CUBLAS_COMPUTE_32F_FAST_TF32` (Ampere Tensor Core) and `CUBLAS_COMPUTE_32F_FAST_16F`/FP8 (Hopper)
+- `cublasLt` for lightweight GEMM with custom epilogues (RELU_BIAS, GELU_BIAS, DRELU, BGRADA) via `cublasLtMatmulDescSetAttribute`
+- `cublasGemmStridedBatchedEx` for multi-head attention batched GEMM
+- A comparison of **rocBLAS** and **hipBLASLt** API equivalence
+
+**§15 — CUTLASS: C++ Template GEMM Library**
+
+- **CUTLASS** 3.x: NVIDIA's C++ template GEMM library
+- The **CuTe** layout algebra (`Layout<Shape,Stride>`, `Tensor`, `Copy_Atom`, `MMA_Atom`, `tiled_divide`) as the algebraic foundation for expressing tile shapes and strides
+- CUTLASS 3.x's `CollectiveMainloop` + `CollectiveEpilogue` + `GemmUniversalAdapter` architecture, shown with a Hopper `sm_90a` wgmma example
+- **StreamK** work decomposition — which eliminates the fixed-shape wave quantisation inefficiency of data-parallel GEMM — compared to standard grid decomposition
+- A three-way table contrasting CUTLASS, cuBLAS, and Triton on abstraction level, flexibility, and use cases
+
+**§16 — cuSPARSE and cuSPARSELt: Sparse Linear Algebra**
+
+- **cuSPARSE** and **cuSPARSELt**: CUDA's sparse linear algebra libraries
+- The five sparse matrix formats (COO, CSR, CSC, BSR, blocked ELL), tabulated with their memory layout and use cases
+- The generic SpMM API (`cusparseCreateSpMat`, `cusparseCreateDnMat`, `cusparseSpMM`) for sparse-dense matrix multiply with explicit buffer sizing and execution phases
+- **cuSPARSELt**'s extension to NVIDIA's **2:4 structured sparsity** format (two non-zeros per four-element group): the prune–compress–matmul pipeline (`cusparseLtSpMMAPrune`, `cusparseLtSpMMACompress`, `cusparseLtMatmul`), delivering up to 2× Ampere Sparse Tensor Core throughput for inference
+- A comparison to AMD's **rocSPARSE** and **hipSPARSELt** equivalents
+
+**§17 — cuFFT: GPU Fast Fourier Transform**
+
+- **cuFFT**: NVIDIA's GPU Fast Fourier Transform library
+- Plan creation: `cufftPlan1d`, `cufftPlan2d`, `cufftPlan3d`, `cufftPlanMany` for batched/strided transforms
+- The six transform types (C2C, C2R, R2C, Z2Z, Z2D, D2Z), with Hermitian symmetry halving R2C storage
+- Batched FFT for simultaneous multi-channel transforms
+- The convolution-via-FFT pattern (R2C forward, pointwise multiply, C2R inverse)
+- A comparison to **rocFFT** (AMD) and **vkFFT** (cross-vendor, Vulkan/CUDA/OpenCL)
+
+**§18 — NCCL: GPU Collective Communications**
+
+- **NCCL** (NVIDIA Collective Communications Library): the library underlying distributed training
+- Communicator initialization via `ncclCommInitAll` (single-node) and `ncclGetUniqueId`/`ncclCommInitRank` (multi-node)
+- The five collective operations — `ncclAllReduce`, `ncclBroadcast`, `ncclReduce`, `ncclAllGather`, `ncclReduceScatter` — as non-blocking stream-enqueued operations
+- The **ring-allreduce** algorithm (ReduceScatter phase followed by AllGather phase, achieving ~100% bus utilization at large message sizes), and the switch to **tree-allreduce** for small tensors
+- Transport selection (NVLink, PCIe p2p, InfiniBand)
+- The `ncclGroupStart`/`ncclGroupEnd` API for fusing multiple collectives
+- A comparison to **RCCL** (AMD's drop-in replacement)
+
+**§19 — cuRAND: GPU Random Number Generation**
+
+- **cuRAND**: CUDA's GPU random number generation library
+- The host API (`curandCreateGenerator`, `curandGenerateUniform`, `curandGenerateNormal`) and generator types (XORWOW, MRG32k3a, Philox4_32_10, MT19937, Sobol32), with **Philox4_32_10** recommended for ML workloads for its statistical quality and GPU-throughput characteristics
+- The device API (`curandStatePhilox4_32_10_t`, `curand_init` with unique sequence-per-thread, `curand_uniform`) for in-kernel RNG, demonstrated with a fused dropout mask generation kernel that avoids a separate mask allocation
+- A comparison to **rocRAND** (AMD)
+
+**§20 — cuSolver: GPU Linear Solvers**
+
+- **cuSolver**: NVIDIA's GPU dense and sparse linear solver library
+- **cusolverDN** — dense factorisation (LU, SVD, Cholesky) via the three-step bufferSize→malloc→execute pattern
+- The **64-bit generic DN API** (`cusolverDnXgetrf`/`cusolverDnXgetrs`, CUDA 11+), avoiding 32-bit integer overflow for large matrices
+- **cusolverSP** — sparse direct solve via QR factorisation on host-memory CSR matrices
+- **cusolverRF** — refactorisation for sequences of matrices with fixed sparsity pattern
+- Noted **rocSOLVER** (AMD) gaps: no sparse or refactorisation sub-libraries
 
 Readers of this chapter should already be comfortable with the Linux graphics stack at the depth covered in earlier parts:
 
