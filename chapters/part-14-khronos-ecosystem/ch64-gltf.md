@@ -46,9 +46,13 @@
     - 10.3 [Blender's glTF Import/Export Addon](#103-blenders-gltf-importexport-addon)
     - 10.4 [gltf-transform CLI for Pre-Processing](#104-gltf-transform-cli-for-pre-processing)
     - 10.5 [Three.js's GLTFLoader](#105-threejss-gltfloader)
-11. [glTF 3.0 Roadmap](#11-gltf-30-roadmap)
-12. [Integrations](#integrations)
-13. [References](#references)
+11. [Practical Limits and Multi-File Usage Guidance](#11-practical-limits-and-multi-file-usage-guidance)
+    - 11.1 [Format and Size Limits](#111-format-and-size-limits)
+    - 11.2 [When and How to Split Across Files](#112-when-and-how-to-split-across-files)
+12. [AI-Generated and AI-Edited glTF](#12-ai-generated-and-ai-edited-gltf)
+13. [glTF 3.0 Roadmap](#13-gltf-30-roadmap)
+14. [Integrations](#integrations)
+15. [References](#references)
 
 ---
 
@@ -77,6 +81,8 @@ Readers of this chapter will learn:
 - The **Vulkan** upload path: staging buffers, vertex and index **`VkBuffer`** creation with **`vkCmdCopyBuffer`**, **`VkVertexInputAttributeDescription`** / **`VkVertexInputBindingDescription`** mapping, pipeline specialisation for **OPAQUE**/**MASK**/**BLEND** alpha modes, and the modern bindless approach using **buffer device addresses** and **`VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT`**.
 - How **Bevy**'s **`GltfAssetPlugin`** (**bevy_gltf** crate), **Godot**'s **`GLTFDocument`** API, and **Blender**'s **`io_scene_gltf2`** addon (**Principled BSDF** ↔ **PBR** metallic-roughness) consume **glTF** natively, and how **`gltf-transform`** pre-processes assets in a **CI** pipeline.
 - How **Three.js**'s **`GLTFLoader`** parses a **GLB**/**glTF** asset into an **`Object3D`** scene graph in the browser, which official extensions it supports out of the box, and how **`DRACOLoader`**, **`KTX2Loader`**, and the **meshopt** decoder attach as pluggable dependencies for compressed assets.
+- The format's practical limits — the **`uint32`**-bounded **GLB** chunk ceiling, index-accessor reserved values, and the absence of native streaming — and the guidance and **`gltf-transform`** tooling used to decide when an asset should be split across multiple files.
+- The two distinct roles **AI** plays with **glTF** assets: generative text/image-to-3D platforms that emit **GLB** as a terminal output format, and language models editing the **JSON** manifest directly as text (versus their inability to generate the binary vertex payload), plus the validation practice this motivates.
 - The **glTF 3.0** roadmap as of mid-2026, including planned **MaterialX** integration, **KHR_audio_emitter**, **EXT_mesh_gpu_instancing**, and promotion of **EXT_meshopt_compression** to a **KHR** extension.
 
 ### 1.1 What is glTF 2.0?
@@ -1462,7 +1468,54 @@ Three.js's `WebXRManager` consumes the resulting `Object3D` scene graph unmodifi
 
 ---
 
-## 11. glTF 3.0 Roadmap
+## 11. Practical Limits and Multi-File Usage Guidance
+
+glTF's binary container has hard limits set by the format's field widths, but production pipelines almost never reach them before hitting delivery-time constraints instead — download size over the network, parse/decode latency, and per-draw-call GPU budgets on the target device. This section separates the two: the format's actual ceilings (11.1), and the guidance and tooling used to decide when one glTF/GLB asset should become several (11.2).
+
+### 11.1 Format and Size Limits
+
+**GLB container ceiling.** The 12-byte GLB header's `length` field and each chunk's `chunkLength` field are declared `uint32` in the binary layout (see GLB Binary Container Layout, Section 2), which caps total GLB file size — and each individual JSON or BIN chunk — at 2³²−1 bytes (~4 GiB). [Source](https://github.com/KhronosGroup/glTF/blob/main/specification/2.0/Specification.adoc)
+
+**BIN chunk padding.** The BIN chunk's byte length **MAY** be up to 3 bytes larger than the JSON-defined `buffer.byteLength`, to satisfy GLB's 4-byte chunk alignment requirement — a detail that matters when computing exact buffer offsets by hand rather than through a loader. [Source](https://github.com/KhronosGroup/glTF/blob/main/specification/2.0/Specification.adoc)
+
+**External-buffer soft limit.** For the non-GLB `.gltf` + external `.bin` layout (Section 2), `buffer.byteLength` is a plain JSON number with no `uint32` container to bound it — so an external `.bin` file is not subject to the ~4 GiB GLB chunk ceiling at all. The spec instead recommends buffers **SHOULD NOT** exceed 2⁵³ bytes, since some JSON parsers cannot represent integers beyond that precision exactly. This is why very large single-buffer assets (bulk photogrammetry/point-cloud exports) are sometimes shipped as `.gltf`+`.bin` rather than `.glb` — it routes around the GLB chunk-length ceiling, at the cost of losing the GLB envelope's single-file convenience. [Source](https://github.com/KhronosGroup/glTF/blob/main/specification/2.0/Specification.adoc)
+
+**Index range.** An `indices` accessor **MUST NOT** contain the maximum representable value for its component type — 255 for `UNSIGNED_BYTE`, 65535 for `UNSIGNED_SHORT`, 4294967295 for `UNSIGNED_INT` — because that value is reserved (for primitive restart in consuming APIs). Usable index counts are therefore 254, 65534, and 4294967294 respectively. In practice, this is the threshold that forces an exporter to widen a mesh primitive's index buffer from `UNSIGNED_SHORT` to `UNSIGNED_INT` — doubling its size — once a primitive crosses 65,534 vertices; `gltf-transform`'s `dedup`/`weld` passes (Section 10.4) can keep a mesh under that threshold by merging duplicate vertices before export. [Source](https://github.com/KhronosGroup/glTF/blob/main/specification/2.0/Specification.adoc)
+
+**No native streaming.** The specification states this directly: *"glTF is not a streaming format. The binary data in glTF is inherently streamable, and the buffer design allows for fetching data incrementally, but there are no other streaming constructs in glTF 2.0."* Concretely, a conformant loader must have the complete JSON manifest in hand before it can resolve any node, mesh, or material — there is no format-level mechanism for partial-scene loading, progressive mesh refinement, or level-of-detail paging. Any such behaviour is built by an engine or asset pipeline on top of glTF, not by the format itself, which motivates the multi-file strategies in Section 11.2. [Source](https://github.com/KhronosGroup/glTF/blob/main/specification/2.0/Specification.adoc)
+
+**Practical (non-spec) delivery budgets.** Real deployments cap assets far below any of the above. The Khronos 3D Commerce Asset Creation Guidelines' reference validation tool, [`gltf-asset-auditor`](https://github.com/KhronosGroup/gltf-asset-auditor), ships default schema recommendations of a 5,120 KB (5 MB) maximum file size, a 100,000-triangle ceiling, a maximum of 5 materials per asset, and 2048×2048 maximum texture dimensions — defaults aimed at e-commerce and AR "view in your space" viewers, not spec-mandated limits, and a schema JSON file lets a pipeline override every one of them per use case. [Source](https://github.com/KhronosGroup/gltf-asset-auditor/blob/main/README.md)
+
+### 11.2 When and How to Split Across Files
+
+Because glTF is deliberately flat and non-composable — one scene graph per file, no sublayers, no references/payloads, no variant sets, in contrast to OpenUSD's layered composition model (Section 13's USD comparison) — there is no format-level mechanism for one glTF document to reference another. "Splitting a glTF asset" is therefore always an application- or pipeline-level decision, not a spec feature: either genuinely separate glTF/GLB documents stitched together by engine code, or one glTF document whose binary payload is spread across several `.bin` files. The common reasons a pipeline reaches for either:
+
+- **Streaming and load priority** — loading a small "shell" scene first (low-LOD meshes, placeholder materials) and fetching high-resolution meshes/textures as separate assets afterward, working around the no-streaming limitation in Section 11.1.
+- **LOD tiers** — shipping each level-of-detail as its own GLB so a viewer only downloads the LOD it actually needs, rather than one file containing every tier.
+- **Shared-asset reuse across scenes** — factoring a texture set, skeleton, or prop mesh referenced by many scenes into its own file so it is fetched and cached once rather than duplicated inside every GLB that uses it.
+- **Spatial tiling** — open-world or large-environment content split by region/cell so a client only loads geometry near the camera.
+- **Independent authoring and versioning** — separating assets that are iterated on by different teams or on different schedules (a character rig versus its environment) so a change to one does not force re-export or re-download of the other.
+- **Memory ceilings on constrained targets** — mobile AR/VR and embedded viewers with fixed GPU memory budgets, where a single monolithic GLB simply will not fit resident memory at once.
+
+The concrete, tool-supported mechanism for the *within-one-document* case is `gltf-transform`'s `partition()` function (Section 10.4), which splits a glTF file's binary payload so that separate meshes or animations land in separate `.bin` Buffers instead of one combined buffer — the stated use case being engines "that support lazy-loading specific binary resources as needed over the application lifecycle," i.e. one JSON manifest describing the whole scene, but the ability to fetch only the buffers a given view actually needs. This is distinct from splitting into wholly separate glTF/GLB *documents* (the LOD-tier and spatial-tiling cases above), which has no dedicated glTF tooling and is implemented as ordinary application code that loads multiple `GLTFLoader`/`GltfDocument`/`GltfAssetPlugin` results (Section 10) and composes them into one scene graph at runtime. [Source](https://gltf-transform.dev/modules/functions/functions/partition)
+
+---
+
+## 12. AI-Generated and AI-Edited glTF
+
+AI involvement with glTF assets splits into two distinct capabilities, and conflating them leads to overestimating what a model can do with the format.
+
+**Generative 3D models producing GLB as output.** Text-to-3D and image-to-3D generative platforms (Meshy, Hyper3D Rodin, Tripo3D, and others surveyed in Chapter 205 §9–§11) do not reason about the glTF schema at all — they generate a mesh and PBR texture set through their own model architecture, then export the result as a GLB, treating glTF purely as a terminal delivery container rather than something the generation process understands. Chapter 205 covers this ecosystem, and its Blender MCP tool integrations (`generate_hyper3d_model_via_text`, `import_generated_asset`, and equivalents) in detail; it is not repeated here.
+
+**LLMs reading and editing the JSON manifest directly.** This is a categorically different capability from generation: because the glTF JSON manifest — `nodes`, `materials`, `KHR_materials_*` extension objects, animation channel/sampler definitions — is plain, human-readable text, a language model can inspect and edit it directly: renaming nodes, adjusting a material's `baseColorFactor` or `metallicFactor`, inserting or modifying a `KHR_materials_emissive_strength` extension object, restructuring the node hierarchy. What an LLM categorically cannot do is generate or usefully reason about the contents of the BIN chunk (or an external `.bin` file) — the packed binary vertex, index, and animation data referenced by `bufferView`/`accessor` objects (Section 3.1–3.2) is not text and is not tokenizable, so it falls outside what a language model can produce or meaningfully inspect. This is exactly why AI-assisted 3D pipelines route actual geometry creation through a DCC tool (Blender, driven via `execute_blender_code`) or a dedicated generative-mesh model, never through an LLM authoring raw GLB bytes — Chapter 205's MCP architecture (§2–§3) is built around this division: the AI edits scene state and JSON-shaped data through tool calls, while geometry itself always passes through Blender's own mesh data structures.
+
+**Validating AI-produced or AI-edited assets.** Neither generative pipelines nor manifest-editing LLMs reliably guarantee schema-valid output — a generative platform's exporter can emit non-conformant extension usage, and a manually-edited JSON manifest can leave a dangling `accessor`/`bufferView` reference or an out-of-range extension field. `gltf-validator` (already used in Chapter 205 §17's export pipeline) is the standard spec-conformance check run after either path, and `gltf-transform inspect` (Section 10.4) gives a complementary structural/asset-budget report — catching exactly the failure modes specific to AI-produced or AI-edited assets before they reach a game engine or Three.js scene. [Source](https://github.com/KhronosGroup/glTF-Validator)
+
+For the full generative-3D tool survey, the Blender MCP tool-calling architecture, and the validation pipeline's implementation, see Chapter 205 in full — this section deliberately stays at the glTF-format level rather than duplicating that chapter's tool-specific content.
+
+---
+
+## 13. glTF 3.0 Roadmap
 
 As of mid-2026, the glTF 3.0 specification is under active development by the Khronos 3D Formats Working Group. Key directions:
 
@@ -1496,13 +1549,13 @@ Note: The glTF 3.0 specification had not been finalised as of the writing of thi
 
 **Chapter 203 — WebXR**: Three.js's `WebXRManager` renders the `Object3D` scene graph produced by `GLTFLoader` (Section 10.5) directly into immersive VR/AR sessions; A-Frame's entity-component scene graph is itself built on the same Three.js `GLTFLoader`.
 
-**Chapter 205 — AI-Driven 3D Creation (Blender MCP)**: §17.6 of Chapter 205 covers the full `DRACOLoader`/`KTX2Loader`/meshopt companion-loader wiring code for `GLTFLoader`, plus the Blender `io_scene_gltf2` export parameters that determine what a Three.js scene receives; §17.7 covers the React Three Fiber (`@react-three/drei` `useGLTF`) wrapper around the same loader.
+**Chapter 205 — AI-Driven 3D Creation (Blender MCP)**: §17.6 of Chapter 205 covers the full `DRACOLoader`/`KTX2Loader`/meshopt companion-loader wiring code for `GLTFLoader`, plus the Blender `io_scene_gltf2` export parameters that determine what a Three.js scene receives; §17.7 covers the React Three Fiber (`@react-three/drei` `useGLTF`) wrapper around the same loader. §9–§11 survey the generative text/image-to-3D platforms (Meshy, Hyper3D Rodin, Tripo3D) discussed at the format level in Section 12; §17 covers the `gltf-validator`/`gltf-transform inspect` validation pipeline referenced there.
 
 **Chapter 60 — Block Compression and DCT**: The Draco geometry codec (`KHR_draco_mesh_compression`) uses connectivity-based entropy coding and attribute compression conceptually related to the DCT and entropy coding techniques in JPEG/video. Draco attribute compression for normals uses octahedral encoding similar to the oct-normal schemes used in GPU texture compression.
 
 **Chapter 63 — KTX2 and Basis Universal**: The `gltf-transform etc1s` and `gltf-transform uastc` commands transcode glTF textures to KTX2 containers with Basis Universal supercompression, as described in Chapter 63. The tinygltf image loading hook enables custom KTX2 decoding at asset load time.
 
-**Chapter 69 — OpenUSD and MaterialX**: The glTF 3.0 roadmap's MaterialX integration connects the two Khronos/AOUSD material description standards. OpenUSD already supports glTF import/export via USD plugins, and tools such as NVIDIA Omniverse's Asset Converter and Google's `usd_from_gltf` bridge the two formats, though no formal interchange specification standardises this conversion yet (Section 11). The `mdl_material` and `UsdShadeMaterial` schemas cover overlapping material semantics.
+**Chapter 69 — OpenUSD and MaterialX**: The glTF 3.0 roadmap's MaterialX integration connects the two Khronos/AOUSD material description standards. OpenUSD already supports glTF import/export via USD plugins, and tools such as NVIDIA Omniverse's Asset Converter and Google's `usd_from_gltf` bridge the two formats, though no formal interchange specification standardises this conversion yet (Section 13). The `mdl_material` and `UsdShadeMaterial` schemas cover overlapping material semantics.
 
 ---
 
@@ -1546,6 +1599,10 @@ Note: The glTF 3.0 specification had not been finalised as of the writing of thi
 36. google/usd_from_gltf — glTF/GLB to USDZ converter: https://github.com/google/usd_from_gltf
 37. Three.js GLTFLoader documentation: https://threejs.org/docs/#examples/en/loaders/GLTFLoader
 38. Three.js GLTFLoader.js source: https://github.com/mrdoob/three.js/blob/dev/examples/jsm/loaders/GLTFLoader.js
+39. glTF 2.0 Specification.adoc (binary chunk/length/streaming text): https://github.com/KhronosGroup/glTF/blob/main/specification/2.0/Specification.adoc
+40. gltf-transform partition() function reference: https://gltf-transform.dev/modules/functions/functions/partition
+41. gltf-asset-auditor — schema and default limits: https://github.com/KhronosGroup/gltf-asset-auditor/blob/main/README.md
+42. glTF-Validator — Khronos Group: https://github.com/KhronosGroup/glTF-Validator
 
 ## Roadmap
 
