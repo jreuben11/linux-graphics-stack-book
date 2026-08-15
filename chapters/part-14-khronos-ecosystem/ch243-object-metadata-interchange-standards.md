@@ -14,10 +14,11 @@ Chapter 64 covers glTF 2.0, the runtime-delivery standard for a *renderable scen
 - [4. Wikimedia Commons 3D and Wikidata — The Literal "Visual Wikipedia" Attempt](#4-wikimedia-commons-3d-and-wikidata--the-literal-visual-wikipedia-attempt)
 - [5. ML-Scale Shape Corpora: ShapeNet and Objaverse/Objaverse-XL](#5-ml-scale-shape-corpora-shapenet-and-objaverseobjaverse-xl)
 - [6. Digital Heritage: Smithsonian Voyager as a Working Encyclopedia-Style 3D Catalog](#6-digital-heritage-smithsonian-voyager-as-a-working-encyclopedia-style-3d-catalog)
-- [7. Electronics Part Catalogs: Octopart, Digi-Key, SnapEDA, and Ultra Librarian](#7-electronics-part-catalogs-octopart-digi-key-snapeda-and-ultra-librarian)
-- [8. Metadata Without Geometry: schema.org Product and GS1 GTIN/GDSN](#8-metadata-without-geometry-schemaorg-product-and-gs1-gtingdsn)
-- [9. Comparing the Landscape](#9-comparing-the-landscape)
-- [10. Integrations](#10-integrations)
+- [7. Commercial 3D Marketplaces: Sketchfab as the Mass-Market Baseline](#7-commercial-3d-marketplaces-sketchfab-as-the-mass-market-baseline)
+- [8. Electronics Part Catalogs: Octopart, Digi-Key, SnapEDA, and Ultra Librarian](#8-electronics-part-catalogs-octopart-digi-key-snapeda-and-ultra-librarian)
+- [9. Metadata Without Geometry: schema.org Product and GS1 GTIN/GDSN](#9-metadata-without-geometry-schemaorg-product-and-gs1-gtingdsn)
+- [10. Comparing the Landscape](#10-comparing-the-landscape)
+- [11. Integrations](#11-integrations)
 
 ---
 
@@ -103,7 +104,24 @@ Voyager is a suite of open-source tools rather than a single application: **Voya
 
 ---
 
-## 7. Electronics Part Catalogs: Octopart, Digi-Key, SnapEDA, and Ultra Librarian
+## 7. Commercial 3D Marketplaces: Sketchfab as the Mass-Market Baseline
+
+Every system covered so far trades off rigor and browsability at a relatively small scale — a few thousand curated Voyager artifacts, a few hundred thousand STL/glTF Commons uploads. **Sketchfab** is the opposite extreme on the browsability axis: a general-purpose commercial 3D marketplace, founded in Paris in 2012, that had grown to **8M+ hosted models, 25M+ registered users, and 6M+ unique monthly visitors** by the time of writing, dwarfing every other public catalog in this chapter by an order of magnitude or more. [Source](https://sketchfab.com/about) Epic Games acquired Sketchfab in July 2021 and cut its Store commission from 30% to 12%; [Source](https://www.epicgames.com/site/en-US/news/sketchfab-is-now-part-of-epic-games) Epic then sold both Sketchfab and ArtStation to KitBash (the KitBash3D/Greyscalegorilla group) on August 10, 2026, retaining only Fab as its own asset marketplace — a change recent enough at the time of writing that it is worth flagging explicitly rather than assuming "Epic-owned" remains accurate by the time this book is read. [Source](https://www.gamedeveloper.com/business/epics-sells-artstation-and-sketchfab-to-kitbash)
+
+Sketchfab is included in this chapter specifically because it is the **mass-market counterexample** to the rest of the survey: it has by far the best public browsability and the largest corpus, but close to the weakest metadata rigor and no subcomponent/assembly model at all — the inverse tradeoff from IFC or STEP.
+
+- **Upload and conversion pipeline.** Sketchfab accepts uploads in 50+ formats (OBJ, FBX, Collada, 3DS, Blender `.blend`, STL, VRML, USD, and glTF itself among them), with direct-export plugins for Blender, Maya, Cinema 4D, SketchUp, SolidWorks, and ZBrush. [Source](https://sketchfab.com/features) glTF/GLB is the platform's own recommended upload format, and Sketchfab converts whatever format is uploaded into glTF/GLB (and USDZ) for its download pipeline — the company has marketed itself as "the largest online repository of glTF files" since adding native glTF upload support in 2016 and a glTF-based Download API in 2018. [Source](https://www.khronos.org/blog/sketchfab-uses-gltf-to-bring-a-search-bar-to-the-world-of-3d) [Source](https://sketchfab.com/features/gltf) Note: needs verification — no primary source describes the specific rendering engine underlying Sketchfab's embedded WebGL viewer (whether Three.js-based or fully in-house); the feature page only advertises "no plugin required" cross-browser support.
+- **Metadata model.** The Data API (v3) exposes model-level fields — `uid`, `name`, `description`, `tags`, `categories`, `license`, `faceCount`, `vertexCount`, `isDownloadable` — all scoped to the whole model. [Source](https://sketchfab.com/developers/data-api/v3) No endpoint exposes per-node, per-mesh, or scene-graph metadata: unlike IFC's `IfcRelAggregates` (§2) or STEP's NAUO (§3), a Sketchfab listing carries exactly one license, one tag set, and one aggregate triangle count for the entire uploaded scene, however many named parts the underlying glTF or FBX hierarchy actually contains. Whatever compositional structure exists is invisible above the file format itself — Sketchfab solves discovery and browsability, not the "subcomponent metadata" half of this chapter's framing at all.
+- **Licensing.** The default is Sketchfab's own **Standard license** (commercial use and derivatives permitted with restrictions — no standalone resale, no use in logos/trademarks, attribution required "where technically feasible"), with a separate restrictive **Editorial license** for news/commentary use. [Source](https://sketchfab.com/licenses) For downloadable models, uploaders can instead opt into **Creative Commons** terms (CC BY, with optional NC/ND/SA modifiers), filterable in search; [Source](https://sketchfab.com/blogs/community/an-introduction-to-creative-commons-licenses/) a **CC0/public-domain** option is offered specifically to cultural-heritage institutions publishing 3D scans. [Source](https://sketchfab.com/blogs/community/sketchfab-launches-public-domain-dedication-for-3d-cultural-heritage/) Note: needs verification — no single Sketchfab page was found enumerating the complete current license list in one place; this is assembled from three separate license/blog pages.
+- **API surface.** Beyond the Data API, a **Download API** returns glTF/GLB/USDZ download links for authenticated requests, and a separate **Viewer API** plus oEmbed support cover embedding the interactive viewer in third-party pages. [Source](https://sketchfab.com/developers) [Source](https://sketchfab.com/developers/download-api/guidelines) This is the API surface the `ahujasid/blender-mcp` community server's `search_sketchfab_models`/`download_sketchfab_model` tools (Chapter 244, §3) call.
+- **Role as an ML training corpus.** The original **Objaverse** dataset (Allen Institute for AI, 2022) was built entirely from Sketchfab: "objects selected for Objaverse have a distributable Creative Commons license and were obtained using Sketchfab's public API," yielding roughly 818K CC-licensed objects. [Source](https://ar5iv.labs.arxiv.org/html/2212.08051) When AI2 scaled this up to **Objaverse-XL** (2023, §5) to more than 10M objects, Sketchfab's contribution stayed essentially fixed at the original ~800K (≈8% of the expanded total) — the tenfold growth came almost entirely from GitHub (~56%) and Thingiverse (~35%) instead. [Source](https://arxiv.org/html/2307.05663) Sketchfab was Objaverse's entire seed corpus and remains a meaningful but no-longer-dominant slice of Objaverse-XL.
+- **Embedding and VR.** Models embed via a configurable iframe or oEmbed, and the viewer advertises headset support (HTC Vive, Oculus/Meta Rift, Gear VR, Google Cardboard/Daydream) in its own marketing copy. Note: needs verification — that copy is phrased in legacy WebVR terms; WebVR was deprecated in browsers years ago in favor of WebXR, so the current implementation is very likely WebXR-based even though Sketchfab's public feature page has not updated the terminology. [Source](https://sketchfab.com/features)
+
+Set against the rest of this chapter, Sketchfab is the clearest illustration of the rigor-versus-browsability tradeoff stated in §1: it is the largest and most publicly browsable catalog surveyed here by a wide margin, yet it satisfies none of "explicit subcomponent model" the way IFC, STEP, or even Wikidata's P527/P361 graph (§4) attempt to, and its per-object metadata is closer to a media-sharing site's (title, tags, license) than a museum catalog's (Voyager, §6) or a manufacturing record's (STEP, §3).
+
+---
+
+## 8. Electronics Part Catalogs: Octopart, Digi-Key, SnapEDA, and Ultra Librarian
 
 Electronics distribution is the domain-specific example where "part metadata + CAD subcomponent model" is most thoroughly commercialized, though split across separate services rather than unified in one standard. **Octopart** aggregates distributor pricing, stock, and datasheet metadata across manufacturers and distributors, and integrates with **SnapEDA** (rebranded **SnapMagic Search**) for the CAD side of the same part records — schematic symbol, PCB footprint, and 3D step/CAD model — so that a single part search resolves to both commercial metadata (price, stock, lifecycle status) and design-ready CAD subcomponent geometry. [Digi-Key](https://www.digikey.com/) separately offers the same symbol/footprint/3D-model triad through a first-party integration with **Ultra Librarian**, covering roughly a million in-stock parts across more than twenty CAD tool export formats (KiCad, Altium, Eagle, OrCAD, and others). [Source](https://www.digikey.com/en/news/press-releases/2017/apr/digi-key-offers-free-ultra-librarian-symbols)
 
@@ -111,7 +129,7 @@ This cluster is worth including precisely because it demonstrates the "objects +
 
 ---
 
-## 8. Metadata Without Geometry: schema.org Product and GS1 GTIN/GDSN
+## 9. Metadata Without Geometry: schema.org Product and GS1 GTIN/GDSN
 
 The final cluster drops geometry entirely and solves only the metadata half of the problem, at internet e-commerce scale — worth including because it is the standard actually driving most of the world's "what is this physical product" structured data, even without a 3D model attached.
 
@@ -132,7 +150,7 @@ The `gtin*` identifiers trace back to [GS1](https://www.gs1.org/), the standards
 
 ---
 
-## 9. Comparing the Landscape
+## 10. Comparing the Landscape
 
 | Standard / System | Domain | Geometry | Metadata rigor | Subcomponent model | Publicly browsable |
 |---|---|---|---|---|---|
@@ -142,6 +160,7 @@ The `gtin*` identifiers trace back to [GS1](https://www.gs1.org/), the standards
 | ShapeNet / ShapeNetPart | ML research | Mesh + part segmentation labels | Medium — WordNet taxonomy | Segmentation labels, not a compositional graph | Yes (research download, not a browsing UI) |
 | Objaverse-XL | ML research | Mixed-quality mesh, 10M+ objects | Low — aggregated, per-source licensing | None | Yes (bulk download, not a browsing UI) |
 | Smithsonian Voyager | Cultural heritage | glTF 2.0 | High per-object (curatorial annotation) | Annotation-level, not a formal assembly schema | Yes |
+| Sketchfab | General / commercial marketplace | glTF 2.0 (converted on upload/download), 50+ source formats | Low — whole-model tags/license/description only | None (no per-node/subcomponent API) | Yes — largest catalog surveyed here (8M+ models) |
 | Octopart / Digi-Key / SnapEDA / Ultra Librarian | Electronics distribution | CAD symbol/footprint/3D model | High per-part (commercial metadata) | Shallow (part-level, not board/product hierarchy) | Yes |
 | schema.org Product + GS1 GTIN/GDSN | E-commerce | None | High (GDSN) / medium (schema.org baseline) | `hasPart`/`isPartOf`, metadata-only | Yes (as embedded page markup) |
 
@@ -149,12 +168,12 @@ No row satisfies every column — which is the structural answer to why no singl
 
 ---
 
-## 10. Integrations
+## 11. Integrations
 
-- **Chapter 64** (glTF 2.0 — The 3D Asset Pipeline Standard) — the runtime geometry format that Voyager (§6) and the Wikimedia Commons 3D prototype (§4) build their metadata layer on top of, and the target format IFC/STEP tooling (§2–§3) typically converts to for real-time visualization.
+- **Chapter 64** (glTF 2.0 — The 3D Asset Pipeline Standard) — the runtime geometry format that Voyager (§6) and the Wikimedia Commons 3D prototype (§4) build their metadata layer on top of, the format Sketchfab converts every upload into for viewing and download (§7), and the target format IFC/STEP tooling (§2–§3) typically converts to for real-time visualization.
 - **Chapter 176** (Open CASCADE Technology and CAD Kernels) — the open-source geometry kernel whose `STEPControl` reader/writer is the concrete Linux implementation of the STEP interchange described in §3.
 - **Chapter 42** (Blender GPU — Cycles and EEVEE) — Bonsai/BlenderBIM and IfcOpenShell (§2) make Blender a Linux-native IFC authoring and viewing environment.
-- **Chapter 244** (Blender AI and MCP) — generative and AI-assisted 3D asset pipelines increasingly draw training and reference data from the ML-scale corpora in §5.
+- **Chapter 244** (Blender AI and MCP) — generative and AI-assisted 3D asset pipelines increasingly draw training and reference data from the ML-scale corpora in §5, and the community MCP server's `search_sketchfab_models`/`download_sketchfab_model` tools (its §3) call the Sketchfab Data/Download API described in §7 of this chapter.
 - **Chapter 212** (Python 3D ML Libraries — Open3D, PyTorch3D, and Kaolin) — the tooling most commonly used to load and process ShapeNet and Objaverse/Objaverse-XL data (§5) for research and training workloads.
 - **Chapter 115** (NeRFStudio, Neural Radiance Fields, and 3D Gaussian Splatting) — photogrammetry-derived object scans of the kind Objaverse-XL aggregates (§5) are frequently produced by the same NeRF/splatting pipelines this chapter covers.
 - **Chapter 241** (GIMP, Krita, and darktable) — texture-authoring tooling relevant to preparing material maps for glTF/Voyager publication pipelines (§6).
