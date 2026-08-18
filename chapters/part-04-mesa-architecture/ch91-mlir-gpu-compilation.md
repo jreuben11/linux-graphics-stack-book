@@ -1267,6 +1267,8 @@ This chapter sits at the intersection of Mesa's compiler infrastructure and the 
 
 - **Chapter 88 — NPU and AI Accelerator Integration on Linux** (Part XX — planned): IREE as a compiler for NPU targets. The IREE HAL is designed to be extended with new target backends; an NPU HAL backend follows the same compilation pipeline described in Section 6 up to the HAL dialect.
 
+- **Chapter 246 — JAX and PyTorch Internals** (`chapters/part-20-ai-inference/ch246-jax-pytorch-internals.md`): Covers the front end that produces the HLO/StableHLO programs this chapter's §7 compiles — JAX's tracing of Python into jaxpr and its emission as StableHLO, and PyTorch/XLA's competing bridge into the same pipeline. Chapter 246 hands off to this chapter's §7 at the StableHLO boundary rather than restating the HLO/MHLO/CHLO ecosystem map here.
+
 ---
 
 ## References

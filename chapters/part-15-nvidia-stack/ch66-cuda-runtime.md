@@ -102,6 +102,7 @@ Sections 13–20 cover the major CUDA compute libraries that every ML and scient
 - Compiler options: **`--gpu-architecture`**, **`--use_fast_math`**, **`--maxrregcount`**, **`--device-c`**, **`--dlto`** (for LTO)
 - **CUDA 13.3** bundled header support (**`nvrtcInstallBundledHeaders()`**), enabling **Toolkit**-free deployment
 - **nvJitLink** (**`libnvJitLink.so`**) for link-time optimization across multiple separately-compiled **PTX** or **LTO IR** objects at runtime
+- Why device code cannot call NVRTC directly, why **Dynamic Parallelism** launches only already-compiled child kernels, the host round-trip required for a kernel to trigger compilation of genuinely new device code, and why true self-modifying kernels have no documented path in the public CUDA Toolkit
 
 **§6 — CUDA Graphs: Capturing and Replaying GPU Work**
 
@@ -867,6 +868,33 @@ cuModuleLoadData(&mod, cubin);
 [Source: nvJitLink 13.3 Documentation][11]
 
 OptiX 9 uses NVRTC as its kernel compilation path: shader programs are C++ source strings compiled via `nvrtcCreateProgram` to PTX, which OptiX then translates into `OptixModule` objects. See Ch67 for the OptiX-specific compilation pipeline.
+
+### 5.5 Can a Running Kernel Trigger Compilation of a New Kernel?
+
+A recurring question, given NVRTC's existence: can device code — a kernel already executing on the GPU — itself cause a *new* kernel to be compiled, rather than merely launching one that already exists? The answer is no, and the reason clarifies where the compilation/execution boundary actually sits in CUDA.
+
+**NVRTC is host-only.** `nvrtcCreateProgram`, `nvrtcCompileProgram`, and the rest of the API in Section 5.1 are ordinary CPU function calls linked against `libnvrtc.so`. There is no device-callable entry point into NVRTC, and the NVRTC documentation is explicit that it is a runtime compilation library invoked from host code that hands the resulting PTX to the Driver or Runtime API for loading — nothing in that pipeline executes on the GPU. [Source: NVIDIA NVRTC Documentation][9] A kernel body has no mechanism to call into it, the same way device code cannot call `malloc()` from glibc or `fork()`.
+
+**Dynamic Parallelism launches existing code, not new code.** CUDA Dynamic Parallelism (CDP) does let a kernel launch further kernels directly from device code — the familiar `child_kernel<<<grid, block>>>(args)` syntax works inside a `__global__` function, lowering to `cudaLaunchDevice`/`cudaGetParameterBuffer` calls against `libcudadevrt`, the CUDA device runtime library. But the child kernel must already exist as a compiled, linked device-code symbol at the time the parent kernel executes: the build requires separable compilation (`nvcc -rdc=true`) and linking against `cudadevrt`, which resolves the child's entry point ahead of time. CDP is "launch a kernel that is already part of this executable's device code from within another kernel," not "compile new source and launch it." [Source: NVIDIA CUDA Programming Guide — CUDA Dynamic Parallelism][25] [Source: NVIDIA Developer Blog — CUDA Dynamic Parallelism API and Principles][26]
+
+**The driver's own PTX→SASS JIT is also host-triggered.** `cuModuleLoadData`/`cuModuleLoadDataEx` (Section 1.3) invoke the driver's embedded JIT to translate PTX to SASS, but that call is made by a host thread loading a module into a context — never by device code reacting to something a kernel computed.
+
+**Consequence: any "compile what the kernel just decided it needs" workflow requires a host round-trip.** There is no path by which device code can synthesize new source, compile it, and execute the result without returning control to the CPU at least once. The practical pattern is:
+
+1. The kernel writes a compilation request (e.g., a specialization key, or generated source parameters) to pinned/mapped host memory, or signals completion via an event.
+2. The host observes the request — by polling mapped memory, via a `cudaStreamWaitEvent`-gated `cudaLaunchHostFunc` callback (Section 2.5), or simply after `cudaDeviceSynchronize()` — and calls `nvrtcCompileProgram` to build the new kernel.
+3. The host loads the result with `cuModuleLoadData`/`cuLibraryLoadData` and launches it, either directly from the host or, once the new kernel's entry point is resident in the device-code module table, as a CDP child launch from a subsequent device-side call.
+
+This is the same architectural split that governs the rest of the compilation pipeline in this chapter: PTX generation and PTX→SASS translation are both host- or driver-mediated operations (Sections 1.2–1.3, 1.5), and NVRTC does not change that — it only moves the *source*-to-PTX step from build time to application run time, still entirely on the CPU.
+
+The same reasoning rules out true **self-modifying kernels** — a kernel that rewrites its own or another module's already-loaded instruction stream and then executes the new bytes, without any host or driver involvement. This is a stronger claim than the NVRTC/CDP cases above: those are documented API boundaries (no device-callable entry point exists), whereas self-modifying code would additionally require an API letting device code write into the code segment of a loaded `CUmodule`/`CUlibrary` and some mechanism to invalidate the SMs' instruction cache so stale fetched instructions aren't served — and no such API is documented anywhere in the CUDA Toolkit. This exact question has been raised on the NVIDIA developer forums ("Is there a way to load Cubin/SASS directly to Code Memory from device memory?"), and it has drawn no substantive answer from NVIDIA staff — itself weak evidence that this is not a known, supported capability rather than an undocumented one. **Note: needs verification** — absence of a public API and an unanswered forum thread is not proof that the hardware architecturally forbids writable/executable code memory, only that no CUDA-level mechanism exposes it. Treat "no self-modifying kernels" as the practical answer for anything built on the public CUDA Toolkit, not a hardware-level guarantee. [Source: NVIDIA Developer Forums — Is there a way to load Cubin/SASS directly to Code Memory from device memory?][27]
+
+Dropping to raw **PTX** or hand-assembled **SASS** does not change this conclusion, because the restriction is not a CUDA C++ compiler limitation — it is an absence of the necessary instruction in either ISA.
+
+- **Inline PTX** (`asm`/`asm volatile` in a `.cu` source file) lets a kernel emit PTX instructions directly instead of having them generated from C++, but the result is compiled ahead of the kernel running by the same `ptxas`/driver-JIT path as any other kernel (Sections 1.5, 1.2). The PTX ISA is publicly specified: arithmetic/logic instructions, memory operations across the defined state spaces (`.global`, `.shared`, `.local`, `.const`, `.param`, `.tex`), control flow (`bra`, `call`, `ret`, and `brx.idx` for a computed multiway branch among statically known, pre-compiled targets), barriers, and atomics. No opcode writes into a module's code segment, and none invalidates an instruction cache — there is nothing in PTX analogous to the explicit cache-maintenance instructions (e.g., ARM's `IC IVAU`/`DC CVAU`) that a CPU JIT needs to make self-modifying code visible to the fetch unit. [Source: NVIDIA PTX ISA Reference][28]
+- **Hand-patched SASS**, via unofficial reverse-engineered tools such as `CuAssembler`/`cuasm` (NVIDIA ships no official SASS assembler), doesn't add a new capability either — those tools patch a `.cubin` *offline*, and the patched binary is still loaded through the same host-side `cuModuleLoadData` call as compiler output. This gives finer control over register allocation and instruction scheduling than `ptxas` produces, not a device-side code-write primitive. [Source: cloudcores/CuAssembler][29]
+
+Because NVIDIA has never published a SASS ISA reference, the claim that no such write-and-invalidate instruction exists rests on absence of evidence from years of public reverse-engineering (envytools, `nvdisasm` output, `CuAssembler`'s opcode tables) rather than a documented specification — flagged here, again, as **needs verification** rather than a proven negative. The practical conclusion stands: going lower-level changes who authors the instruction stream, not what instructions the hardware exposes.
 
 ---
 
@@ -2670,6 +2698,8 @@ AMD's **rocSOLVER** ([github.com/ROCm/rocSOLVER](https://github.com/ROCm/rocSOLV
 
 **Ch68 — DLSS 4 and Neural Rendering**: Gaussian Splatting training and inference run on the CUDA compute model (streams, events, managed memory) described in this chapter. The NGX SDK evaluates DLSS features as CUDA kernel dispatches managed through the Runtime API. See Ch68 for the NGX API surface.
 
+**Ch246 — JAX and PyTorch Internals**: Both frameworks' compiled paths (TorchInductor-generated Triton kernels, XLA-emitted device code) bottom out through the CUDA driver's JIT stage described in Section 5 (NVRTC, PTX, `ptxas`) on the way to SASS. Ch246 covers the compiler front ends that produce the PTX/kernel code this chapter's runtime and compilation model actually executes; CUDA Graphs (Section 6) also directly parallel the CUDA-Graph capture PyTorch uses to reduce eager-mode dispatch overhead, discussed in Ch246 §5.2.
+
 ---
 
 ## References
@@ -2721,6 +2751,16 @@ AMD's **rocSOLVER** ([github.com/ROCm/rocSOLVER](https://github.com/ROCm/rocSOLV
 23. CUDA Context-Independent Module Loading (NVIDIA Technical Blog): https://developer.nvidia.com/blog/cuda-context-independent-module-loading/
 
 24. nebuly-ai/nos — GPU partitioning modes comparison (MPS vs MIG): https://nebuly-ai.github.io/nos/dynamic-gpu-partitioning/partitioning-modes-comparison/
+
+25. NVIDIA CUDA Programming Guide — CUDA Dynamic Parallelism: https://docs.nvidia.com/cuda/cuda-programming-guide/07-application-domains/dynamic-parallelism.html
+
+26. NVIDIA Developer Blog — CUDA Dynamic Parallelism API and Principles: https://developer.nvidia.com/blog/cuda-dynamic-parallelism-api-principles/
+
+27. NVIDIA Developer Forums — Is there a way to load Cubin/SASS directly to Code Memory from device memory?: https://forums.developer.nvidia.com/t/is-there-a-way-to-load-cubin-sass-directly-to-code-memory-from-device-memory/307964
+
+28. NVIDIA PTX ISA Reference: https://docs.nvidia.com/cuda/parallel-thread-execution/index.html
+
+29. cloudcores/CuAssembler — unofficial CUDA SASS assembler: https://github.com/cloudcores/CuAssembler
 
 ## Roadmap
 

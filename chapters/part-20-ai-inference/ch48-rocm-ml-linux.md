@@ -1242,6 +1242,8 @@ This chapter connects to several other parts of the book:
 
 **Ch55 (GPU Containers):** The `/dev/kfd` and `/dev/dri/renderD*` device passthrough pattern described in this chapter is part of the broader GPU container story in Ch55, which covers `nvidia-container-toolkit` for CUDA workloads alongside the ROCm device plugin approach presented here.
 
+**Ch245 (The JAX Ecosystem) and Ch246 (JAX and PyTorch Internals):** This chapter's `jax[rocm]` install path and ROCm hardware/library coverage are the AMD-specific detail that Ch245 §12 and Ch246 point back to rather than restate. XLA's AMD backend and Triton-ROCm, both discussed at the compiler-pipeline level in Ch246, ultimately compile down to the same MIOpen/hipBLASLt/RCCL library stack and `amdkfd` submission path documented in this chapter.
+
 ## Roadmap
 
 ### Near-term (6–12 months)

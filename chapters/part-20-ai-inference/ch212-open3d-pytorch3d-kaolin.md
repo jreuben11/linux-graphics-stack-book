@@ -2053,6 +2053,11 @@ only officially supported option.
   and WebRTC visualisation — is built on the Filament physically-based renderer. The
   material system and IBL lighting in Open3D's visualiser are Filament's PBR pipeline
   accessed through the Open3D C++ bindings.
+- **Chapter 246 (JAX and PyTorch Internals)**: PyTorch3D's differentiable rasterizer
+  (§2) and Kaolin's autodiff-based ray queries (§7, via Warp) both rely on PyTorch's
+  autograd engine and dispatcher, covered at the mechanism level in ch246 §3 and §5;
+  `torch.compile`-driven speedups for PyTorch3D training loops depend on the
+  TorchDynamo/TorchInductor pipeline described in ch246 §1 and §4.
 
 ## Roadmap
 
