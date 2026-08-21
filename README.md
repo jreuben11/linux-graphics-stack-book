@@ -173,6 +173,9 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 165: Vulkan Video: Hardware Decode and Encode via the Vulkan API](chapters/part-07a-gpu-apis/ch165-vulkan-video.md)
 - [Ch 173: VK_EXT_shader_object — Pipeline-Free Shader Binding in Vulkan](chapters/part-07a-gpu-apis/ch173-vk-ext-shader-object.md)
 - [Ch 192: GPU-Generated Commands — VK_EXT_device_generated_commands and Work Graphs](chapters/part-07a-gpu-apis/ch192-vk-ext-device-generated-commands.md)
+- [Ch 200: Vulkan Memory Allocation and Resource Management](chapters/part-07a-gpu-apis/ch200-vulkan-memory-allocation.md)
+- [Ch 201: Vulkan Debugging, Validation, and Profiling](chapters/part-07a-gpu-apis/ch201-vulkan-debugging-validation-profiling.md)
+- [Ch 202: Vulkan WSI Deep Dive](chapters/part-07a-gpu-apis/ch202-vulkan-wsi-deep-dive.md)
 
 ---
 
@@ -193,6 +196,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 209: OpenSLAM — Classical and Graph-Based SLAM on the Linux Stack](chapters/part-07b-multimedia-frameworks/ch209-openslam.md)
 - [Ch 210: SLAM Theory and State of the Art](chapters/part-07b-multimedia-frameworks/ch210-slam-theory-sota.md)
 - [Ch 211: ROS 2 Multimodal Sensor and Perception Pipeline](chapters/part-07b-multimedia-frameworks/ch211-ros2-sensor-perception-pipeline.md)
+- [Ch 211a: Robotics Simulation Engines — MuJoCo, Gazebo, and the Linux GPU Stack](chapters/part-07b-multimedia-frameworks/ch211a-robotics-simulation-mujoco-gazebo.md)
 - [Ch 211b: NVIDIA Isaac Sim, Isaac Lab, and the GR00T Foundation-Model Family](chapters/part-07b-multimedia-frameworks/ch211b-isaac-sim-isaac-lab-groot.md)
 
 ---
@@ -404,6 +408,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 87: Android AR: ARCore Architecture, Camera HAL Integration, and the Android XR Platform](chapters/part-19-android-graphics/ch87-android-ar-arcore.md)
 - [Ch 161: Android Game Development Kit (AGDK) — Native Game Architecture, Input, Audio, and Frame Pacing](chapters/part-19-android-graphics/ch161-android-game-development-kit.md)
 - [Ch 164: Android Runtime and Native Interop — ART, JNI, and the NDK](chapters/part-19-android-graphics/ch164-android-runtime-native-interop.md)
+- [Ch 166: Android XR: Jetpack XR SDK, OpenXR Platform Contracts, and Spatial Extensions](chapters/part-19-android-graphics/ch166-android-xr-expanded.md)
 - [Ch 191: LiteRT and MediaPipe](chapters/part-19-android-graphics/ch191-litert-mediapipe.md)
 
 ---
@@ -665,6 +670,9 @@ chapters/
     ch165-vulkan-video.md
     ch173-vk-ext-shader-object.md
     ch192-vk-ext-device-generated-commands.md
+    ch200-vulkan-memory-allocation.md
+    ch201-vulkan-debugging-validation-profiling.md
+    ch202-vulkan-wsi-deep-dive.md
   part-07b-multimedia-frameworks/
     ch38-pipewire.md
     ch38b-alsa-linux-audio-subsystem.md
@@ -677,6 +685,7 @@ chapters/
     ch209-openslam.md
     ch210-slam-theory-sota.md
     ch211-ros2-sensor-perception-pipeline.md
+    ch211a-robotics-simulation-mujoco-gazebo.md
     ch211b-isaac-sim-isaac-lab-groot.md
   part-07c-desktop-frameworks/
     ch39a-qt6.md
@@ -797,6 +806,7 @@ chapters/
     ch87-android-ar-arcore.md
     ch161-android-game-development-kit.md
     ch164-android-runtime-native-interop.md
+    ch166-android-xr-expanded.md
     ch191-litert-mediapipe.md
   part-20-ai-inference/
     ch48-rocm-ml-linux.md

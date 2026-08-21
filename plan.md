@@ -907,7 +907,7 @@ This chapter covers the wave of staging protocols that reached compositor implem
 
 ### Chapter 211a: Robotics Simulation Engines — MuJoCo, Gazebo, and the Linux GPU Stack *(Part VII-B)*
 
-*(Note: outline only — chapter text not yet written. Verify all version numbers, dates, and API names against current upstream before drafting, per this book's accuracy standard.)*
+*(Delivered chapter note: chapter text has been written as `ch211a-robotics-simulation-mujoco-gazebo.md`. Research nuanced the outline's blanket "no first-party ROS 2 bridge" claim for MuJoCo — a community `mujoco_ros2_control` package is maintained under the official `ros-controls` GitHub org, just not by DeepMind/the MuJoCo team itself — and pinned Gazebo Classic's EOL to 2025-01-31 per Open Robotics' own announcement.)*
 
 - Scope and boundary with Ch69/Ch240: NVIDIA Isaac Sim (PhysX + Omniverse/USD + RTX rendering) is documented in depth in Ch69 and Ch240 and is cross-referenced here, not re-derived; this chapter's original contribution is the two general-purpose, vendor-neutral simulators — MuJoCo and Gazebo — and how each maps physics and rendering onto the Linux graphics stack
 - MuJoCo: origin (Roboti LLC / Emo Todorov), acquisition and open-sourcing under Apache 2.0 by DeepMind/Google in 2021; MJCF XML model format vs. URDF; soft-constraint contact model as MuJoCo's defining departure from hard-constraint rigid-body solvers (contrast with Ch210 §50's sequential-impulse GPU solver)
@@ -1887,13 +1887,15 @@ Parts II–III covered the open NVIDIA kernel driver ecosystem (Nouveau, Nova, N
 
 ### Chapter 166: Android AR: ARCore Architecture, Camera HAL Integration, and Android XR (expanded)
 
+*(Delivered chapter note: chapter text has been written as `ch166-android-xr-expanded.md`. Research corrected two API names below that do not exist in the shipping specs — `XrSwapchainImageAndroidKHR` was never a real struct (the actual mechanism is `xrCreateSwapchainAndroidSurfaceKHR` via `XR_KHR_android_surface_swapchain`, a Surface-backed swapchain model rather than per-image enumeration) and `VK_EXT_plane_detection` is not a Vulkan extension at all — plane detection is purely OpenXR-side (`XR_EXT_plane_detection`, since superseded by `XR_EXT_spatial_plane_tracking`/`XR_EXT_spatial_entity`). Both corrections are documented in the delivered chapter with citations.)*
+
 - Expanded companion to Chapter 87 covering the Android XR era
 - Android XR platform: Samsung Galaxy XR / Project Moohan; Jetpack XR SDK (`androidx.xr`): `Session.create()`, `Entity`, `PanelEntity`, `GltfModelEntity`, `SpatialCapabilities`
-- OpenXR on Android: `XR_KHR_android_create_instance`, `XrSwapchainImageAndroidKHR`; ARCore's embedded OpenXR loader; how ARCore implements the OpenXR runtime contract on Android phones vs. headsets
+- OpenXR on Android: `XR_KHR_android_create_instance`, `xrCreateSwapchainAndroidSurfaceKHR` (`XR_KHR_android_surface_swapchain`); ARCore's embedded OpenXR loader; how ARCore implements the OpenXR runtime contract on Android phones vs. headsets
 - Qualcomm Snapdragon Spaces XDK: Snapdragon Spaces OpenXR profile, hand tracking extensions, passthrough API
 - Monado OpenXR runtime as forward reference: the open-source alternative for Linux AR/VR development
 - Deeper Vulkan camera import: `VK_ANDROID_external_memory_android_hardware_buffer`, `VkSamplerYcbcrConversion`, `VkExternalFormatANDROID` for camera YUV
-- `VK_EXT_plane_detection` for spatial plane query via Vulkan
+- `XR_EXT_plane_detection`/`XR_EXT_spatial_plane_tracking` for spatial plane query via OpenXR (not a Vulkan extension)
 - Environmental HDR spherical harmonic light estimation API deep dive
 - **Integrations**: Ch87, Ch27 (OpenXR session model on Linux/Monado), Ch86 (Vulkan Android extensions), Ch85 (SurfaceFlinger swapchain)
 
@@ -3366,6 +3368,8 @@ Entries are generated from the chapter content and sorted by chapter number with
 
 ### Chapter 200: Vulkan Memory Allocation and Resource Management *(Part VII-A — GPU APIs)*
 
+*(Delivered chapter note: chapter text has been written as `ch200-vulkan-memory-allocation.md`, with RADV/ANV/NVK driver-internals citations pinned to a specific Mesa `main` commit.)*
+
 - `VkPhysicalDeviceMemoryProperties`: memory types (device-local, host-visible, host-coherent, host-cached, lazily-allocated) and heaps; `vkGetPhysicalDeviceMemoryProperties2`; `VK_EXT_memory_budget` heap budget/usage queries for adaptive pressure response
 - `VkDeviceMemory` allocation: `vkAllocateMemory`, `VkMemoryAllocateInfo`, `VkMemoryDedicatedAllocateInfo` (image/buffer dedicated allocation avoids aliasing limitations); `maxMemoryAllocationCount` per-device limit and practical suballocation requirement
 - Memory binding: `vkBindBufferMemory2` / `vkBindImageMemory2` with `VkBindBufferMemoryInfo` array; alignment requirements from `VkMemoryRequirements2`; `VkBindImagePlaneMemoryInfo` for multi-planar YCbCr images
@@ -3381,13 +3385,15 @@ Entries are generated from the chapter content and sorted by chapter number with
 
 ### Chapter 201: Vulkan Debugging, Validation, and Profiling *(Part VII-A — GPU APIs)*
 
+*(Delivered chapter note: chapter text has been written as `ch201-vulkan-debugging-validation-profiling.md`. Research corrected the RenderDoc capture-API naming below — the real `renderdoc_app.h` functions are `StartFrameCapture`/`EndFrameCapture`, with no `vk` prefix, since the API is graphics-API-agnostic.)*
+
 - `VK_LAYER_KHRONOS_validation`: activation via `VK_INSTANCE_LAYERS`; `VkLayerSettingsCreateInfoEXT` for fine-grained sub-feature control; sub-layers: core validation (object lifetime, handle validity), thread safety, stateless parameter, best practices, synchronization validation, GPU-Assisted Validation, debug printf
 - Best Practices sub-layer: `VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT` warnings for pipeline misuse (creating pipelines inside render passes, redundant clears, unnecessary layout transitions, non-optimal image layouts); vendor-specific guidance surfaced per RADV/ANV/NVK driver
 - Synchronization Validation (`VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT`): detects read-after-write and write-after-write hazards at command buffer level; reports missing `VkImageMemoryBarrier2` and incorrect `srcStageMask`/`dstStageMask`; complements but does not replace Ch148's reference
 - GPU-Assisted Validation: instruments SPIR-V at vkCreateShaderModule time with bounds-check opcodes; requires `VK_KHR_buffer_device_address`; catches out-of-bounds descriptor indexing, uninitialized descriptor reads; overhead ~5–30% GPU time
 - **`VK_EXT_debug_utils`**: `vkSetDebugUtilsObjectNameEXT` names every `VkImage`/`VkBuffer`/`VkPipeline` for readable validation output and profiler labels; `vkCmdBeginDebugUtilsLabelEXT`/`vkCmdEndDebugUtilsLabelEXT` for GPU breadcrumbs; `vkCreateDebugUtilsMessengerEXT` callback with `messageSeverity` × `messageType` filter matrix
 - **`VK_EXT_device_fault`**: `vkGetDeviceFaultInfoEXT` post-hang diagnostic; `VkDeviceFaultVendorInfoEXT` array with fault type, index, and VA; GPU crash breadcrumbs via debug labels; AMD-specific UVM fault register decoding; use with `VK_EXT_device_address_binding_report` for VA identification
-- **RenderDoc** (open-source frame capture): overlay injection vs explicit `vkStartFrameCapture`/`vkEndFrameCapture` API; event list with every draw/dispatch/copy; resource inspector (live texture preview, buffer hex, descriptor set contents); pipeline state inspector (vertex input, VS/PS source, blend state); GPU counter integration (ARM, AMD RGP bridge, NVIDIA Nsight SDK); remote capture via `renderdoccmd remoteserver`; source at `renderdoc/driver/vulkan/vk_core.cpp`
+- **RenderDoc** (open-source frame capture): overlay injection vs explicit `StartFrameCapture`/`EndFrameCapture` API (graphics-API-agnostic, no `vk` prefix); event list with every draw/dispatch/copy; resource inspector (live texture preview, buffer hex, descriptor set contents); pipeline state inspector (vertex input, VS/PS source, blend state); GPU counter integration (ARM, AMD RGP bridge, NVIDIA Nsight SDK); remote capture via `renderdoccmd remoteserver`; source at `renderdoc/driver/vulkan/vk_core.cpp`
 - **AMD Radeon GPU Profiler (RGP)**: captures GPU timeline via SQTT (Shader Queue Thread Trace); wave occupancy and SIMD utilization per pipeline stage; barrier stall visualization; `VK_AMD_shader_info` counter queries; `.rgp` file format for offline analysis
 - **Intel Graphics Performance Analyzer (GPA)**: Xe EU thread occupancy, L3 cache hit rate, sampler throughput; frame analyzer event-level GPU metrics; Xe2 PMU counter access
 - **NVIDIA Nsight Graphics**: GLSL/SPIRV shader debugger with source-line stepping on RTX hardware; range profiler with NV-specific counter sets; memory access pattern heat maps; Shader Profiler with per-ISA instruction throughput; `VK_NV_device_diagnostics_config` for GPU crash dump
@@ -3398,6 +3404,8 @@ Entries are generated from the chapter content and sorted by chapter number with
 
 
 ### Chapter 202: Vulkan WSI Deep Dive *(Part VII-A — GPU APIs)*
+
+*(Delivered chapter note: chapter text has been written as `ch202-vulkan-wsi-deep-dive.md`. Research corrected two points below: `VK_EXT_present_timing`'s Mesa 26.1 landing was Wayland-only — X11/XWayland support landed separately in Mesa 26.2.0 (2026-08-05); and the outline's Mesa file-path claim was wrong — `VK_KHR_display`/`VK_EXT_acquire_drm_display` live in `wsi_common_display.c`, not `wsi_common_drm.c`, which is shared DMA-BUF/explicit-sync plumbing for the Wayland/X11 backends.)*
 
 - WSI abstraction overview: `VK_KHR_surface` as the platform-agnostic surface type; `vkGetPhysicalDeviceSurfaceCapabilitiesKHR`, `vkGetPhysicalDeviceSurfaceFormatsKHR`, `vkGetPhysicalDeviceSurfacePresentModesKHR`; surface querying before swapchain creation
 - **Wayland WSI path**: `VK_KHR_wayland_surface`; `VkWaylandSurfaceCreateInfoKHR` wrapping `wl_display`/`wl_surface`; Mesa `wsi_common_wayland.c` implements the swapchain; linux-dmabuf modifier negotiation via `zwp_linux_dmabuf_v1` feedback; DMA-BUF export → compositor import → `drmModeAtomicCommit`; explicit sync via `wp_linux_drm_syncobj_v1` on acquire/present fences
