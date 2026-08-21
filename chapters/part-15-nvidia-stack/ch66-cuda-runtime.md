@@ -32,8 +32,9 @@
 18. [NCCL: GPU Collective Communications](#18-nccl-gpu-collective-communications)
 19. [cuRAND: GPU Random Number Generation](#19-curand-gpu-random-number-generation)
 20. [cuSolver: GPU Linear Solvers](#20-cusolver-gpu-linear-solvers)
-21. [Integrations](#integrations)
-22. [References](#references)
+21. [Compute Capability Ceiling: RTX 4090 vs. Rubin (R100)](#21-compute-capability-ceiling-rtx-4090-vs-rubin-r100)
+22. [Integrations](#integrations)
+23. [References](#references)
 
 ---
 
@@ -2680,6 +2681,75 @@ AMD's **rocSOLVER** ([github.com/ROCm/rocSOLVER](https://github.com/ROCm/rocSOLV
 
 ---
 
+## 21. Compute Capability Ceiling: RTX 4090 vs. Rubin (R100)
+
+An RTX 4090 is not merely a smaller GPU than a Rubin R100 — it is running a strictly earlier CUDA **ISA generation**. Every prior section of this chapter has been agnostic to which physical card is underneath: streams, events, the memory model, NVRTC, and CUDA Graphs all work the same way (modulo timing) whether the device has 24GB or 288GB of memory. This section is about the opposite case — CUDA APIs, PTX instructions, and library data types that the driver and compiler refuse to expose at all below a given **compute capability**, no matter how much VRAM, how many SMs, or how much memory bandwidth the card has.
+
+The RTX 4090 is Ada Lovelace, **compute capability 8.9** (`sm_89`). NVIDIA's compute-capability appendix is the authoritative feature-gating table: it lists, per architecture generation, which instructions, launch APIs, and hardware units are compiled and dispatched at all [Source: NVIDIA CUDA Programming Guide — Compute Capabilities][30]. Hopper (compute capability 9.0, `sm_90`) and Blackwell (compute capability 10.0/10.3 datacenter `sm_100`/`sm_103`, 12.0/12.1 consumer `sm_120`/`sm_121`) each added instructions and launch-model features that simply do not exist for `sm_89` — code that uses them either fails `nvcc`/`ptxas` compilation when targeting Ada, or the corresponding runtime API call returns `cudaErrorNotSupported` at launch time on Ada hardware.
+
+**Rubin's own compute capability has not been published.** As of CUDA Toolkit 13.3 Update 1, the newest documented targets remain the Blackwell family — `sm_100`, `sm_103`, `sm_120`, `sm_121` [Source: NVIDIA CUDA Toolkit 13.3 Release Notes][10]. NVIDIA's Rubin platform messaging is explicit that existing Blackwell-targeted binaries and libraries (CUDA, Transformer Engine, cuDNN, NCCL) are validated to run on the Vera Rubin platform without modification, which is a floor, not a ceiling, on what Rubin exposes [Source: NVIDIA Technical Blog — Inside the NVIDIA Vera Rubin Platform][39]. Given that guarantee, everything gated at compute capability 9.0 or 10.0 below — none of which RTX 4090 can reach — is available on a Rubin R100 by inheritance, whatever Rubin's own `sm_` number turns out to be. §21.9 lists what remains genuinely unconfirmed about Rubin specifically, rather than assuming beyond that floor.
+
+### 21.1 Thread Block Clusters and Distributed Shared Memory (CC ≥ 9.0)
+
+From compute capability 9.0 onward, the CUDA programming model adds an optional hierarchy level above the thread block: the **thread block cluster**. Blocks within a cluster are guaranteed co-scheduled on the same GPU Processing Cluster (GPC) and can read, write, and perform atomics directly on each other's shared memory — **Distributed Shared Memory (DSMEM)** — without going through global memory [Source: NVIDIA CUDA Programming Guide — Programming Model][31]. A cluster is declared either with the `__cluster_dims__(X,Y,Z)` compile-time attribute or via `cudaLaunchKernelEx` with a `cudaLaunchAttributeClusterDimension` attribute; the portable maximum is 8 blocks per cluster.
+
+```cuda
+// file: cluster_launch.cu — compiles and launches only on CC >= 9.0
+__global__ void __cluster_dims__(2, 1, 1) clustered_kernel(float *data) {
+    namespace cg = cooperative_groups;
+    cg::cluster_group cluster = cg::this_cluster();
+    unsigned rank = cluster.block_rank();
+    // Distributed shared memory: read a neighbor block's shared array directly
+    float *neighbor_shared = cluster.map_shared_rank(shared_buf, rank ^ 1);
+    cluster.sync();
+}
+```
+
+On Ada (`sm_89`), `nvcc` targeting `sm_89` rejects `__cluster_dims__` and `cudaLaunchAttributeClusterDimension` outright — clusters are not a resource RTX 4090 lacks enough SMs for, they are a launch-model feature the GPC scheduling hardware and driver do not implement below CC 9.0.
+
+### 21.2 Tensor Memory Accelerator (TMA) (CC ≥ 9.0)
+
+Hopper introduces the **Tensor Memory Accelerator**, a dedicated copy engine that moves multi-dimensional tiles between global and shared memory using a compact tensor-map descriptor (`cuTensorMapEncodeTiled`) and the `cp.async.bulk.tensor` PTX instruction, issued once per warp-group rather than per-thread. `ptxas --gpu-name=sm_90a` is required to enable TMA and `wgmma` together — `sm_90` alone does not (this chapter's §1.5 already notes the `a`-suffix requirement). Ada's async-copy path is limited to Ampere-era `cp.async`: a linear, per-thread global-to-shared copy with no descriptor, no multi-dimensional tiling, and no dedicated hardware queue. This is why CUTLASS and cuda-tile (§11, §15) select `wgmma.mma_async`+TMA on Hopper-and-later targets and fall back to `wmma`/`cp.async` on Ampere/Ada — not a performance tuning choice but a hard target-architecture branch.
+
+### 21.3 Warp-Group and Tensor-Memory MMA: `wgmma` → `tcgen05` (CC ≥ 9.0; `tcgen05` restricted to CC 10.0 datacenter)
+
+Ada's tensor cores are programmed with `mma.sync`/`wmma`: every participating warp issues its own instruction. Hopper replaces this with `wgmma.mma_async`, issued once per warp-group (128 threads) against operands staged via TMA. Blackwell's datacenter parts go further with the 5th-generation **`tcgen05`** instruction family (PTX ISA 8.4+), which targets **compute capability 10.0 only** and reads/writes its accumulator in a new dedicated on-chip address space, **Tensor Memory (`tmem`)**, issued once per CTA rather than per warp-group, at 2–4× `wgmma`'s throughput depending on data type [Source: NVIDIA CUTLASS Documentation — tcgen05 MMA Programming Guide][34].
+
+Critically, `tcgen05`/Tensor Memory is **absent even from consumer Blackwell** (compute capability 12.0/12.1, e.g. RTX 5090) — SM12x has neither the `tcgen05` instruction nor the `tmem` address space that SM100 requires [Source: NVIDIA CUTLASS Documentation — Blackwell SM100 GEMMs][35]. This is the cleanest illustration in the whole CUDA stack that NVIDIA gates API surface by **product tier**, not purely by architecture generation: two GPUs sharing the "Blackwell" marketing name and taped out on the same process can have different compute capabilities and different PTX ISA support. RTX 4090 has neither `wgmma` (CC 9.0) nor `tcgen05` (CC 10.0, datacenter-only); a Rubin R100, as a datacenter successor to B200/GB200, is understood to carry `tcgen05`-class tensor-memory MMA forward at minimum, per the Blackwell-compatibility floor described above — see §21.9 for what is not yet confirmed about anything Rubin adds beyond it.
+
+### 21.4 Programmatic Dependent Launch (CC ≥ 9.0)
+
+**Programmatic Dependent Launch (PDL)** lets a secondary kernel begin executing before a primary kernel in the same stream has finished, launching the secondary kernel's grid and hardware resources early so it can do independent work while waiting on `cudaGridDependencySynchronize()` for the primary kernel's results. It requires `cudaLaunchAttributeProgrammaticStreamSerialization` at launch and `cudaTriggerProgrammaticLaunchCompletion()` inside the primary kernel, and is available starting at compute capability 9.0 [Source: NVIDIA CUDA Programming Guide — 4.5 Programmatic Dependent Launch and Synchronization][33]. On RTX 4090, kernel-to-kernel overlap is limited to the stream/event-level concurrency already covered in §2–§3 of this chapter — independent streams can overlap, but there is no mechanism for a *dependent* kernel to begin executing before its predecessor completes. The API is not merely unoptimized on Ada; `cudaLaunchAttributeProgrammaticStreamSerialization` is rejected at launch on `sm_89`.
+
+### 21.5 Native DPX Instructions (CC ≥ 9.0)
+
+Hopper adds native instructions for three-operand min/max, min/max-with-predicate, and fused add-with-min/max over signed/unsigned 32-bit int, 16-bit short2, and half2 types — collectively **DPX**, intended for dynamic-programming algorithms such as Smith-Waterman sequence alignment, Floyd-Warshall shortest paths, and DP-based robotics planners. 16-bit DPX instructions sustain 128 operations/cycle/SM on Hopper [Source: NVIDIA Hopper Tuning Guide][32]. Ampere and Ada have none of this in hardware; the equivalent three-way min/max is synthesized from multiple ordinary compare/select instructions, at correspondingly lower throughput for DP-heavy kernels — not because RTX 4090's ALUs are weaker per-instruction, but because the fused instruction itself does not exist in Ada's SASS ISA.
+
+### 21.6 5th-Generation Tensor Core Native Data Types: FP4 / FP6 (CC = 10.0, datacenter Blackwell)
+
+Ada's 4th-generation tensor cores do have native FP8 (E4M3/E5M2) support — RTX 4090 was the first consumer card to ship it, so FP8 is *not* an Ada-vs-later gap. What Ada lacks are the narrower formats compute capability 10.0 introduces: **NVFP4** (`CUDA_R_4F_E2M1`) and **FP6** (E2M3/E3M2) tensor-core MMA data types, consumed directly by `tcgen05` from Tensor Memory. cuBLASLt, cuDNN, and CUTLASS simply reject these data-type enums when targeting `sm_89` — `cublasLtMatmulDescSetAttribute` returns an unsupported-type error regardless of available SM count or memory headroom, because the multiply-accumulate hardware paths for 4-bit and 6-bit operands do not exist below CC 10.0.
+
+### 21.7 MIG: Product-Tier Gate, Not a Compute-Capability Gate
+
+§7.4 of this chapter already documents that **MIG** (Multi-Instance GPU) is restricted by NVIDIA to specific datacenter SKUs — Ampere A100/A30, Hopper H100/H200, Blackwell B200-class parts. It is worth calling out explicitly here because it is the cleanest "API-limited, not resource-limited" case in this entire list: RTX 4090 is Ada, the same architecture generation as several workstation cards, yet `nvidia-smi -i 0 --mig-enable` fails immediately on a GeForce die with no such thing as a partial MIG mode — not because the card lacks SMs or memory to partition, but because GeForce dies are not fused with the GPU-Instance/Compute-Instance partitioning hardware at all. This is a product-segmentation gate rather than a `sm_` version gate — it would remain absent from a hypothetical "GeForce RTX using Rubin's compute capability," and it is expected to remain present on the datacenter Rubin R100 as it has on every datacenter part since A100.
+
+### 21.8 NVLink Multicast and Confidential Computing (CC ≥ 9.0, datacenter fabric required)
+
+Two further gaps combine a compute-capability floor with a hardware-fabric requirement RTX 4090 cannot meet regardless of driver version:
+
+- **NVLink multicast** (`cuMulticastCreate`, `cuMulticastAddDevice`, `cuMulticastBindMem`, CUDA 12.4+) lets one write fan out to multiple peer GPUs' memory over an NVLink SHARP-capable switch fabric — the mechanism behind NCCL's NVLS collective algorithm (§18). Support is queried via `cudaDevAttrMulticastSupported` / `CU_DEVICE_ATTRIBUTE_MULTICAST_SUPPORTED` [Source: NVIDIA CUDA Driver API — Multicast Object Management][36]. RTX 4090 has no NVLink interconnect at all — Ada's consumer dies dropped the NVLink bridge present on some prior-generation workstation cards — so this attribute reports unsupported unconditionally; it is not reachable by any driver or firmware update, only by different silicon on a different fabric.
+- **GPU Confidential Computing** (Hopper "CC-ON" mode) boots the GPU with a PCIe firewall blocking host access to most registers and all GPU memory and an NVLink firewall blocking peer-GPU access, with AES-GCM-256 encrypting the CPU↔GPU DMA path — available starting with H100/H200 [Source: arXiv — Confidential Computing on NVIDIA Hopper GPUs][37] [Source: ACM Queue — Creating the First Confidential GPUs][38]. RTX 4090 has no attestation or firewall hardware for this at all; there is no degraded "unencrypted but otherwise working" fallback to fall into — the mode-switch simply does not exist on Ada. Worth noting even at the top end: current multi-GPU Hopper Confidential Computing does not yet form a single encrypted NVLink memory pool across GPUs — each GPU stays an isolated trust boundary within the fabric — so this is a case where Rubin's own eventual capability, not just RTX 4090's absence of it, is still evolving.
+
+### 21.9 What Remains Unconfirmed About Rubin Specifically
+
+Note: needs verification. Everything above (§21.1–§21.8) is a documented compute-capability or product-tier gate that Ada (RTX 4090, `sm_89`) fails and that Hopper/Blackwell already clear — since NVIDIA states Blackwell-targeted CUDA, Transformer Engine, and cuDNN binaries run unmodified on the Vera Rubin platform [Source: NVIDIA Technical Blog — Inside the NVIDIA Vera Rubin Platform][39], all of §21.1–§21.8 is available on Rubin R100 by that inherited floor. Beyond that floor, treat the following as unconfirmed:
+
+- **No published `sm_` number.** NVIDIA has not assigned or documented a compute capability for Rubin/R100 as of CUDA Toolkit 13.3 Update 1; whether Rubin is `sm_110`-class, a Blackwell-compatible `sm_10x` extension, or something else is not public.
+- **No published Rubin-specific PTX ISA additions.** Any successor to `tcgen05`, new microscaled data types below FP4, larger cluster/DSMEM limits, or new DPX-class instruction families specific to Rubin are, as of this writing, undocumented by NVIDIA — do not treat any of these as confirmed.
+- **Reported hardware specifics are industry press, not CUDA documentation.** 288GB HBM4 at up to 22 TB/s, NVLink 6 at 3.6 TB/s per-GPU scale-up bandwidth (double NVLink 5's 1.8 TB/s on Blackwell), and ~50 PFLOPS dense FP4 are figures from technical-press coverage of NVIDIA's Vera Rubin platform disclosures, not from a published CUDA Programming Guide compute-capabilities appendix entry [Source: Spheron Network — NVIDIA R100 Specs][40]. These are resource/throughput numbers in any case, not API gates, and are excluded from §21.1–§21.8 for that reason — they are noted here only as context for what "Rubin" refers to in this section.
+
+---
+
 ## Integrations
 
 **Ch4 — DRM Scheduling**: CUDA stream priorities are the user-space analogue of DRM GPU scheduler priority queues. Both map user-supplied priority levels to hardware work queues; the preemption semantics (kernel-granularity on Pascal/Ampere, like Pascal-era DRM) are structurally equivalent. See Section 2.4.
@@ -2761,6 +2831,28 @@ AMD's **rocSOLVER** ([github.com/ROCm/rocSOLVER](https://github.com/ROCm/rocSOLV
 28. NVIDIA PTX ISA Reference: https://docs.nvidia.com/cuda/parallel-thread-execution/index.html
 
 29. cloudcores/CuAssembler — unofficial CUDA SASS assembler: https://github.com/cloudcores/CuAssembler
+
+30. NVIDIA CUDA Programming Guide — 5.1 Compute Capabilities: https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/compute-capabilities.html
+
+31. NVIDIA CUDA Programming Guide — 1.2 Programming Model (Thread Block Clusters): https://docs.nvidia.com/cuda/cuda-programming-guide/01-introduction/programming-model.html
+
+32. NVIDIA Hopper Tuning Guide — DPX Instructions: https://docs.nvidia.com/cuda/hopper-tuning-guide/index.html
+
+33. NVIDIA CUDA Programming Guide — 4.5 Programmatic Dependent Launch and Synchronization: https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/programmatic-dependent-launch.html
+
+34. NVIDIA CUTLASS Documentation — tcgen05 MMA Programming Guide: https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/mma_docs/tcgen05_programming.html
+
+35. NVIDIA CUTLASS Documentation — Blackwell SM100 GEMMs (Blackwell Functionality): https://docs.nvidia.com/cutlass/latest/media/docs/cpp/blackwell_functionality.html
+
+36. NVIDIA CUDA Driver API — 6.16 Multicast Object Management: https://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__MULTICAST.html
+
+37. arXiv — Confidential Computing on NVIDIA Hopper GPUs: A Performance Benchmark Study: https://arxiv.org/html/2409.03992v3
+
+38. ACM Queue — Creating the First Confidential GPUs: https://queue.acm.org/detail.cfm?id=3623391
+
+39. NVIDIA Technical Blog — Inside the NVIDIA Vera Rubin Platform: Six New Chips, One AI Supercomputer: https://developer.nvidia.com/blog/inside-the-nvidia-rubin-platform-six-new-chips-one-ai-supercomputer/
+
+40. Spheron Network — NVIDIA R100 Specs: Rubin VRAM, FP4 & Cloud Timeline (industry reporting, not an NVIDIA-published source; cited for hardware-spec context only): https://www.spheron.network/blog/nvidia-rubin-r100-guide/
 
 ## Roadmap
 
