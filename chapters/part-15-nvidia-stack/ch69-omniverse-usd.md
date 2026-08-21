@@ -13,6 +13,7 @@
    - [1.2 What is NVIDIA Omniverse?](#12-what-is-nvidia-omniverse)
    - [1.3 What is Hydra?](#13-what-is-hydra)
    - [1.4 What is the Omniverse RTX Renderer?](#14-what-is-the-omniverse-rtx-renderer)
+   - [1.5 What is LIVERPS?](#15-what-is-liverps)
 2. [OpenUSD Architecture: Core Abstractions](#openusd-architecture-core-abstractions)
    - 2.1 [UsdStage: The Outermost Container](#usdstage-the-outermost-container)
    - 2.2 [UsdPrim: The Primary Scenegraph Object](#usdprim-the-primary-scenegraph-object)
@@ -189,6 +190,10 @@ Hydra is the rendering delegate framework within OpenUSD that decouples scene de
 ### 1.4 What is the Omniverse RTX Renderer?
 
 The Omniverse RTX Renderer is NVIDIA's production rendering engine for Omniverse, implemented as a Hydra render delegate (`omni.hydra.rtx`) that targets NVIDIA RTX GPUs through OptiX 8 and Vulkan 1.3 ray tracing extensions. It exposes three rendering modes suited to different workload profiles. RTX Real-Time 2.0 performs hardware-accelerated path tracing with a fixed sample budget per frame, relying on DLSS Ray Reconstruction, DLSS Super Resolution, and DLSS Frame Generation to deliver interactive frame rates at high resolution while maintaining physically based light transport. RTX Interactive (path tracing) accumulates samples progressively using Monte Carlo integration with adaptive sampling and the OptiX AI denoiser, targeting final-frame quality for visualisation and turntable rendering workflows. RTX Minimal Mode disables ray tracing entirely and uses rasterisation only, maximising throughput for synthetic training-data generation where physical accuracy is secondary to volume. All three modes consume USD scene data via the Fabric Scene Delegate's GPU-accessible columnar store, enabling near-zero-copy geometry and material access from OptiX and Vulkan shaders. MDL (Material Definition Language) materials are compiled at load time into OptiX callable programs via MDL Core, providing a typed, physically based material model aligned with the USD shading schema.
+
+### 1.5 What is LIVERPS?
+
+LIVERPS is the mnemonic for USD's composition strength ordering — the fixed precedence by which the `UsdStage` resolves conflicting opinions authored across a prim's layers and arcs into a single composed value. [Source](https://openusd.org/release/glossary.html#usdglossary-liverps) The letters name the seven arc categories from strongest to weakest: **L**ocal (direct opinions in the layer stack, including sublayers), **I**nherits (class-prim broadcasts), **V**ariants (named, switchable alternatives), R**e**locates (namespace reparenting, formalised as its own arc in 2025), **R**eferences (aggregated external or internal sub-hierarchies), **P**ayloads (deferred-load references, otherwise identical to references), and **S**pecializes (weakest — fallback templates that everything else can override). The name was **LIVRPS** prior to Relocates being split out as a distinct, independently ordered arc; both spellings appear in older USD documentation and mailing-list discussion, but AOUSD Core Specification 1.0 standardises on LIVERPS. [Source](https://docs.nvidia.com/learn-openusd/latest/creating-composition-arcs/strength-ordering/what-is-liverps.html) LIVERPS ordering is evaluated per-namespace-location during composition, not globally across the stage — a prim can receive its strongest opinion for one attribute from a local override while inheriting every other attribute from a referenced asset. §3 covers each arc's authoring API, the encapsulation rule governing references and payloads, and how the RTX Renderer exploits variant switching and payload deferral for interactive LOD workflows.
 
 ---
 

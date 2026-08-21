@@ -10,6 +10,10 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - **Graphics application developers** — the stack beneath Vulkan, EGL, VA-API, and OpenXR
 - **Browser and web platform engineers** — how Chromium/Chrome maps WebGPU, WebGL, and compositing onto Linux hardware
 - **Terminal and TUI developers** — GPU-rendered terminal emulators, Sixel, Kitty Graphics Protocol, Ghostty
+- **Production rendering and render farm engineers** — offline/production renderer architecture (path tracing, shading languages, USD/Hydra pipeline integration) and Linux-based render farm infrastructure
+- **AI/ML systems engineers on Linux GPUs** — compute kernels, tensor throughput, and inference/training infrastructure (ROCm, local LLM inference, NPUs, JAX/PyTorch internals) on the same driver stack as graphics
+- **Video/streaming and codec engineers** — hardware and software video pipelines (FFmpeg internals, GStreamer plugin development, DeepStream, AV1/HEVC codec algorithms) beneath every hardware decode path
+- **Linux audio/multimedia engineers** — real-time audio, VoIP and Bluetooth audio, media playback, broadcast streaming, and music production infrastructure adjacent to the graphics stack
 
 ## Parts and Chapters
 
@@ -418,6 +422,9 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 199: Jupyter Internals — Architecture, Python Runtime, Multi-Kernel Support, and GPU Computing](chapters/part-20-ai-inference/ch199-jupyter-internals.md)
 - [Ch 212: Python 3D ML Libraries — Open3D, PyTorch3D, and Kaolin](chapters/part-20-ai-inference/ch212-open3d-pytorch3d-kaolin.md)
 - [Ch 239: Geometric Abstraction for World-Model Visual Reasoning](chapters/part-20-ai-inference/ch239-geometric-abstraction-world-models.md)
+- [Ch 245: The JAX Ecosystem](chapters/part-20-ai-inference/ch245-jax-ecosystem.md)
+- [Ch 246: JAX and PyTorch Internals](chapters/part-20-ai-inference/ch246-jax-pytorch-internals.md)
+- [Ch 249: Distributed Training Infrastructure — NCCL/RCCL, Parallelism Strategies, and GPU Data Loading](chapters/part-20-ai-inference/ch249-distributed-training-infrastructure.md)
 
 ---
 
@@ -511,6 +518,16 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 
 ---
 
+### Part XXX — Production Rendering
+
+*Production and render-farm engineers sit adjacent to this book's core real-time stack: they consume the same USD/Hydra pipeline (Part XV) and the same Monte Carlo/path-tracing algorithm catalog (Part XXIX), but their renderers optimise for final-frame correctness over frame time. Part XXX covers the shading-language and light-transport layer that distinguishes production renderers from the real-time RTX/rasterisation path covered elsewhere in the book, plus the render-farm asset-management and job-dispatch infrastructure that operates them at studio scale.*
+
+- [Part Overview](chapters/part-30-production-rendering/part-intro.md)
+- [Ch 247: Production Renderer Shading and Light Transport — OSL, LPEs, and the Path-Tracing Consensus](chapters/part-30-production-rendering/ch247-production-renderer-shading.md)
+- [Ch 248: Render Farm Infrastructure — Nucleus, OpenCue, and Job Distribution](chapters/part-30-production-rendering/ch248-render-farm-infrastructure.md)
+
+---
+
 ### Appendices
 
 - [Appendix A: Glossary](chapters/appendices/appendix-a-glossary.md)
@@ -535,7 +552,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Appendix T: Terminal Graphics Protocol Reference](chapters/appendices/appendix-t-terminal-graphics-protocol-reference.md)
 - [Appendix U: WebGPU API Quick Reference](chapters/appendices/appendix-u-webgpu-api-reference.md)
 
-**Total: 265 chapters + 21 appendices**
+**Total: 276 chapters + 21 appendices**
 
 ## Repository Structure
 
@@ -791,6 +808,9 @@ chapters/
     ch199-jupyter-internals.md
     ch212-open3d-pytorch3d-kaolin.md
     ch239-geometric-abstraction-world-models.md
+    ch245-jax-ecosystem.md
+    ch246-jax-pytorch-internals.md
+    ch249-distributed-training-infrastructure.md
   part-21-platform-legacy/
     ch95-x11-xorg-dri-legacy.md
     ch103-history-design-philosophy.md
@@ -843,6 +863,10 @@ chapters/
     ch236-gpu-scene-understanding-segmentation.md
     ch237-gpu-depth-estimation-reconstruction.md
     ch238-gpu-object-detection-pose-estimation.md
+  part-30-production-rendering/
+    part-intro.md
+    ch247-production-renderer-shading.md
+    ch248-render-farm-infrastructure.md
   appendices/
     appendix-a-glossary.md
     appendix-b-environment-variables.md
@@ -879,6 +903,10 @@ Suggested paths:
 - **Terminal developer:** Parts VI-A → XII
 - **AI/ML practitioner:** Parts VII-A → XV → XX
 - **Multimedia/audio developer:** Parts VII-B → XIII → XXVIII
+- **Production rendering/render farm engineer:** Parts XV → XXIX → XXX
+- **AI/ML systems engineer (training infrastructure):** Parts XX → XXIX
+- **Video/streaming and codec engineer:** Parts VII-A → XIII → XXVII
+- **Linux audio/multimedia engineer:** Parts VII-B → XXVIII
 
 ## Writing Standards
 

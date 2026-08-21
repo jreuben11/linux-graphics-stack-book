@@ -1067,6 +1067,8 @@ OPTIX_CHECK(optixDenoiserInvoke(denoiser, stream,
 
 ### 13.3 AOV Denoising and Temporal Upscaling
 
+An **AOV (Arbitrary Output Variable)** is a separate image buffer a renderer outputs alongside the main "beauty" (final color) pass, holding one component of the shading result — e.g. diffuse lighting, specular lighting, albedo, surface normals, or motion vectors — rather than the fully composited image. The term originates in production/offline rendering (RenderMan), and the OptiX denoiser borrows it: instead of denoising a single noisy beauty image, AOV mode denoises each shading component separately, which the network can do more accurately since each AOV has a more uniform noise/signal structure than the combined image.
+
 AOV denoising passes multiple `OptixDenoiserLayer` entries to `optixDenoiserInvoke`. The first entry is always the beauty pass. Additional entries specify AOV types:
 - `OPTIX_DENOISER_AOV_TYPE_BEAUTY` — the full path-traced radiance
 - `OPTIX_DENOISER_AOV_TYPE_DIFFUSE` — diffuse lighting term

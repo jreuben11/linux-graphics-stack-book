@@ -6,11 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a 700-page expert-level technical book: **"The Linux Graphics Stack: From Kernel to Compositor, Browser, and Terminal"**. The full chapter plan lives in `plan.md`.
 
-**Three audiences** (chapters signal which perspective is emphasised):
+**Eight audiences** (chapters signal which perspective is emphasised):
 - **Systems and driver developers** — kernel internals, DRM/Mesa architecture, driver implementation
 - **Graphics application developers** — Vulkan, EGL, VA-API, OpenXR usage and the stack beneath them
 - **Browser and web platform engineers** — how Chromium/Chrome maps WebGPU, WebGL, and compositing onto the Linux graphics stack
 - **Terminal and TUI developers** — how terminal emulators render pixel graphics (Sixel, Kitty Graphics Protocol, Ghostty) on top of the compositor stack
+- **Production rendering and render farm engineers** — offline/production renderer architecture (path tracing, shading languages, USD/Hydra pipeline integration) and Linux-based render farm infrastructure (Nucleus, NGC containers, multi-GPU distribution)
+- **AI/ML systems engineers on Linux GPUs** — compute kernels, tensor throughput, and inference/training infrastructure (ROCm, local LLM inference, NPUs, JAX/PyTorch internals) built on the same driver stack as graphics
+- **Video/streaming and codec engineers** — hardware and software video pipelines (FFmpeg internals, GStreamer plugin development, DeepStream, AV1/HEVC codec algorithms) beneath every hardware decode path
+- **Linux audio/multimedia engineers** — real-time audio, VoIP and Bluetooth audio, media playback, broadcast streaming, and music production infrastructure adjacent to the graphics stack
 
 ## Repository Structure
 
