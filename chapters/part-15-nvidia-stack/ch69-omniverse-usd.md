@@ -31,7 +31,7 @@
    - 5.1 [HdRenderDelegate: The Core Abstraction](#hdrenderdelegate-the-core-abstraction)
    - 5.2 [Hydra 2.0: Scene Index Architecture](#hydra-20-scene-index-architecture)
    - 5.3 [HdEngine::Execute and GPU Command Submission](#hdengineexecute-and-gpu-command-submission)
-   - 5.4 [Implementing a Custom Vulkan HdRenderDelegate](#implementing-a-custom-vulkan-hdrenderdelegate)
+   - 5.4 [HgiVulkan and Implementing a Custom Vulkan HdRenderDelegate](#hgivulkan-and-implementing-a-custom-vulkan-hdrenderdelegate)
 6. [Omniverse RTX Renderer Modes](#omniverse-rtx-renderer-modes)
    - 6.1 [RTX Real-Time 2.0](#rtx-real-time-20)
    - 6.2 [RTX Interactive (Path Tracing)](#rtx-interactive-path-tracing)
@@ -102,10 +102,10 @@ Geometry is encoded via **UsdGeomMesh** for polygonal and subdivision surfaces, 
 Composition is governed by the **LIVERPS** strength ordering — **L**ocal sublayers, **I**nherits, **V**ariants, R**e**locates, **R**eferences, **P**ayloads, and **S**pecializes — together with **scenegraph instancing** via prototype hierarchies. The **AOUSD Core Specification 1.0** standardisation process and the **OpenUSD SDK 25.02** release timeline are covered, including the quarterly cadence of features such as **WASM** support, **Hydra 2** scene index enablement, and the **UsdVolParticleField3DGaussianSplat** schema.
 
 **Hydra**'s rendering delegate architecture decouples **USD** from backends via **HdRenderDelegate**, the abstract interface implemented by:
-- **HdStorm** — OpenGL delegate
+- **HdStorm** — OpenGL and Metal delegate, with an experimental **Vulkan** backend (**HgiVulkan**) added via the **Hgi** graphics abstraction since USD 24.08
 - **HdPrman** — RenderMan delegate
 - **omni.hydra.rtx** — RTX Renderer delegate
-- Custom **Vulkan** backends
+- Fully custom **Vulkan** delegates (bespoke, distinct from Storm's HgiVulkan backend)
 
 **Hydra 2.0** replaces the pull-based **HdSceneDelegate** with a composable push-based **scene index** pipeline enabling O(1) dirty-locator invalidation:
 - **UsdImagingStageSceneIndex** — translates the USD stage into a scene index
@@ -118,7 +118,7 @@ The **HdEngine::Execute** render loop drives **GPU** command submission through:
 - **HdTask::Execute** — submit GPU commands (including **optixLaunch()** for path tracing and **glDrawElementsIndirect** for rasterisation)
 - **HdRenderDelegate::CommitResources** — flush upload queue
 
-The chapter also details how to implement a custom **Vulkan** **HdRenderDelegate**.
+The chapter also covers **HgiVulkan**, Storm's experimental Vulkan backend, and how to implement a fully custom **Vulkan** **HdRenderDelegate** as an alternative to it.
 
 The **Omniverse RTX Renderer** exposes three rendering modes:
 - **RTX Real-Time 2.0** — physically based path tracing accelerated by **DLSS Ray Reconstruction**, **DLSS Super Resolution**, and **DLSS Frame Generation**
@@ -194,7 +194,7 @@ NVIDIA Omniverse is a real-time collaboration and simulation platform that uses 
 
 ### 1.3 What is Hydra?
 
-Hydra is the rendering delegate framework within OpenUSD that decouples scene description from rendering backends. Rather than coupling a single renderer to the USD library, Hydra defines an abstract C++ interface — `HdRenderDelegate` — which concrete renderers implement independently. The Hydra imaging pipeline bridges a USD scene (read through `HdSceneDelegate` or, in Hydra 2.0, through a composable scene index pipeline) and a rendering backend, allowing the same USD scene to be rendered by `HdStorm` (an OpenGL and Metal delegate), `HdPrman` (the RenderMan delegate), `omni.hydra.rtx` (the Omniverse RTX Renderer delegate), or a custom Vulkan backend without altering scene authoring code. Hydra 2.0, introduced in OpenUSD 22.11 and progressively stabilised through SDK 25.02, replaces the pull-based `HdSceneDelegate` model with a push-based scene index pipeline that uses dirty-locator invalidation for O(1) change propagation. Scene indices are composable filter stages — flattening, merging, procedural expansion — that operate on `HdDataSourceLocator`-identified data containers, enabling efficient partial updates of large dynamic scenes. Hydra is the integration point at which the RTX Renderer delegate, MaterialX material translation, and custom Vulkan backend implementations described in this chapter all converge.
+Hydra is the rendering delegate framework within OpenUSD that decouples scene description from rendering backends. Rather than coupling a single renderer to the USD library, Hydra defines an abstract C++ interface — `HdRenderDelegate` — which concrete renderers implement independently. The Hydra imaging pipeline bridges a USD scene (read through `HdSceneDelegate` or, in Hydra 2.0, through a composable scene index pipeline) and a rendering backend, allowing the same USD scene to be rendered by `HdStorm` (an OpenGL and Metal delegate, plus an experimental Vulkan backend, `HgiVulkan`, added via the `Hgi` graphics abstraction in a collaboration between Pixar, Autodesk, and Adobe since USD 24.08 — [Source](https://www.khronos.org/blog/vulkan-support-added-to-openusd-and-pixars-hydra-storm-renderer)), `HdPrman` (the RenderMan delegate), `omni.hydra.rtx` (the Omniverse RTX Renderer delegate), or a fully custom Vulkan delegate without altering scene authoring code. Hydra 2.0, introduced in OpenUSD 22.11 and progressively stabilised through SDK 25.02, replaces the pull-based `HdSceneDelegate` model with a push-based scene index pipeline that uses dirty-locator invalidation for O(1) change propagation. Scene indices are composable filter stages — flattening, merging, procedural expansion — that operate on `HdDataSourceLocator`-identified data containers, enabling efficient partial updates of large dynamic scenes. Hydra is the integration point at which the RTX Renderer delegate, MaterialX material translation, and custom Vulkan backend implementations described in this chapter all converge.
 
 ### 1.4 What is the Omniverse RTX Renderer?
 
@@ -643,7 +643,7 @@ For Chapter 69, the target SDK version is **25.02**, which ships with Kit 106.x.
 
 ### 5.1 HdRenderDelegate: The Core Abstraction
 
-Hydra decouples scene description (USD) from rendering backends via the `HdRenderDelegate` interface. Each backend (HdStorm for OpenGL, HdPrman for RenderMan, the RTX delegate, a custom Vulkan delegate) implements this abstract class. [Source](https://openusd.org/release/api/class_hd_render_delegate.html)
+Hydra decouples scene description (USD) from rendering backends via the `HdRenderDelegate` interface. Each backend (HdStorm — OpenGL, Metal, or experimental Vulkan via `HgiVulkan` — HdPrman for RenderMan, the RTX delegate, or a fully custom Vulkan delegate) implements this abstract class. [Source](https://openusd.org/release/api/class_hd_render_delegate.html)
 
 ```cpp
 // pxr/imaging/hd/renderDelegate.h — simplified for exposition
@@ -709,10 +709,10 @@ graph LR
     USD["USD / UsdStage"]
     HdIndex["HdRenderIndex"]
     HdDelegate["HdRenderDelegate\n(abstract interface)"]
-    HdStorm["HdStorm\n(OpenGL delegate)"]
+    HdStorm["HdStorm\n(OpenGL / Metal / experimental Vulkan via Hgi)"]
     HdPrman["HdPrman\n(RenderMan delegate)"]
     RTX["omni.hydra.rtx\n(RTX Renderer delegate)"]
-    CustomVk["Custom Vulkan\nHdRenderDelegate"]
+    CustomVk["Fully Custom Vulkan\nHdRenderDelegate\n(bespoke, not Storm's HgiVulkan)"]
     Rprim["HdRprim\n(Mesh / BasisCurves / Points / Volume)"]
     Sprim["HdSprim\n(Camera / Light / Material / CoordSys)"]
     Bprim["HdBprim\n(RenderBuffer — AOV output)"]
@@ -825,7 +825,7 @@ HdEngine::Execute(renderIndex, taskList)
     → HdRenderPass::Execute()             — issue geometry commands
 ```
 
-For the RTX delegate, `Execute()` dispatches an OptiX ray-tracing launch via `optixLaunch()` (see Ch67 for OptiX internals). For HdStorm (OpenGL), it issues `glDrawElementsIndirect` calls batched by shader state.
+For the RTX delegate, `Execute()` dispatches an OptiX ray-tracing launch via `optixLaunch()` (see Ch67 for OptiX internals). For HdStorm on its OpenGL backend, it issues `glDrawElementsIndirect` calls batched by shader state; on the experimental `HgiVulkan` backend, the equivalent path records `vkCmdDrawIndexedIndirect` calls into a command buffer through the `Hgi` abstraction rather than calling OpenGL directly.
 
 ```mermaid
 graph TD
@@ -840,9 +840,13 @@ graph TD
     Execute --> RenderPass
 ```
 
-### 5.4 Implementing a Custom Vulkan HdRenderDelegate
+### 5.4 HgiVulkan and Implementing a Custom Vulkan HdRenderDelegate
 
-For teams building their own Vulkan-based Hydra delegate (as an open alternative to the RTX renderer), the minimal implementation surface is:
+**HgiVulkan** is Storm's own Vulkan backend, reached through the `Hgi` graphics abstraction (the same layer `HgiMetal` uses on Apple platforms) rather than as a separate `HdRenderDelegate`. It has existed as an incomplete, non-default-build stub since USD 21.05, and moved to an explicitly experimental but buildable state in USD 24.08 after a coordinated push between Pixar, Autodesk, and Adobe under the Alliance for OpenUSD. [Source](https://www.khronos.org/blog/vulkan-support-added-to-openusd-and-pixars-hydra-storm-renderer)
+
+Real adopters exist but the backend is still rough. Blender's Vulkan viewport team tracked the integration end-to-end in a public meta-issue and closed it after wiring Storm's Vulkan output into Blender's own Vulkan-based renderer, fixing bugs upstream along the way — including a signed/unsigned overflow in `hgiVulkan/computeCmds.cpp` that broke rendering on AMD/RADV. [Source](https://projects.blender.org/blender/blender/issues/133717) [Source](https://github.com/PixarAnimationStudios/OpenUSD/issues/3666) The open-source USD viewer `mrv2` hit a more fundamental limitation when it tried to embed HgiVulkan: `HgiVulkan` creates and owns its own `VkInstance`, which conflicts with a host application (such as a Vulkan-based UI) that already owns one — Vulkan permits only a single `VkInstance` per process. [Source](https://github.com/PixarAnimationStudios/OpenUSD/issues/3655) Correctness bugs in command-buffer lifetime management and resource garbage collection were still being reported and fixed upstream as of early 2026, so treat HgiVulkan as usable-with-patches rather than production-hardened. [Source](https://github.com/PixarAnimationStudios/OpenUSD/issues/3980)
+
+For teams that need to bypass Storm's rasteriser-oriented `HgiVulkan` entirely — for example to drive `VK_KHR_ray_tracing_pipeline` directly, or to share a `VkInstance` and `VkDevice` with an existing engine rather than accept the one HgiVulkan creates — writing a fully custom Vulkan `HdRenderDelegate` remains the open alternative to both HgiVulkan and the proprietary RTX renderer. The minimal implementation surface is:
 
 ```cpp
 // Minimal custom Vulkan delegate skeleton
@@ -883,7 +887,7 @@ private:
 };
 ```
 
-HdStorm (see Ch18 and Ch24) is the reference open-source OpenGL delegate. For Vulkan-specific BVH building and ray tracing integration, see how HdPrman manages scene synchronisation as an analogous multi-pass pattern.
+HdStorm (see Ch18 and Ch24) is the reference open-source delegate, rasterising through OpenGL, Metal, or (experimentally, via HgiVulkan) Vulkan; none of these paths do hardware ray tracing. For Vulkan-specific BVH building and ray tracing integration in a fully custom delegate, see how HdPrman manages scene synchronisation as an analogous multi-pass pattern.
 
 ---
 
@@ -2052,7 +2056,7 @@ This chapter sits at the intersection of several threads developed throughout th
 
 **Multi-GPU transfers ↔ peer DMA (Ch4, Ch49):** Omniverse's mGPU image compositing relies on PCIe peer-to-peer DMA for inter-GPU buffer transfers. Ch4 (DRM/TTM memory management) and Ch49 (CUDA peer transfers and UVA) provide the kernel-level and CUDA-level mechanisms underlying this.
 
-**Hydra delegate ↔ Vulkan/Mesa (Ch18, Ch24):** HdStorm (the reference OpenGL/Vulkan delegate) and any custom Vulkan delegate plug into the same `HdRenderDelegate` abstraction described in this chapter. Ch18 covers the Vulkan render pipeline; Ch24 covers the ANV (Intel) and RADV (AMD) Vulkan driver implementations in Mesa.
+**Hydra delegate ↔ Vulkan/Mesa (Ch18, Ch24):** HdStorm (the reference OpenGL delegate, with an experimental Vulkan path via HgiVulkan) and any fully custom Vulkan delegate plug into the same `HdRenderDelegate` abstraction described in this chapter. Ch18 covers the Vulkan render pipeline; Ch24 covers the ANV (Intel) and RADV (AMD) Vulkan driver implementations in Mesa — the same RADV driver that surfaced HgiVulkan's AMD int/uint overflow bug during Blender's integration work.
 
 **NCCL/NVLink ↔ ROCm RCCL (Ch48):** Omniverse multi-GPU coordination over NVLink is architecturally analogous to NCCL collective operations used in ML training — and to AMD's RCCL covered in Ch48. The inter-GPU bandwidth characteristics differ (NVLink 4.0 on Hopper: 900 GB/s bidirectional; PCIe 5.0 ×16: ~64 GB/s), which determines whether spatial frame subdivision is bottlenecked by compositing or by rendering.
 
