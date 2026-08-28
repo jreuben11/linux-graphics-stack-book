@@ -6,9 +6,9 @@
 
 The community reimplementation scene occupies an unusual position in graphics engineering. These projects — clean-room or decompilation-derived rewrites of commercial tycoon and strategy simulations from the 1990s — inherit a rendering contract written for a 486 with a VGA framebuffer, and must honour it while running on hardware five orders of magnitude faster. The original games composited palettized 8-bit sprites into a linear framebuffer with hand-tuned assembly. The reimplementations keep that model, because the game logic, the art assets, and in several cases the on-disk save format all depend on the exact pixel semantics of palette-index compositing. What makes them interesting is what happens next: each project has had to decide whether the GPU can be brought into a pipeline that was never designed to accommodate one.
 
-This chapter examines that decision. It is not a survey of 2D game engines in general. An earlier research pass for this chapter considered a broader sweep of open-source simulation games — Simutrans, FreeCol, Unciv, OpenMW and others — and found most of that material too thin to justify sustained treatment: these are, from a rendering standpoint, framework consumers. They call into SDL2, Java2D, or LibGDX and inherit whatever that framework does. There is no distinctive architecture to describe, and writing full sections about them would mean padding. So this chapter narrows deliberately to the projects that contain real, distinctive GPU-architecture engineering, and relegates the framework consumers to a short comparison table in §7 where they belong.
+This chapter examines that decision. It is not a survey of 2D game engines in general. An earlier research pass for this chapter considered a broader sweep of open-source simulation games — Simutrans, FreeCol, Unciv, OpenMW and others — and found most of that material too thin to justify sustained treatment: these are, from a rendering standpoint, framework consumers. They call into SDL2, Java2D, or LibGDX and inherit whatever that framework does. There is no distinctive architecture to describe, and writing full sections about them would mean padding. So this chapter narrows deliberately to the projects that contain real, distinctive GPU-architecture engineering, and relegates the framework consumers to a short comparison table in §8 where they belong.
 
-Four codebases carry the chapter. **OpenTTD** and **OpenLoco** demonstrate what turns out to be a convergent architecture: the CPU composites the entire frame and the GPU is used only to get that finished buffer onto the screen. **OpenRCT2** is the one project in this niche that moved sprite compositing itself onto the GPU, and its OpenGL renderer — instanced draws over a texture array of palette-index atlases — is the chapter's central technical case study. **OpenRA** provides the contrast that makes OpenRCT2's design legible: it is a conventional sampler-bound sprite batcher, and its constraints are precisely the ones OpenRCT2's array-texture design sidesteps. A closing section observes that no project surveyed uses Vulkan, and treats that as a scoping observation about the problem domain rather than a gap to be filled.
+Five codebases carry the chapter. **OpenTTD** and **OpenLoco** demonstrate what turns out to be a convergent architecture: the CPU composites the entire frame and the GPU is used only to get that finished buffer onto the screen. **OpenRCT2** is the one tycoon-genre project that moved sprite compositing itself onto the GPU, and its OpenGL renderer — instanced draws over a texture array of palette-index atlases — is the chapter's central technical case study. **OpenRA** provides the contrast that makes OpenRCT2's design legible: it is a conventional sampler-bound sprite batcher, and its constraints are precisely the ones OpenRCT2's array-texture design sidesteps. **FreeSO**, a reimplementation of *The Sims Online* outside the tycoon/RTS lineage, closes the chapter's case studies with the most elaborate answer to the CPU/GPU question of any project surveyed: it runs a 2D sprite-and-Z-buffer path and a Blueprint-driven 3D path side by side, selectable at launch. A closing section observes that no project surveyed uses Vulkan, and treats that as a scoping observation about the problem domain rather than a gap to be filled.
 
 ---
 
@@ -35,12 +35,13 @@ Four codebases carry the chapter. **OpenTTD** and **OpenLoco** demonstrate what 
   - [3.8 Why It Is Still Labelled Experimental](#38-why-it-is-still-labelled-experimental)
 - [4. OpenLoco: Hardware Presentation Without a GPU Renderer](#4-openloco-hardware-presentation-without-a-gpu-renderer)
 - [5. OpenRA: Sampler-Bounded Sprite Batching](#5-openra-sampler-bounded-sprite-batching)
-- [6. Modding APIs: Three Embedded-Language Choices](#6-modding-apis-three-embedded-language-choices)
-  - [6.1 OpenTTD: NewGRF Bytecode Plus Squirrel](#61-openttd-newgrf-bytecode-plus-squirrel)
-  - [6.2 OpenRCT2: Duktape, JavaScript, and Shipped TypeScript Types](#62-openrct2-duktape-javascript-and-shipped-typescript-types)
-  - [6.3 OpenRA: Lua Missions and the Mod SDK](#63-openra-lua-missions-and-the-mod-sdk)
-- [7. Brief Survey: The Framework Consumers](#7-brief-survey-the-framework-consumers)
-- [8. The Absence of Vulkan](#8-the-absence-of-vulkan)
+- [6. FreeSO: Z-Buffer Mesh Reconstruction and Blueprint-Driven Architecture](#6-freeso-z-buffer-mesh-reconstruction-and-blueprint-driven-architecture)
+- [7. Modding APIs: Three Embedded-Language Choices](#7-modding-apis-three-embedded-language-choices)
+  - [7.1 OpenTTD: NewGRF Bytecode Plus Squirrel](#71-openttd-newgrf-bytecode-plus-squirrel)
+  - [7.2 OpenRCT2: Duktape, JavaScript, and Shipped TypeScript Types](#72-openrct2-duktape-javascript-and-shipped-typescript-types)
+  - [7.3 OpenRA: Lua Missions and the Mod SDK](#73-openra-lua-missions-and-the-mod-sdk)
+- [8. Brief Survey: The Framework Consumers](#8-brief-survey-the-framework-consumers)
+- [9. The Absence of Vulkan](#9-the-absence-of-vulkan)
 - [Integrations](#integrations)
 - [References](#references)
 - [Roadmap](#roadmap)
@@ -1098,11 +1099,98 @@ OpenRA's release cadence also deserves a precise statement, since it is easy to 
 
 ---
 
-## 6. Modding APIs: Three Embedded-Language Choices
+## 6. FreeSO: Z-Buffer Mesh Reconstruction and Blueprint-Driven Architecture
+
+FreeSO (MPL-2.0) reimplements *The Sims Online* in C# on MonoGame. It sits outside the tycoon/RTS lineage that carries the rest of this chapter, but it converges on the same question — how far does a palette-sprite engine bring the GPU in — and answers it more elaborately than any other project surveyed here, by running two independent GPU-facing rendering paths side by side and letting the player switch between them at launch time. The renderer lives in its own assembly, `TSOClient/tso.world` (project `FSO.LotView.csproj`, namespace `FSO.LotView`), separate from the SimAntics behaviour VM and the network/UI layers.
+
+The default path is a custom sprite batcher, `_2DWorldBatch`, documented in its own header comment as being "similar to SpriteBatch but has additional features that target world object rendering in this game such as zbuffers." It does not draw to a single back buffer; it maintains six render targets, declared as parallel arrays indexed by named constants:
+
+```csharp
+// FreeSO TSOClient/tso.world/Utils/_2DWorldBatch.cs
+public static SurfaceFormat[] BUFFER_SURFACE_FORMATS = new SurfaceFormat[] {
+    /** Static Buffers **/
+    SurfaceFormat.Color,
+    SurfaceFormat.Color, //depth, using a 24-bit packed format
+    /** Object ID buffer **/
+    SurfaceFormat.Color,
+    /** Obj thumbnail buffers **/
+    SurfaceFormat.Color,
+    SurfaceFormat.Color, //depth, using a 24-bit packed format
+    /** Lot Thumbnail Buffer **/
+    SurfaceFormat.Color
+};
+public static readonly int NUM_2D_BUFFERS = 6;
+public static readonly int BUFFER_STATIC = 0;
+public static readonly int BUFFER_STATIC_DEPTH = 1;
+public static readonly int BUFFER_OBJID = 2;
+```
+
+[Source: FreeSO `TSOClient/tso.world/Utils/_2DWorldBatch.cs`](https://github.com/riperiperi/FreeSO/blob/4c6b3e8f5835b228723caea3c9f683c62f244f73/TSOClient/tso.world/Utils/_2DWorldBatch.cs)
+
+The interesting entry is `BUFFER_STATIC_DEPTH`, an ordinary `Color`-format render target repurposed to carry a 24-bit packed depth value per pixel, alongside a `BUFFER_OBJID` target used for mouse-picking. This is what OpenRCT2's `usampler2DArray` palette atlases and depth-peeling passes (§3.5, §3.7) are solving from a different angle: a 2D sprite engine still needs a real per-pixel depth test, because sprites for tall furniture and multi-tile objects overlap in screen space in ways a fixed paint order cannot resolve. FreeSO's answer is to give sprites an explicit depth channel and composite them against it in a render target, rather than relying on draw order or a peeling algorithm.
+
+That depth channel is not synthesized — it is decoded from the original game's own asset format. TSO's sprite chunks (`SPR2`/`DGRP`, inherited from *The Sims*) embed a per-pixel Z value alongside colour and alpha, because the original engine needed it for the same overlap problem. FreeSO's `DGRP3DMesh` class, in a separate `Files.RC` ("reconstruction") namespace, uses exactly that channel to build real 3D geometry for individual objects at load time, versioned explicitly as a reconstruction format:
+
+```csharp
+// FreeSO TSOClient/tso.files/RC/DGRP3DMesh.cs
+namespace FSO.Files.RC
+{
+    public class DGRP3DMesh
+    {
+        //1: initial 3d format
+        //2: normals
+        //3: depth mask (for sinks, fireplaces)
+        public static int CURRENT_VERSION = 3;
+        public static int CURRENT_RECONSTRUCT = 2;
+```
+
+[Source: FreeSO `TSOClient/tso.files/RC/DGRP3DMesh.cs`](https://github.com/riperiperi/FreeSO/blob/4c6b3e8f5835b228723caea3c9f683c62f244f73/TSOClient/tso.files/RC/DGRP3DMesh.cs)
+
+This is the mechanism the project's own documentation describes in one line — "3D meshes are reconstructed at runtime from the z-buffers included with object sprites" [Source: FreeSO `README.md`, "3D Mode" section](https://github.com/riperiperi/FreeSO/blob/4c6b3e8f5835b228723caea3c9f683c62f244f73/README.md) — and it applies specifically to *objects*: furniture, appliances, and other placeable sprites whose DGRP chunks carry per-part Z data.
+
+Wall and floor architecture is a second, unrelated system, and conflating the two is the easiest mistake to make about this engine. Lot geometry is not decoded from any sprite; it is generated procedurally from the lot's own tile-grid data structure, `Blueprint`, whose `Floors[]` and `Walls[]` arrays record per-tile pattern, style, and segment information independent of any rendered sprite:
+
+```csharp
+// FreeSO TSOClient/tso.world/Components/3DFloorGeometry.cs
+public _3DFloorGeometry(Blueprint bp)
+{
+    Bp = bp;
+    // ...
+}
+public void FullReset(GraphicsDevice gd, bool buildMode) { /* walks Bp.Floors[], Bp.Walls[] */ }
+```
+
+[Source: FreeSO `TSOClient/tso.world/Components/3DFloorGeometry.cs`](https://github.com/riperiperi/FreeSO/blob/4c6b3e8f5835b228723caea3c9f683c62f244f73/TSOClient/tso.world/Components/3DFloorGeometry.cs)
+
+The README's own phrasing keeps the two systems distinct, in the sentence immediately following the one quoted above: "FreeSO also generates 3D geometry for walls and floors at runtime" — a second, separate clause for a second, separate mechanism. Object meshes are *reconstructed from sprite Z-data*; wall and floor meshes are *generated from Blueprint tile data*. Neither is derived from the other.
+
+Which system is active, and for which category of content, is gated by a three-value enum rather than a boolean 2D/3D switch:
+
+```csharp
+// FreeSO TSOClient/tso.world/Model/GraphicsModes.cs
+public enum GlobalGraphicsMode
+{
+    Full2D,    // only use 3d objects when
+    Hybrid2D,  // load 2d and 3d objects, use 3d arch
+    Full3D     // do not load 2d dgrp
+}
+```
+
+[Source: FreeSO `TSOClient/tso.world/Model/GraphicsModes.cs`](https://github.com/riperiperi/FreeSO/blob/4c6b3e8f5835b228723caea3c9f683c62f244f73/TSOClient/tso.world/Model/GraphicsModes.cs)
+
+`Full2D` is the original engine's model exactly as described above — `_2DWorldBatch` compositing DGRP sprites against their embedded Z-buffers. `Hybrid2D` loads both representations at once and uses the Blueprint-generated wall/floor architecture as a real 3D backdrop behind 2D object and avatar sprites, which is why `_2DWorldBatch`'s explicit depth buffer matters even more in this mode — the 2D sprites must depth-composite correctly against genuine 3D geometry, not just against each other. `Full3D` stops loading 2D DGRP data altogether. The mode is selected with the `-3d` launch parameter and an in-game camera switch [Source: FreeSO `README.md`, "3D Mode" section](https://github.com/riperiperi/FreeSO/blob/4c6b3e8f5835b228723caea3c9f683c62f244f73/README.md).
+
+Modding sits on a different axis from rendering here, but is worth one sentence for contrast with §8's survey: object behaviour is driven by a real bytecode virtual machine, `FSO.SimAntics.VM` (`TSOClient/tso.simantics/VM.cs`, doc-commented "Simantics Virtual Machine"), reimplementing the original game's SimAntics instruction set, and a separate companion tool, Volcanic, provides a live script editor and resource browser attached to a running VM instance [Source: FreeSO `README.md`, "Volcanic" section](https://github.com/riperiperi/FreeSO/blob/4c6b3e8f5835b228723caea3c9f683c62f244f73/README.md). This is architecturally closer to Chapter 244d's scripting-VM material than to this chapter's rendering focus, and is not developed further here.
+
+FreeSO is under active development — its default branch was pushed to on 2026-08-28, the day these citations were pinned — though its most recent tagged release, `beta-update-91a`, dates to 2024-12-08; as with OpenRA (§5), a reader should distinguish the latest commit from the latest stable build. Its graphics backend is MonoGame's OpenGL profile (`WindowsGL` in the vendored assembly references), not Direct3D and not Vulkan, which is consistent with this chapter's closing observation in §9.
+
+---
+
+## 7. Modding APIs: Three Embedded-Language Choices
 
 All four projects support deep user modification, and each solved the embedded-language problem differently. The comparison is unusually clean because the underlying requirement is nearly identical — let untrusted third-party content drive game logic without recompiling the engine — and yet the three answers share no technology.
 
-### 6.1 OpenTTD: NewGRF Bytecode Plus Squirrel
+### 7.1 OpenTTD: NewGRF Bytecode Plus Squirrel
 
 OpenTTD splits modding into two entirely separate systems by concern.
 
@@ -1119,7 +1207,7 @@ The API surface is substantial: `src/script/api` contains on the order of 158 he
 
 Two properties of this design are worth noting for anyone embedding a scripting language in a simulation. First, the API is a *deliberate* wrapper layer rather than direct binding to engine internals, which lets the project maintain API compatibility for scripts across engine refactors. Second, because both NoAI and GameScript run inside a deterministic multiplayer simulation, script execution must be deterministic and bounded — the surrounding `script_instance` machinery suspends and resumes scripts across ticks rather than letting them run to completion synchronously.
 
-### 6.2 OpenRCT2: Duktape, JavaScript, and Shipped TypeScript Types
+### 7.2 OpenRCT2: Duktape, JavaScript, and Shipped TypeScript Types
 
 OpenRCT2 chose JavaScript, executed by the embedded duktape engine — a compact interpreter targeting ES5. The developer-facing story is the notable part: the project ships a TypeScript declaration file describing the entire plugin API, so that authors write TypeScript against real types and compile to the ES5 the engine executes.
 
@@ -1176,7 +1264,7 @@ Three design decisions stand out.
 
 **Shipping `.d.ts` in the distribution is a deliberate developer-experience investment.** The engine executes ES5; nothing in the runtime requires TypeScript. The declaration file exists purely so that plugin authors get completion and type checking, and it must be maintained in lockstep with the C++ API bindings. That is real ongoing cost accepted for ecosystem health.
 
-### 6.3 OpenRA: Lua Missions and the Mod SDK
+### 7.3 OpenRA: Lua Missions and the Mod SDK
 
 OpenRA embeds Lua, and scopes it primarily at *mission* logic — the scripted campaign and single-player scenarios that the C&C lineage is built around. Scripts drive objectives, reinforcements, triggers, and camera and interface behaviour.
 
@@ -1200,7 +1288,7 @@ The recurring lesson is that each project separated *declarative content* from *
 
 ---
 
-## 7. Brief Survey: The Framework Consumers
+## 8. Brief Survey: The Framework Consumers
 
 The following projects are simulation or strategy games of comparable ambition and community size, but from a rendering-architecture standpoint they delegate to a framework and add nothing distinctive. They are included for completeness and to substantiate the scoping decision announced in the introduction — there is no CPU-to-GPU migration story to tell about them, because they never wrote a sprite pipeline of their own.
 
@@ -1209,8 +1297,9 @@ The following projects are simulation or strategy games of comparable ambition a
 | Simutrans | Artistic Licence | C++ | SDL2, software rendering | Data files (`.dat`/`.pak`) |
 | Unciv | MPL-2.0 | Kotlin | LibGDX; LWJGL3 OpenGL backend on desktop | JSON data mods |
 | FreeCol | GPL-2.0 | Java | Java2D / Swing | XML rule and spec files |
+| CorsixTH | MIT | C++ engine, Lua game logic | SDL3 hardware-accelerated renderer; palette decode and remap on CPU, per-sprite/per-variant texture caching, no atlasing | Lua scripts |
 
-[Sources: [Simutrans](https://github.com/aburch/simutrans) (licence text: `simutrans/license.txt`; SDL backend selection in `CMakeLists.txt` and `configure.ac`), [Unciv](https://github.com/yairm210/Unciv) (LWJGL3 declared in `gradle/libs.versions.toml` and used throughout `desktop/src/com/unciv/app/desktop/`), [FreeCol](https://github.com/FreeCol/freecol) (`Graphics2D` and `javax.swing` used pervasively across `src/net/sf/freecol/client/gui/`)]
+[Sources: [Simutrans](https://github.com/aburch/simutrans) (licence text: `simutrans/license.txt`; SDL backend selection in `CMakeLists.txt` and `configure.ac`), [Unciv](https://github.com/yairm210/Unciv) (LWJGL3 declared in `gradle/libs.versions.toml` and used throughout `desktop/src/com/unciv/app/desktop/`), [FreeCol](https://github.com/FreeCol/freecol) (`Graphics2D` and `javax.swing` used pervasively across `src/net/sf/freecol/client/gui/`), [CorsixTH](https://github.com/CorsixTH/CorsixTH) (`LICENSE.txt` MIT grant; SDL3 renderer)]
 
 Three observations, and then this section is done:
 
@@ -1219,14 +1308,15 @@ Three observations, and then this section is done:
 
   This is worth one extra sentence, because it shows the problem of §3 and §5 recurring one abstraction layer up. Unciv's response to expensive texture binds is to pack images into atlases capped at 2048×2048 — the same figure OpenRCT2 chose for `kTextureCacheMaxAtlasSize` (§3.4), and for the same stated reason of chipset limits — and then to reorder drawing so that all tiles' terrain is rendered before all tiles' improvements, so that sheet swaps scale with the number of layers rather than the number of tiles. That is OpenRA's sheet-locality problem (§5) and its mitigation by asset organization, arrived at independently and solved by draw-order scheduling instead of by a sampler budget. The mechanism, however, lives in LibGDX, which is outside this chapter's scope.
 - **FreeCol** targets Java2D/Swing, a CPU 2D API with optional and platform-dependent hardware acceleration underneath. Its rendering concerns are Swing painting concerns.
+- **CorsixTH** is the one project in this table that does route sprites through a real GPU texture path rather than a CPU-composited or fully framework-owned one — it draws through SDL3's hardware-accelerated renderer, which uploads and blits actual GPU textures. But the work that would make it comparable to §3's case study never moved off the CPU: palette decoding and per-frame colour remapping (needed for Theme Hospital's original 8-bit palette-swap sprites) both happen before the SDL3 blit, and each decoded sprite variant gets its own cached texture rather than being packed into a shared atlas or drawn with instancing. That is a standard SDL3 hardware-blit idiom, not the atlas-and-instance engineering this chapter's case studies are chosen for, which is why it sits in this survey rather than getting its own section.
 
 Two further exclusions, stated so their absence is not read as oversight. **OpenDUNE** (GPL-2.0) reimplements the original *Dune II*; it is effectively dormant, with no release since 2018, and its renderer is a straightforward software framebuffer — it serves here only as a contrast to OpenRA's actively-developed treatment of the same lineage. **OpenMW** is an RPG engine with a fully 3D renderer and a substantial scripting story of its own, and is treated in Chapter 244d rather than here.
 
 ---
 
-## 8. The Absence of Vulkan
+## 9. The Absence of Vulkan
 
-No project examined in this chapter uses Vulkan. A source search across OpenRCT2, OpenTTD, OpenLoco, and OpenRA returns no Vulkan references in any of the four codebases. OpenRA's platform layer offers exactly one graphics backend — SDL2 with OpenGL. OpenTTD's GPU path is OpenGL, used as described in §2. OpenLoco reaches the GPU only through SDL's renderer abstraction. OpenRCT2's experimental renderer is OpenGL.
+No project examined in this chapter uses Vulkan. A source search across OpenRCT2, OpenTTD, OpenLoco, OpenRA, and FreeSO returns no Vulkan references in any of the five codebases. OpenRA's platform layer offers exactly one graphics backend — SDL2 with OpenGL. OpenTTD's GPU path is OpenGL, used as described in §2. OpenLoco reaches the GPU only through SDL's renderer abstraction. OpenRCT2's experimental renderer is OpenGL. FreeSO's MonoGame dependency is vendored against the `WindowsGL` profile (§6), meaning both its 2D and 3D paths reach the GPU through OpenGL as well.
 
 The generalization across the whole niche is therefore narrow and specific: **OpenGL appears only as an optional layer over a CPU sprite pipeline, or is absent entirely.** Not one project made a GPU API its primary or sole rendering path, and none adopted a modern explicit API.
 
@@ -1245,7 +1335,7 @@ The honest conclusion is that the sprite-compositing problem these projects face
 
 **Chapter 17 — Software Renderers (llvmpipe and Lavapipe)** covers the general-purpose CPU rasterization path in Mesa, and is the direct architectural analogue of §1's blitter stacks: both are software renderers that must present their finished pixel buffers through a GPU-backed window system, and both solve the handoff with the same PBO-and-fence machinery seen in OpenTTD's `GetVideoBuffer()`/`ReleaseVideoBuffer()` pair (§2.2). The instructive difference is specialization — llvmpipe JIT-compiles a general shading pipeline, while OpenTTD's blitters are hand-written specializations of a single fixed operation (palette-index blit) with SIMD variants per instruction set, which is why they remain competitive on a workload llvmpipe would handle far more slowly.
 
-**Chapter 244d — Modding Architectures: Scripting, Sandboxing, and Hot-Reload** generalizes §6's three data points. The Squirrel, duktape-JavaScript, and Lua choices documented here are three resolutions of the same embedding problem under different constraints — determinism inside a lockstep multiplayer simulation for OpenTTD's NoAI/GameScript, an explicitly versioned API plus a declared local/remote trust model for OpenRCT2's plugins, and callback-driven scenario scripting for OpenRA — and Chapter 244d contrasts them against WASM sandboxing, Harmony IL patching, and Godot's GDExtension, where isolation and hot-reload are primary design goals rather than consequences. OpenMW, excluded from this chapter, is treated there.
+**Chapter 244d — Modding Architectures: Scripting, Sandboxing, and Hot-Reload** generalizes §7's three data points. The Squirrel, duktape-JavaScript, and Lua choices documented here are three resolutions of the same embedding problem under different constraints — determinism inside a lockstep multiplayer simulation for OpenTTD's NoAI/GameScript, an explicitly versioned API plus a declared local/remote trust model for OpenRCT2's plugins, and callback-driven scenario scripting for OpenRA — and Chapter 244d contrasts them against WASM sandboxing, Harmony IL patching, and Godot's GDExtension, where isolation and hot-reload are primary design goals rather than consequences. OpenMW, excluded from this chapter, is treated there.
 
 **Chapter 84 — bgfx and Cross-Platform Rendering Abstraction** presents the modern alternative to §3's hand-built solution. OpenRCT2 solved instanced sprite batching from first principles: its own atlas allocator (§3.4), its own per-instance command encoding (§3.2–3.3), its own depth-peeling transparency (§3.7), and its own texture-array growth strategy — all written directly against OpenGL 3.3 and carrying the driver-compatibility burden of §3.8. bgfx supplies transient vertex buffers, instance buffers, and a backend-agnostic view/sort model that would express the same batch across OpenGL, Vulkan, Direct3D, and Metal without the renderer knowing which. The tradeoff visible by comparison is control over exact pixel semantics: OpenRCT2's `GL_R8UI` palette-index atlases and blend-palette transparency (§3.5, §3.7) are unusual enough that an abstraction layer's conveniences would have to be bypassed to reproduce them.
 
@@ -1297,6 +1387,17 @@ The honest conclusion is that the sprite-compositing problem these projects face
 - [`OpenRA.Mods.Common/Scripting/Global/`](https://github.com/OpenRA/OpenRA/tree/a520984d91eda9de48a62b1d15c1e3bad0d4fb1a/OpenRA.Mods.Common/Scripting/Global) — Lua script globals for mission scripting.
 - [GitHub — OpenRA/OpenRAModSDK](https://github.com/OpenRA/OpenRAModSDK) — Mod SDK for building standalone games on the OpenRA engine (GPL-3.0).
 
+**FreeSO**
+
+- [GitHub — riperiperi/FreeSO](https://github.com/riperiperi/FreeSO) — Reimplementation of *The Sims Online* (MPL-2.0, C#, MonoGame). Citations pinned to commit `4c6b3e8`. Active on the default branch as of 2026-08-28; most recent tagged release `beta-update-91a` (2024-12-08).
+- [`TSOClient/tso.world/Utils/_2DWorldBatch.cs`](https://github.com/riperiperi/FreeSO/blob/4c6b3e8f5835b228723caea3c9f683c62f244f73/TSOClient/tso.world/Utils/_2DWorldBatch.cs) — the six-render-target 2D sprite batcher, including `BUFFER_STATIC_DEPTH` and `BUFFER_OBJID`.
+- [`TSOClient/tso.files/RC/DGRP3DMesh.cs`](https://github.com/riperiperi/FreeSO/blob/4c6b3e8f5835b228723caea3c9f683c62f244f73/TSOClient/tso.files/RC/DGRP3DMesh.cs) — object-mesh reconstruction from sprite Z-buffer data, `CURRENT_VERSION`/`CURRENT_RECONSTRUCT`.
+- [`TSOClient/tso.world/Components/3DFloorGeometry.cs`](https://github.com/riperiperi/FreeSO/blob/4c6b3e8f5835b228723caea3c9f683c62f244f73/TSOClient/tso.world/Components/3DFloorGeometry.cs) — procedural wall/floor mesh generation from `Blueprint` tile data, independent of sprite Z-data.
+- [`TSOClient/tso.world/Model/GraphicsModes.cs`](https://github.com/riperiperi/FreeSO/blob/4c6b3e8f5835b228723caea3c9f683c62f244f73/TSOClient/tso.world/Model/GraphicsModes.cs) — the `GlobalGraphicsMode` enum (`Full2D`/`Hybrid2D`/`Full3D`).
+- [`TSOClient/tso.simantics/VM.cs`](https://github.com/riperiperi/FreeSO/blob/4c6b3e8f5835b228723caea3c9f683c62f244f73/TSOClient/tso.simantics/VM.cs) — `FSO.SimAntics.VM`, the SimAntics bytecode VM.
+- [FreeSO `README.md`](https://github.com/riperiperi/FreeSO/blob/4c6b3e8f5835b228723caea3c9f683c62f244f73/README.md) — "3D Mode" and "Volcanic" sections; source of the project's own "reconstructed at runtime from the z-buffers" and "generates 3D geometry for walls and floors at runtime" phrasing quoted in §6.
+- [FreeSO `LICENSE.md`](https://github.com/riperiperi/FreeSO/blob/4c6b3e8f5835b228723caea3c9f683c62f244f73/LICENSE.md) — Mozilla Public License 2.0, confirmed via both the repository file and the GitHub API's `license.spdx_id`.
+
 **Surveyed framework-consumer projects**
 
 - [GitHub — aburch/simutrans](https://github.com/aburch/simutrans) — Transport simulation (Artistic Licence per `simutrans/license.txt`, C++, SDL2 software rendering).
@@ -1341,24 +1442,24 @@ None of the four projects publishes a formal graphics roadmap. The items below a
 
 ### Near-term (6–12 months)
 
-- **OpenTTD's SDL3 migration carries the presentation-only backend across unchanged.** An open pull request migrates OpenTTD from SDL2 to SDL3, motivated by distribution availability — "SDL2 is starting to be dropped from Linux distributions, while SDL3 is available in most" — and renames `src/video/sdl2_opengl_v.cpp` to `sdl3_opengl_v.cpp` with about five added and five removed lines (`SDL_GL_DeleteContext` → `SDL_GL_DestroyContext`; `void *gl_context` → `SDL_GLContext`). `src/video/opengl.cpp` and `src/video/opengl.h` — the `OpenGLBackend` of §2 — are not among the changed files at all, and the build continues to acquire OpenGL through SDL rather than adopting SDL3's `SDL_gpu` API. A full SDL generation change leaves the fullscreen-quad presentation path intact [Source](https://github.com/OpenTTD/OpenTTD/pull/15779) (§2, §8).
-- **OpenTTD 16.0 is in beta, with no rendering work in scope.** Betas shipped 2026-06-25 and 2026-07-12 and the 16.0 milestone remains open [Source](https://github.com/OpenTTD/OpenTTD/milestone/8). A search of the tracker returns no open issues titled for OpenGL and no Vulkan references in issue titles or bodies [Source](https://github.com/OpenTTD/OpenTTD/issues); OpenTTD has announced no rendering-backend roadmap of any kind (§2, §8).
-- **OpenRCT2's SDL3 migration is proposed and currently blocked.** A pull request opened 2026-08-09 states the hope that migration "could open up the way for a SDL drawing engine which uses current and supported graphics APIs" — but that is the contributing author's framing, and the maintainer replies engaged only with blockers: one noting that the audio-engine rework must land first, another that "SDL3 is not available on distros we still target." No maintainer endorsed a new drawing engine [Source](https://github.com/OpenRCT2/OpenRCT2/pull/26902). The distribution assessment is the direct opposite of OpenTTD's, which illustrates how far this decision is driven by packaging rather than by rendering requirements (§3, §8).
-- **OpenRCT2's monthly release stream carries no renderer changes.** Releases have arrived roughly monthly from v0.5.1 (2026-05-17) to v0.5.4 (2026-08-02), with the v0.5.5 milestone due 2026-09-06 [Source](https://github.com/OpenRCT2/OpenRCT2/milestone/82). The v0.5.4 changelog contains no renderer, OpenGL or drawing-engine entries at all; its graphics-adjacent work is in tooling and the plugin surface instead — scripts gained the ability to trigger a save, and sprite-file export now emits an accompanying JSON manifest allowing round-trip conversion [Source](https://github.com/OpenRCT2/OpenRCT2/releases/tag/v0.5.4) (§3.8, §6.2).
-- **OpenRA's next stable release remains pending.** The last stable release is `release-20250330`; the only build since is `playtest-20260222`, headlined by new random map generators for Red Alert, Tiberian Dawn and Dune 2000, a Tiberian Dawn HD content manager for selecting between remastered and classic artwork (the mod "remains a standalone mod, we hope to complete the merge in the next release"), and further progress toward localisation. No rendering, graphics-backend or SDL work appears anywhere in the announcement [Source](https://www.openra.net/news/playtest-20260222/) (§5, §6.3).
+- **OpenTTD's SDL3 migration carries the presentation-only backend across unchanged.** An open pull request migrates OpenTTD from SDL2 to SDL3, motivated by distribution availability — "SDL2 is starting to be dropped from Linux distributions, while SDL3 is available in most" — and renames `src/video/sdl2_opengl_v.cpp` to `sdl3_opengl_v.cpp` with about five added and five removed lines (`SDL_GL_DeleteContext` → `SDL_GL_DestroyContext`; `void *gl_context` → `SDL_GLContext`). `src/video/opengl.cpp` and `src/video/opengl.h` — the `OpenGLBackend` of §2 — are not among the changed files at all, and the build continues to acquire OpenGL through SDL rather than adopting SDL3's `SDL_gpu` API. A full SDL generation change leaves the fullscreen-quad presentation path intact [Source](https://github.com/OpenTTD/OpenTTD/pull/15779) (§2, §9).
+- **OpenTTD 16.0 is in beta, with no rendering work in scope.** Betas shipped 2026-06-25 and 2026-07-12 and the 16.0 milestone remains open [Source](https://github.com/OpenTTD/OpenTTD/milestone/8). A search of the tracker returns no open issues titled for OpenGL and no Vulkan references in issue titles or bodies [Source](https://github.com/OpenTTD/OpenTTD/issues); OpenTTD has announced no rendering-backend roadmap of any kind (§2, §9).
+- **OpenRCT2's SDL3 migration is proposed and currently blocked.** A pull request opened 2026-08-09 states the hope that migration "could open up the way for a SDL drawing engine which uses current and supported graphics APIs" — but that is the contributing author's framing, and the maintainer replies engaged only with blockers: one noting that the audio-engine rework must land first, another that "SDL3 is not available on distros we still target." No maintainer endorsed a new drawing engine [Source](https://github.com/OpenRCT2/OpenRCT2/pull/26902). The distribution assessment is the direct opposite of OpenTTD's, which illustrates how far this decision is driven by packaging rather than by rendering requirements (§3, §9).
+- **OpenRCT2's monthly release stream carries no renderer changes.** Releases have arrived roughly monthly from v0.5.1 (2026-05-17) to v0.5.4 (2026-08-02), with the v0.5.5 milestone due 2026-09-06 [Source](https://github.com/OpenRCT2/OpenRCT2/milestone/82). The v0.5.4 changelog contains no renderer, OpenGL or drawing-engine entries at all; its graphics-adjacent work is in tooling and the plugin surface instead — scripts gained the ability to trigger a save, and sprite-file export now emits an accompanying JSON manifest allowing round-trip conversion [Source](https://github.com/OpenRCT2/OpenRCT2/releases/tag/v0.5.4) (§3.8, §7.2).
+- **OpenRA's next stable release remains pending.** The last stable release is `release-20250330`; the only build since is `playtest-20260222`, headlined by new random map generators for Red Alert, Tiberian Dawn and Dune 2000, a Tiberian Dawn HD content manager for selecting between remastered and classic artwork (the mod "remains a standalone mod, we hope to complete the merge in the next release"), and further progress toward localisation. No rendering, graphics-backend or SDL work appears anywhere in the announcement [Source](https://www.openra.net/news/playtest-20260222/) (§5, §7.3).
 
 ### Medium-term (1–3 years)
 
 - **OpenLoco's GPU renderer was attempted and abandoned as too invasive.** A "Hardware renderer" pull request opened 2025-11-05 and closed unmerged on 2025-11-27 reached a "hello triangle" milestone by starting from precisely the architecture §4 describes: it "renders the game to texture(cpu) and uses opengl to blit to screen, then calls opengl to draw the triangle (gpu)", with the intent to "start trying to draw more and more of the game with opengl". Its closing note reads: "this was just an experiment and would require rewriting the entire loco renderer to actually work. maybe one day...." [Source](https://github.com/OpenLoco/OpenLoco/pull/3374) This dates the project's own assessment of the cost, and confirms §4's reading that the software drawing engine is not incrementally GPU-portable (§4).
 - **OpenLoco's stated goals lie outside graphics.** The project records that the C++ reimplementation was completed as of December 2025 and names multiplayer and raised map and vehicle limits as its goals, the latter bounded by the original CSL (SV5/SC5) save format until a new save format exists [Source](https://github.com/OpenLoco/OpenLoco#readme). Graphics does not appear among the stated goals, and the monthly calendar-versioned releases (v26.04 through v26.07.1) contain no renderer work (§4).
-- **OpenRCT2's OpenGL renderer has no announced successor and no announced removal.** It remains opt-in and experimental, and defect reports continue to arrive against it: one opened 2026-08-03 reporting that enabling the OpenGL renderer drops the host OS below 1 FPS is still open [Source](https://github.com/OpenRCT2/OpenRCT2/issues/26859), alongside the older unresolved reports catalogued in §3.8. No replacement backend has been proposed. It is worth noting that the `IDrawingEngine` abstraction was introduced in 2016 with exactly this extension in mind — its pull request describes the goal as moving low-level 8bpp drawing behind an interface so that "in the future we will add other drawing engines which use other technologies such as OpenGL, DirectX, Vulkan etc or even a stub for headless mode" [Source](https://github.com/OpenRCT2/OpenRCT2/pull/3803). A decade later the OpenGL engine of §3 is the only one of those to have been written, and it is still marked experimental (§3.8, §8).
+- **OpenRCT2's OpenGL renderer has no announced successor and no announced removal.** It remains opt-in and experimental, and defect reports continue to arrive against it: one opened 2026-08-03 reporting that enabling the OpenGL renderer drops the host OS below 1 FPS is still open [Source](https://github.com/OpenRCT2/OpenRCT2/issues/26859), alongside the older unresolved reports catalogued in §3.8. No replacement backend has been proposed. It is worth noting that the `IDrawingEngine` abstraction was introduced in 2016 with exactly this extension in mind — its pull request describes the goal as moving low-level 8bpp drawing behind an interface so that "in the future we will add other drawing engines which use other technologies such as OpenGL, DirectX, Vulkan etc or even a stub for headless mode" [Source](https://github.com/OpenRCT2/OpenRCT2/pull/3803). A decade later the OpenGL engine of §3 is the only one of those to have been written, and it is still marked experimental (§3.8, §9).
 - **OpenRA's rendering issues are wishlist-grade, not roadmapped.** The open rendering-adjacent items are a 2026-06-14 proposal to route shader loading through the virtual filesystem abstraction and a long-standing request for a more efficient voxel renderer parked in the Tiberian Sun beta milestone [Source](https://github.com/OpenRA/OpenRA/issues/22509); the general "Renderer Improvements" issue is a 2017 user request still carrying an `Idea/Wishlist` label. The project's open milestones are dominated by Tiberian Sun and C&C Remastered content work rather than by graphics [Source](https://github.com/OpenRA/OpenRA/milestones). None of the open rendering-adjacent issues proposes changing the sampler-bounded batching of §5 (§5).
 
 ### Long-term
 
-- **No project surveyed has adopted SDL3's `SDL_gpu` API.** A source search for `SDL_gpu` and `SDL_GPU` across [OpenRCT2](https://github.com/OpenRCT2/OpenRCT2), [OpenTTD](https://github.com/OpenTTD/OpenTTD), [OpenLoco](https://github.com/OpenLoco/OpenLoco) and [OpenRA](https://github.com/OpenRA/OpenRA) returns no results as of 2026-08-13. This matters because `SDL_gpu` is the most plausible route by which a Vulkan-capable path could reach these engines without any of them writing Vulkan code directly — and none has announced plans to take it. Both SDL3 migrations in flight are toolkit-compatibility work driven by distribution packaging, not renderer work (§8).
-- **Translation layers, not native backends, are this niche's answer to Vulkan.** An issue requesting a Vulkan backend for OpenRA, opened 2026-08-09 and reasoning by analogy from the original *Red Alert* running over DXVK, drew a single reply from a project member: "Zink is essentially equivalent to DXVK for OpenGL." The issue remains open with no further discussion [Source](https://github.com/OpenRA/OpenRA/issues/22563). This is a position rather than a plan, but it is the same position §8 arrives at from the code: for an engine whose GPU work is a handful of quads per frame, the Vulkan path already exists below the application's API boundary, in the Mesa driver stack [Source](https://docs.mesa3d.org/drivers/zink.html), and moving it into the engine buys nothing the engine is bottlenecked on (§8).
-- **The architectures described in this chapter are end-states, not transitional stages.** On the available evidence, the only GPU-renderer initiative among the four projects in the past year closed unmerged as requiring a full renderer rewrite; no Vulkan work is in flight anywhere; and the SDL3 migrations preserve the existing OpenGL paths essentially verbatim. The CPU-composite-plus-fullscreen-quad design of §2 and §4, and the instanced palette-index sprite renderer of §3, are therefore best read as stable designs matched to a palettized 2D workload rather than as way-stations toward a modern GPU pipeline. No announced plan from any of the four projects contradicts that reading (§2, §3, §4, §8).
+- **No project surveyed has adopted SDL3's `SDL_gpu` API.** A source search for `SDL_gpu` and `SDL_GPU` across [OpenRCT2](https://github.com/OpenRCT2/OpenRCT2), [OpenTTD](https://github.com/OpenTTD/OpenTTD), [OpenLoco](https://github.com/OpenLoco/OpenLoco) and [OpenRA](https://github.com/OpenRA/OpenRA) returns no results as of 2026-08-13. This matters because `SDL_gpu` is the most plausible route by which a Vulkan-capable path could reach these engines without any of them writing Vulkan code directly — and none has announced plans to take it. Both SDL3 migrations in flight are toolkit-compatibility work driven by distribution packaging, not renderer work (§9).
+- **Translation layers, not native backends, are this niche's answer to Vulkan.** An issue requesting a Vulkan backend for OpenRA, opened 2026-08-09 and reasoning by analogy from the original *Red Alert* running over DXVK, drew a single reply from a project member: "Zink is essentially equivalent to DXVK for OpenGL." The issue remains open with no further discussion [Source](https://github.com/OpenRA/OpenRA/issues/22563). This is a position rather than a plan, but it is the same position §9 arrives at from the code: for an engine whose GPU work is a handful of quads per frame, the Vulkan path already exists below the application's API boundary, in the Mesa driver stack [Source](https://docs.mesa3d.org/drivers/zink.html), and moving it into the engine buys nothing the engine is bottlenecked on (§9).
+- **The architectures described in this chapter are end-states, not transitional stages.** On the available evidence, the only GPU-renderer initiative among the four projects in the past year closed unmerged as requiring a full renderer rewrite; no Vulkan work is in flight anywhere; and the SDL3 migrations preserve the existing OpenGL paths essentially verbatim. The CPU-composite-plus-fullscreen-quad design of §2 and §4, and the instanced palette-index sprite renderer of §3, are therefore best read as stable designs matched to a palettized 2D workload rather than as way-stations toward a modern GPU pipeline. No announced plan from any of the four projects contradicts that reading (§2, §3, §4, §9).
 
 ---
 
