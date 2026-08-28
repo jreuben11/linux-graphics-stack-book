@@ -16,19 +16,20 @@ The chapters in Parts I–XVII trace the Linux graphics stack from **DRM** kerne
 
 ## Comparison at a Glance
 
-The four GPU-facing technologies in this part all sit between application code and Vulkan, but they do so at different points on the abstraction spectrum — from "automate the boilerplate, keep every object" to "hide the API entirely behind a scene graph." CGAL is included for reference even though it never touches Vulkan: it is the upstream CPU geometry source the other four consume.
+The four GPU-facing technologies in this part all sit between application code and Vulkan, but they do so at different points on the abstraction spectrum — from "automate the boilerplate, keep every object" to "hide the API entirely behind a scene graph."
 
-| Feature | SDL3 GPU (Ch81) | VMA & Vulkan Helpers (Ch82) | Filament (Ch83) | bgfx (Ch84) | CGAL (Ch113) |
-|---|---|---|---|---|---|
-| **Abstraction level** | Full command-buffer API — replaces Vulkan entirely | Helper layer — augments Vulkan, doesn't replace it | Full rendering engine — replaces Vulkan and the renderer | Full rendering HAL — replaces Vulkan and the submission model | Not a GPU API — CPU geometry kernel |
-| **Vulkan objects visible to app code?** | No — `VkDevice`/`VkImage`/`VkDescriptorSet` never appear in application code | Yes — `VkImage`, `VkBuffer`, `VkDevice` are still created/owned by the app; VMA only automates allocation and pipeline/descriptor bootstrap | No — app code talks to `Engine`/`Scene`/`Renderer`/`Material`; `backend::Driver` is internal | No — opaque 16-bit typed handles (`bgfx::TextureHandle`, etc.) stand in for every backend object | N/A |
-| **Backend targets** | Vulkan, Metal, D3D12 | Vulkan only | Vulkan, OpenGL, Metal, WebGPU | Vulkan, OpenGL 3.1+, GLES, D3D11/12, Metal, WebGL, WebGPU (8 backends) | None |
-| **Memory allocation strategy** | Delegates to VMA internally | *Is* the allocator — suballocation, block management, defragmentation (VMA itself) | Internal, backend-specific arena/pool allocators | Internal, per-backend allocators | N/A |
-| **Shading/material model** | None — caller supplies SPIR-V and pipeline state directly | None — orthogonal to shading | Full Cook-Torrance PBR BRDF plus a material compiler (`matc`) and `.mat` shading-language front end | None — the `.sc`/`bgfx-shaderc` dialect is a cross-compilation convenience, not a BRDF or material system | N/A |
-| **Frame graph / pass scheduling** | Manual — explicit command buffers and barriers | N/A — not in scope for a helper library | Automatic `FrameGraph`: culling, resource aliasing, barrier insertion | Automatic view-sorted submission; the chapter's reference case study for the frame-graph pattern itself | N/A |
-| **Scene representation** | None — draw calls only | None | Full ECS (`utils::Entity`) with transform hierarchy | None — immediate-mode-style submission per view | Half-edge / polyhedral mesh data structures |
-| **Robustness guarantees** | None beyond Vulkan's own validation | None beyond Vulkan's own validation | Standard floating-point pipeline | Standard floating-point pipeline | Exact predicates / exact constructions kernels (CGAL's defining feature) |
-| **Where it earns its keep** | Wants Vulkan's explicit model without hand-rolling three backends | Wants raw Vulkan control with far less boilerplate | Wants a finished, physically based renderer, not a toolkit | Needs the widest possible platform/backend matrix, or wants a frame-graph reference implementation | Needs geometrically correct, watertight, or provably robust meshes before any GPU code runs |
+| Feature | SDL3 GPU (Ch81) | VMA & Helpers (Ch82) | Filament (Ch83) | bgfx (Ch84) |
+|---|---|---|---|---|
+| **Abstraction level** | Full command-buffer API | Helper layer, doesn't replace Vulkan | Full rendering engine | Full rendering HAL |
+| **Vulkan objects visible to app?** | No | Yes — app still owns `VkImage`/`VkBuffer`/`VkDevice` | No — talks to `Engine`/`Scene`/`Renderer` | No — opaque typed handles |
+| **Backend targets** | Vulkan, Metal, D3D12 | Vulkan only | Vulkan, OpenGL, Metal, WebGPU | 8 backends (Vulkan, GL, GLES, D3D11/12, Metal, WebGL, WebGPU) |
+| **Memory allocation** | Delegates to VMA internally | *Is* the allocator (VMA itself) | Internal, per-backend | Internal, per-backend |
+| **Shading/material model** | None — bring your own SPIR-V | None | Full Cook-Torrance PBR + `matc` compiler | None — `.sc` is cross-compilation only |
+| **Frame graph** | Manual | N/A | Automatic `FrameGraph` | Automatic; the chapter's frame-graph reference case study |
+| **Scene representation** | None — draw calls only | None | Full ECS (`utils::Entity`) | None — per-view submission |
+| **Where it earns its keep** | Vulkan's explicit model, minus three backends' worth of boilerplate | Raw Vulkan control with far less ceremony | A finished PBR renderer, not a toolkit | Widest backend matrix, or a frame-graph reference implementation |
+
+**CGAL (Ch113)** sits outside this table because it never touches Vulkan — it is a CPU-only computational geometry library (half-edge mesh data structures, exact predicates/constructions kernels) that produces the vertex and index buffers the four libraries above upload to the GPU.
 
 ## Scene Graph Architectures in Context
 
