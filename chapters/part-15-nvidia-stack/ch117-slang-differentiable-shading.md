@@ -25,42 +25,46 @@
 4. [The Programmatic Compilation API](#4-the-programmatic-compilation-api)
    - 4.1 [Session and Target Configuration](#41-session-and-target-configuration)
    - 4.2 [Module Loading, Linking, and Code Extraction](#42-module-loading-linking-and-code-extraction)
-   - 4.3 [Reflection](#43-reflection)
-5. [The GFX Abstraction Layer and slang-rhi](#5-the-gfx-abstraction-layer-and-slang-rhi)
-6. [Differentiable Programming Model](#6-differentiable-programming-model)
-   - 6.1 [The `IDifferentiable` Interface](#61-the-idifferentiable-interface)
-   - 6.2 [The `[Differentiable]` Attribute](#62-the-differentiable-attribute)
-   - 6.3 [`DifferentialPair<T>` and the `no_diff` Keyword](#63-differentialpair-and-the-no_diff-keyword)
-7. [Forward and Reverse Mode Differentiation](#7-forward-and-reverse-mode-differentiation)
-   - 7.1 [Forward Mode: `fwd_diff`](#71-forward-mode-fwd_diff)
-   - 7.2 [Reverse Mode: `bwd_diff`](#72-reverse-mode-bwd_diff)
-   - 7.3 [Custom Derivative Overrides](#73-custom-derivative-overrides)
-   - 7.4 [Loop Differentiation and Higher-Order Derivatives](#74-loop-differentiation-and-higher-order-derivatives)
-   - 7.5 [Global Buffer Gradients](#75-global-buffer-gradients)
-8. [Cooperative Vectors: Neural Inference in Shaders](#8-cooperative-vectors-neural-inference-in-shaders)
-9. [Neural Rendering Use Cases](#9-neural-rendering-use-cases)
-   - 9.1 [Differentiable Texture Compression](#91-differentiable-texture-compression)
-   - 9.2 [NeRF Shader Training Loops](#92-nerf-shader-training-loops)
-   - 9.3 [Neural BRDF Fitting](#93-neural-brdf-fitting)
-10. [Slang → SPIR-V on Linux: Full Vulkan Pipeline Walkthrough](#10-slang--spir-v-on-linux-full-vulkan-pipeline-walkthrough)
-11. [Falcor Research Renderer](#11-falcor-research-renderer)
-    - 11.1 [Architecture and Shader Authoring Workflow](#111-architecture-and-shader-authoring-workflow)
-    - 11.2 [Differentiable BC7 Compression Case Study](#112-differentiable-bc7-compression-case-study)
-12. [NeuralVDB, Omniverse, and NVIDIA Production Use](#12-neuralvdb-omniverse-and-nvidia-production-use)
-13. [SlangPy: Python and PyTorch Integration](#13-slangpy-python-and-pytorch-integration)
-14. [Slang + Vulkan as a Substrate for Differentiable World Model Rendering](#14-slang--vulkan-as-a-substrate-for-differentiable-world-model-rendering)
-    - 14.1 [The World Model Training Pipeline](#141-the-world-model-training-pipeline)
-    - 14.2 [The Differentiable Visual Decoder in Slang](#142-the-differentiable-visual-decoder-in-slang)
-    - 14.3 [The SlangPy Training Loop](#143-the-slangpy-training-loop)
-    - 14.4 [Inference on Vulkan: Real-Time World Model Rollout](#144-inference-on-vulkan-real-time-world-model-rollout)
-    - 14.5 [NVIDIA Cosmos: A Production World Model on the Slang Stack](#145-nvidia-cosmos-a-production-world-model-on-the-slang-stack)
-15. [Comparison with GLSL, WGSL, HLSL, and MDL](#15-comparison-with-glsl-wgsl-hlsl-and-mdl)
-16. [Building Slang from Source on Linux](#16-building-slang-from-source-on-linux)
-    - 16.1 [Prerequisites and Source Checkout](#161-prerequisites-and-source-checkout)
-    - 16.2 [CMake Configuration and Build](#162-cmake-configuration-and-build)
-    - 16.3 [CMake Integration in Downstream Projects](#163-cmake-integration-in-downstream-projects)
-    - 16.4 [Distribution Packages and Vulkan SDK](#164-distribution-packages-and-vulkan-sdk)
-17. [Integrations](#17-integrations)
+5. [The Reflection API](#5-the-reflection-api)
+   - 5.1 [The Reflection Object Model](#51-the-reflection-object-model)
+   - 5.2 [Layout Units and Binding Locations](#52-layout-units-and-binding-locations)
+   - 5.3 [Global Scope and Entry-Point Reflection](#53-global-scope-and-entry-point-reflection)
+   - 5.4 [Determining Usage and the JSON Reflection Dump](#54-determining-usage-and-the-json-reflection-dump)
+6. [The GFX Abstraction Layer and slang-rhi](#6-the-gfx-abstraction-layer-and-slang-rhi)
+7. [Differentiable Programming Model](#7-differentiable-programming-model)
+   - 7.1 [The `IDifferentiable` Interface](#71-the-idifferentiable-interface)
+   - 7.2 [The `[Differentiable]` Attribute](#72-the-differentiable-attribute)
+   - 7.3 [`DifferentialPair<T>` and the `no_diff` Keyword](#73-differentialpair-and-the-no_diff-keyword)
+8. [Forward and Reverse Mode Differentiation](#8-forward-and-reverse-mode-differentiation)
+   - 8.1 [Forward Mode: `fwd_diff`](#81-forward-mode-fwd_diff)
+   - 8.2 [Reverse Mode: `bwd_diff`](#82-reverse-mode-bwd_diff)
+   - 8.3 [Custom Derivative Overrides](#83-custom-derivative-overrides)
+   - 8.4 [Loop Differentiation and Higher-Order Derivatives](#84-loop-differentiation-and-higher-order-derivatives)
+   - 8.5 [Global Buffer Gradients](#85-global-buffer-gradients)
+9. [Cooperative Vectors: Neural Inference in Shaders](#9-cooperative-vectors-neural-inference-in-shaders)
+10. [Neural Rendering Use Cases](#10-neural-rendering-use-cases)
+    - 10.1 [Differentiable Texture Compression](#101-differentiable-texture-compression)
+    - 10.2 [NeRF Shader Training Loops](#102-nerf-shader-training-loops)
+    - 10.3 [Neural BRDF Fitting](#103-neural-brdf-fitting)
+11. [Slang → SPIR-V on Linux: Full Vulkan Pipeline Walkthrough](#11-slang--spir-v-on-linux-full-vulkan-pipeline-walkthrough)
+12. [Falcor Research Renderer](#12-falcor-research-renderer)
+    - 12.1 [Architecture and Shader Authoring Workflow](#121-architecture-and-shader-authoring-workflow)
+    - 12.2 [Differentiable BC7 Compression Case Study](#122-differentiable-bc7-compression-case-study)
+13. [NeuralVDB, Omniverse, and NVIDIA Production Use](#13-neuralvdb-omniverse-and-nvidia-production-use)
+14. [SlangPy: Python and PyTorch Integration](#14-slangpy-python-and-pytorch-integration)
+15. [Slang + Vulkan as a Substrate for Differentiable World Model Rendering](#15-slang--vulkan-as-a-substrate-for-differentiable-world-model-rendering)
+    - 15.1 [The World Model Training Pipeline](#151-the-world-model-training-pipeline)
+    - 15.2 [The Differentiable Visual Decoder in Slang](#152-the-differentiable-visual-decoder-in-slang)
+    - 15.3 [The SlangPy Training Loop](#153-the-slangpy-training-loop)
+    - 15.4 [Inference on Vulkan: Real-Time World Model Rollout](#154-inference-on-vulkan-real-time-world-model-rollout)
+    - 15.5 [NVIDIA Cosmos: A Production World Model on the Slang Stack](#155-nvidia-cosmos-a-production-world-model-on-the-slang-stack)
+16. [Comparison with GLSL, WGSL, HLSL, and MDL](#16-comparison-with-glsl-wgsl-hlsl-and-mdl)
+17. [Building Slang from Source on Linux](#17-building-slang-from-source-on-linux)
+    - 17.1 [Prerequisites and Source Checkout](#171-prerequisites-and-source-checkout)
+    - 17.2 [CMake Configuration and Build](#172-cmake-configuration-and-build)
+    - 17.3 [CMake Integration in Downstream Projects](#173-cmake-integration-in-downstream-projects)
+    - 17.4 [Distribution Packages and Vulkan SDK](#174-distribution-packages-and-vulkan-sdk)
+18. [Integrations](#18-integrations)
 
 ---
 
@@ -118,7 +122,7 @@ Differentiable rendering is a rendering pipeline architecture in which the gradi
 
 Classical rasterisation and ray-tracing pipelines are not differentiable: visibility decisions — which triangle covers a pixel, which surface a ray hits first — introduce discontinuities that have zero or undefined gradient almost everywhere. Differentiable rendering frameworks handle these discontinuities by smoothing visibility at silhouette edges, using Monte Carlo gradient estimators, or restricting differentiation to the shading computation while treating visibility as a fixed black box. Slang's autodiff system targets the shading computation: BRDF evaluation, texture sampling, and light integration are all differentiable, while BVH traversal or rasterisation is treated as a non-differentiable primitive.
 
-On Linux, a differentiable Slang shader compiles to one SPIR-V module for the forward pass and an augmented SPIR-V kernel for the backward pass, both running on the same Vulkan device. The gradient outputs flow into a PyTorch optimiser via the SlangPy Python binding (§13), completing the training loop on the GPU without a CPU round-trip for intermediate values.
+On Linux, a differentiable Slang shader compiles to one SPIR-V module for the forward pass and an augmented SPIR-V kernel for the backward pass, both running on the same Vulkan device. The gradient outputs flow into a PyTorch optimiser via the SlangPy Python binding (§14), completing the training loop on the GPU without a CPU round-trip for intermediate values.
 
 ---
 
@@ -185,7 +189,7 @@ At compile time, `evalDirect<GGXMaterial>` is specialised into concrete code; a 
 
 ### 2.2 Associated Types
 
-Associated types allow an interface to declare that an implementation must provide a named type, not just methods. This is essential for the autodiff system (§6) and for material systems where the "tangent space" type differs per material:
+Associated types allow an interface to declare that an implementation must provide a named type, not just methods. This is essential for the autodiff system (§7) and for material systems where the "tangent space" type differs per material:
 
 ```slang
 interface IShape {
@@ -211,7 +215,7 @@ struct Box3D : IShape {
 }
 ```
 
-The `IDifferentiable` interface (§6.1) uses associated types to declare the `Differential` type for each differentiable data type.
+The `IDifferentiable` interface (§7.1) uses associated types to declare the `Differential` type for each differentiable data type.
 
 ### 2.3 Module System and Separate Compilation
 
@@ -457,7 +461,7 @@ slangc <source.slang>           \
 
 ## 4. The Programmatic Compilation API
 
-For production integration, applications use Slang's C++ API (`slang.h`) rather than shelling out to `slangc`. The API supports incremental compilation, thread-safe parallel code generation after linking, and deep reflection.
+For production integration, applications use Slang's C++ API (`slang.h`) rather than shelling out to `slangc`. The API supports incremental compilation, thread-safe parallel code generation after linking, and reflection — the reflection object model is deep enough to warrant its own treatment in §5.
 
 ### 4.1 Session and Target Configuration
 
@@ -557,30 +561,94 @@ vkCreateShaderModule(device, &smci, nullptr, &shaderModule);
 
 **Threading model.** Global session creation is internally thread-safe. Front-end work (module loading, type-checking, linking) is not thread-safe within a single session — use one session per thread, or serialise calls. After `link()` completes, `getEntryPointCode()`, `getTargetCode()`, and `getTargetMetadata()` are safe for concurrent calls from multiple threads on the same linked program. This allows a thread pool to extract code for many entry points simultaneously.
 
-### 4.3 Reflection
+---
 
-After linking, the reflection API provides the complete parameter layout:
+## 5. The Reflection API
+
+After `link()` completes, the reflection API — rooted at `slang::ProgramLayout` — exposes the complete, target-specific layout of a compiled program: every parameter's type, size, and binding location, without the host application hardcoding register numbers or descriptor set indices. This section works through the reflection object model, the layout-unit system that maps Slang parameters onto target-specific binding schemes (D3D registers, Vulkan descriptor sets, WGSL binding groups), and the JSON dump facility. It follows the Slang project's reflection user guide. [Source](https://shader-slang.org/slang/user-guide/reflection)
+
+### 5.1 The Reflection Object Model
+
+`ProgramLayout` is obtained from `IComponentType::getLayout(targetIndex)` — the same call used in §4.2 to fetch the layout before iterating parameters. Two things hang off it: the global scope, reached through `getGlobalParamsVarLayout()`, and zero or more entry points, reached through `getEntryPointCount()`/`getEntryPointByIndex()`.
+
+The API separates *structural* reflection from *layout* reflection. `TypeReflection` and `VariableReflection` describe a type or variable's shape only — name, kind (`getKind()` returns `Scalar`, `Vector`, `Matrix`, `Struct`, `Array`, `Resource`, and so on), and for structs, `getFieldCount()`/`getFieldByIndex()`. `TypeLayoutReflection` and `VariableLayoutReflection` wrap those with target-specific layout: size (`getSize()`), alignment and stride, and — for struct fields — child `VariableLayoutReflection`s obtained the same way, so the object graph mirrors the shader's own nesting. [Source](https://shader-slang.org/slang/user-guide/reflection)
+
+Single-element containers — `ConstantBuffer<T>`, `ParameterBlock<T>`, `TextureBuffer`, and shader storage buffers — are a documented special case: a `TypeLayoutReflection` for one of these does not expose a plain element type via `getElementType()`. Instead, `getContainerVarLayout()` describes the container's own binding (e.g., the constant-buffer register itself), and `getElementVarLayout()` describes where the contained value sits relative to it. This decomposition exists because a `ConstantBuffer<T>` whose `T` embeds a texture reference "leaks" that texture's binding out of the constant buffer's own slot — the container and element parts can consume entirely different binding locations. [Source](https://shader-slang.org/slang/user-guide/reflection)
 
 ```cpp
-// Get the program layout for target 0
+// Get the program layout for target 0 (as in §4.2, after link())
 slang::ProgramLayout* layout = linkedProgram->getLayout(/*targetIndex=*/0);
 
-// Iterate global parameters
+// Iterate global parameters and walk into struct-typed fields
 for (int i = 0; i < layout->getParameterCount(); ++i) {
     slang::VariableLayoutReflection* param = layout->getParameterByIndex(i);
-    const char* name    = param->getName();
-    unsigned binding    = param->getBindingIndex();
-    unsigned bindingSet = param->getBindingSpace();
-    slang::TypeLayoutReflection* type = param->getTypeLayout();
-    // Use to drive descriptor set allocation without hardcoding register numbers
+    const char* name = param->getName();
+    slang::TypeLayoutReflection* typeLayout = param->getTypeLayout();
+
+    if (typeLayout->getKind() == slang::TypeReflection::Kind::Struct) {
+        for (unsigned f = 0; f < typeLayout->getFieldCount(); ++f) {
+            slang::VariableLayoutReflection* field = typeLayout->getFieldByIndex(f);
+            // field->getOffset(...) is relative to the enclosing struct, not global
+        }
+    }
 }
 ```
 
-Reflection eliminates the need to manually declare binding numbers in both the shader and the host code — a common source of bugs in large HLSL codebases. [Source](https://shader-slang.org/slang/user-guide/)
+### 5.2 Layout Units and Binding Locations
+
+A variable's binding location is not a single number — it is one offset per *layout unit* the variable actually uses, enumerated by the `SlangParameterCategory` (`ParameterCategory` in the C++ API): `Uniform` for byte offsets into ordinary constant-buffer data; the D3D register-kind categories `ConstantBuffer`, `ShaderResource`, `UnorderedAccess`, and `SamplerState`; `DescriptorTableSlot` for the Vulkan binding / SPIR-V descriptor slot; `SubElementRegisterSpace` for the D3D register space, Vulkan descriptor set, or WGSL binding group; and `VaryingInput`/`VaryingOutput` for stage-I/O slots. A single variable can span more than one category at once — a struct containing both ordinary data and a texture reference reports both `Uniform` and `ShaderResource`. [Source](https://shader-slang.org/slang/user-guide/reflection)
+
+`VariableLayoutReflection::getCategoryCount()`/`getCategoryByIndex()` enumerate which units a given variable actually uses; `getOffset(category)` and `getBindingSpace(category)` then give the offset and the space/set/group within that unit. This chapter's `getBindingIndex()`/`getBindingSpace()` calls in earlier examples are convenience accessors over the same underlying model, defaulting to the `DescriptorTableSlot` category. Offsets reported this way are always *relative* to the enclosing scope (struct, container, or program scope) — computing a cumulative, absolute binding location requires summing contributions along the full access path from the parameter down to the leaf field, which the reflection guide documents explicitly because it is a common source of bugs when reflection-driven binding code is written by hand. [Source](https://shader-slang.org/slang/user-guide/reflection)
+
+```cpp
+for (int i = 0; i < layout->getParameterCount(); ++i) {
+    slang::VariableLayoutReflection* param = layout->getParameterByIndex(i);
+    const char* name = param->getName();
+
+    for (unsigned c = 0; c < param->getCategoryCount(); ++c) {
+        slang::ParameterCategory category = param->getCategoryByIndex(c);
+        unsigned offset = param->getOffset(category);
+        unsigned space  = param->getBindingSpace(category);
+        // category == DescriptorTableSlot -> offset is the Vulkan binding index;
+        // category == SubElementRegisterSpace -> offset is the descriptor set index
+    }
+}
+```
+
+### 5.3 Global Scope and Entry-Point Reflection
+
+Global parameters are automatically gathered into an implicit struct, then — depending on the target and on whether the parameters mix ordinary data with opaque resources — wrapped in a `ConstantBuffer` (if they carry byte data) and/or a `ParameterBlock` (if they need their own descriptor set and lack explicit binding annotations). `getGlobalParamsVarLayout()` is the documented entry point for reading this back; application code recursively unwraps the returned variable layout's `Kind` (`Struct`, `ConstantBuffer`, or `ParameterBlock`) to reach the underlying parameters. [Source](https://shader-slang.org/slang/user-guide/reflection)
+
+`EntryPointReflection`, reached via `getEntryPointByIndex()` (or matched by name against the `IEntryPoint` found with `findEntryPointByName()` in §4.2), reflects one shader stage: `getStage()` returns the pipeline stage, `getVarLayout()` returns the entry point's own parameters (subject to the same constant-buffer/parameter-block wrapping as the global scope), and `getResultVarLayout()` reflects the return value where one exists. For compute entry points specifically, `getComputeThreadGroupSize(int count, SlangUInt sizes[])` fills in the `[numthreads]`/`[shader("compute")]` thread-group dimensions declared in the shader — letting host code compute a dispatch grid without parsing or duplicating the `.slang` source. [Source](https://shader-slang.org/slang/user-guide/reflection)
+
+```cpp
+slang::EntryPointReflection* ep = layout->getEntryPointByIndex(0);
+if (ep->getStage() == SLANG_STAGE_COMPUTE) {
+    SlangUInt threadGroupSize[3];
+    ep->getComputeThreadGroupSize(3, threadGroupSize);
+    uint32_t groupsX = (imageWidth  + (uint32_t)threadGroupSize[0] - 1) / (uint32_t)threadGroupSize[0];
+    uint32_t groupsY = (imageHeight + (uint32_t)threadGroupSize[1] - 1) / (uint32_t)threadGroupSize[1];
+    vkCmdDispatch(cmdBuf, groupsX, groupsY, 1);
+}
+```
+
+### 5.4 Determining Usage and the JSON Reflection Dump
+
+Because Slang's compiler performs dead-code elimination and specialization during linking, a parameter that exists in the source may not survive to the final target — and reflection alone cannot say whether a given binding location is actually live. For that, `IComponentType::getEntryPointMetadata()` and `getTargetMetadata()` return an `IMetadata` object whose `isParameterLocationUsed(category, space, offset, &isUsed)` tests one cumulative binding coordinate at a time; the reflection guide notes this check has target-specific limitations for varying inputs on the Metal and WGSL backends. [Source](https://shader-slang.org/slang/user-guide/reflection)
+
+Reflection is also available without linking against the C++ API at all: `slangc`'s `-reflection-json <path>` option emits the same object model as JSON. Each entry point (and the global scope) gets a `"scope"` object recording whether parameters are wrapped (`"kind": "none"` or `"constantBuffer"`), the container's own `"binding"` location, and a nested `"parameters"` array; a flat, backward-compatible `"parameters"` array is retained at the top level and per entry point for older consumers. [Source](https://shader-slang.org/slang/user-guide/reflection)
+
+```bash
+# Emit reflection as JSON instead of (or alongside) compiled output —
+# useful for build-time codegen of binding structs without a C++ dependency on libslang
+slangc path_tracer.slang -entry pathTraceMain -target spirv -reflection-json layout.json
+```
+
+Reflection-driven binding resolution — looking up a location by name instead of hardcoding a register or descriptor index — is a pattern this chapter relies on elsewhere. Falcor's `ParameterBlock`-based `ProgramVars` system (§12.1) resolves expressions like `mpVars["perFrameCB"]["gColor"]` through reflection rather than fixed registers, and SlangPy (§14) uses the same reflection object model to map PyTorch tensor arguments onto buffer bindings automatically when a kernel is called from Python.
 
 ---
 
-## 5. The GFX Abstraction Layer and slang-rhi
+## 6. The GFX Abstraction Layer and slang-rhi
 
 Slang ships a cross-API graphics abstraction to make its sample applications portable across Vulkan, D3D12, Metal, WebGPU, CUDA, and CPU. Two generations exist:
 
@@ -618,7 +686,7 @@ For teams building their own Vulkan renderer rather than using slang-rhi, the pr
 
 ---
 
-## 6. Differentiable Programming Model
+## 7. Differentiable Programming Model
 
 The differentiable programming model in Slang is layered. At the bottom, the `IDifferentiable` interface defines what it means for a type to have a derivative. Above that, the `[Differentiable]` attribute instructs the Slang compiler to generate derivative transforms for a function. At the call site, `fwd_diff` and `bwd_diff` materialize the forward- and reverse-mode Jacobian transforms.
 
@@ -636,7 +704,7 @@ graph TD
     IDIFF --> DPAIR
 ```
 
-### 6.1 The `IDifferentiable` Interface
+### 7.1 The `IDifferentiable` Interface
 
 `IDifferentiable` is a built-in Slang interface. Any type that implements it can participate in automatic differentiation. Slang auto-synthesises the implementation for structs whose all fields are themselves differentiable:
 
@@ -686,7 +754,7 @@ struct CachedBRDF : IDifferentiable {
 
     float  roughness;
     float3 F0;
-    no_diff float precomputedLUT; // not in Differential — see §6.3
+    no_diff float precomputedLUT; // not in Differential — see §7.3
 
     static CachedBRDFGrad dzero() { return { 0.0, float3(0) }; }
     static CachedBRDFGrad dadd(CachedBRDFGrad a, CachedBRDFGrad b) {
@@ -711,7 +779,7 @@ struct CachedBRDFGrad : IDifferentiable {
 }
 ```
 
-### 6.2 The `[Differentiable]` Attribute
+### 7.2 The `[Differentiable]` Attribute
 
 `[Differentiable]` on a function instructs the Slang compiler to make that function differentiable. The function body must use only differentiable operations or explicitly `no_diff`-marked non-differentiable subexpressions:
 
@@ -757,7 +825,7 @@ float brdfFitLoss(float roughness, float3 F0,
 }
 ```
 
-### 6.3 `DifferentialPair<T>` and the `no_diff` Keyword
+### 7.3 `DifferentialPair<T>` and the `no_diff` Keyword
 
 `DifferentialPair<T>` packages a primal value with its derivative:
 
@@ -788,11 +856,11 @@ float y = detach(someExpr) * 2.0;
 
 ---
 
-## 7. Forward and Reverse Mode Differentiation
+## 8. Forward and Reverse Mode Differentiation
 
 Slang supports both classical modes of automatic differentiation. Forward mode (Jacobian-vector product) is efficient when the number of inputs is small. Reverse mode (vector-Jacobian product) is efficient when the number of outputs is small — the usual case in machine learning, where the output is a scalar loss.
 
-### 7.1 Forward Mode: `fwd_diff`
+### 8.1 Forward Mode: `fwd_diff`
 
 `fwd_diff(f)` returns a callable whose signature replaces each differentiable `in` parameter of type `T` with `DifferentialPair<T>` and each differentiable return value `R` with `DifferentialPair<R>`. Running the result propagates a single "seed" direction (the derivative component of the input pairs) through the function to produce the directional derivative of the output.
 
@@ -821,7 +889,7 @@ void testForwardMode() {
 
 [Source: autodiff user guide](https://shader-slang.org/slang/user-guide/autodiff.html)
 
-### 7.2 Reverse Mode: `bwd_diff`
+### 8.2 Reverse Mode: `bwd_diff`
 
 `bwd_diff(f)` returns a `void` callable that propagates an upstream gradient (loss derivative with respect to the function's output) backward through all differentiable inputs simultaneously. This is far more efficient than running `fwd_diff` once per input when there are many inputs:
 
@@ -852,7 +920,7 @@ void testReverseMode() {
 
 The backward pass generated by Slang implements the adjoint method: it replays (or re-checkpoints) the forward computation to recover intermediate values, then propagates gradients in reverse using the chain rule. [Source: SLANG.D paper](https://dl.acm.org/doi/10.1145/3618353)
 
-### 7.3 Custom Derivative Overrides
+### 8.3 Custom Derivative Overrides
 
 For functions whose bodies are inaccessible (hardware intrinsics, black-box library calls) or whose naive autodiff derivative is numerically unstable, Slang provides custom derivative override attributes.
 
@@ -909,7 +977,7 @@ Additional override attributes:
 
 [Source: autodiff user guide §custom derivatives](https://shader-slang.org/slang/user-guide/autodiff.html)
 
-### 7.4 Loop Differentiation and Higher-Order Derivatives
+### 8.4 Loop Differentiation and Higher-Order Derivatives
 
 Loops with dynamic bounds require an explicit `[MaxIters(N)]` annotation so the Slang compiler can allocate a finite adjoint stack:
 
@@ -939,7 +1007,7 @@ var d2sin = fwd_diff(fwd_diff(sin));
 
 Nesting `bwd_diff` multiple times is not supported. For higher-order reverse-mode differentiation, use layered forward passes: compute the first derivative in forward mode, then differentiate that in reverse mode.
 
-### 7.5 Global Buffer Gradients
+### 8.5 Global Buffer Gradients
 
 Shader memory accessed through `StructuredBuffer` / `RWStructuredBuffer` is not automatically differentiable because buffers are, from the type system's perspective, opaque memory. Custom backward overrides bridge this gap:
 
@@ -974,7 +1042,7 @@ In the backward kernel generated by `bwd_diff(computeOutput)`, calls to `readWei
 
 ---
 
-## 8. Cooperative Vectors: Neural Inference in Shaders
+## 9. Cooperative Vectors: Neural Inference in Shaders
 
 Slang added experimental support for **Cooperative Vectors** in January 2025, based on the `SPV_NV_cooperative_vector` SPIR-V extension and the corresponding `VK_NV_cooperative_vector` Vulkan extension. [Source](https://shader-slang.org/blog/2025/01/30/coop-vec-available/)
 
@@ -1075,9 +1143,9 @@ The SIGGRAPH 2025 neural shading course provides complete training and inference
 
 ---
 
-## 9. Neural Rendering Use Cases
+## 10. Neural Rendering Use Cases
 
-### 9.1 Differentiable Texture Compression
+### 10.1 Differentiable Texture Compression
 
 The most immediately practical autodiff application in production rendering is optimising texture compression block parameters against the actual rendered output rather than against the raw texel values. The key insight is that BC7 block decoding is a piecewise-linear function of the block's endpoint and weight parameters — it is differentiable almost everywhere, and `[Differentiable]` exposes the gradient.
 
@@ -1156,7 +1224,7 @@ void optimizeBlockKernel(
 
 Falcor's BC7 texture encoder, written in this style, achieves **400 4K textures per second** (6.5 GTexel/s) on RTX 4090 by running gradient descent on block endpoints entirely on GPU. [Source: SLANG.D paper §6.1](https://dl.acm.org/doi/10.1145/3618353)
 
-### 9.2 NeRF Shader Training Loops
+### 10.2 NeRF Shader Training Loops
 
 A differentiable path tracer trains a NeRF-style implicit representation by comparing rendered pixels to ground-truth images. The volumetric rendering integral is approximated by ray marching; the density and colour at each sample point come from a neural network (or multi-resolution hash encoding). The entire forward pass must be differentiable with respect to the network weights.
 
@@ -1296,7 +1364,7 @@ float pixelLoss(NeRFMLP net, no_diff Ray ray, no_diff float3 gtColor, no_diff in
 
 The backward pass via `bwd_diff(pixelLoss)` produces gradients with respect to every weight in `net`. In practice, the SLANG.D paper demonstrated converting a Direct3D-based path tracer to a fully differentiable renderer by adding autodiff annotations to existing code, **reusing over 5,000 lines** of existing Slang shader code. [Source](https://dl.acm.org/doi/10.1145/3618353)
 
-### 9.3 Neural BRDF Fitting
+### 10.3 Neural BRDF Fitting
 
 Neural BRDF fitting represents a material's reflectance function as a small MLP, training on measured BRDF data (e.g., MERL/MIT datasets) or physically-based reference renders. The training loss compares the MLP's predictions against the reference:
 
@@ -1311,7 +1379,7 @@ RWStructuredBuffer<float> gNetGrads;
 
 [Differentiable]
 float3 evalNeuralBRDF(float3 angles) {
-    // Custom backward reads gradient from gNetGrads (pattern from §7.5)
+    // Custom backward reads gradient from gNetGrads (pattern from §8.5)
     // For brevity, this is shown as a black-box with custom derivative.
     float3 out = float3(0);
     // ... MLP eval reading from gNetWeights ...
@@ -1347,9 +1415,9 @@ After training, the fitted neural BRDF replaces an analytic GGX model with a net
 
 ---
 
-## 10. Slang → SPIR-V on Linux: Full Vulkan Pipeline Walkthrough
+## 11. Slang → SPIR-V on Linux: Full Vulkan Pipeline Walkthrough
 
-This section assembles the pieces from §§3–4 into a complete, runnable Vulkan compute dispatch that trains texture endpoints using the BC7 optimizer from §9.1.
+This section assembles the pieces from §§3–4 into a complete, runnable Vulkan compute dispatch that trains texture endpoints using the BC7 optimizer from §10.1.
 
 ```mermaid
 graph TD
@@ -1469,9 +1537,9 @@ void dispatchTrainStep(VkCommandBuffer cmd, uint32_t nBlocks, float lr) {
 
 ---
 
-## 11. Falcor Research Renderer
+## 12. Falcor Research Renderer
 
-### 11.1 Architecture and Shader Authoring Workflow
+### 12.1 Architecture and Shader Authoring Workflow
 
 Falcor is NVIDIA's real-time rendering research framework and the primary production consumer of Slang. Every shader in Falcor is written in Slang. [Source](https://github.com/NVIDIAGameWorks/Falcor)
 
@@ -1521,11 +1589,11 @@ Falcor's `ProgramManager` wraps the Slang session API from §4, adding:
 
 Falcor file extensions: `.slang` (main shader), `.slangh` (header/utility module, not an entry point), `.hlsl`, `.hlsli` (HLSL compatibility; compiled by Slang with HLSL semantics).
 
-### 11.2 Differentiable BC7 Compression Case Study
+### 12.2 Differentiable BC7 Compression Case Study
 
 The SLANG.D paper's primary case study was a differentiable BC7 texture encoder in Falcor. Starting from Falcor's existing rasterisation path, the team:
 
-1. Marked the BC7 block decoder `[Differentiable]` (identical to §9.1 above).
+1. Marked the BC7 block decoder `[Differentiable]` (identical to §10.1 above).
 2. Wrote a per-block MSE loss that compares decoded texels against the source image.
 3. Added an SGD optimiser loop that runs `bwd_diff(blockMSE)` for a fixed number of iterations.
 4. Connected the optimizer to the existing rasterisation pipeline so gradient descent runs on GPU in a single-pass compute dispatch.
@@ -1536,7 +1604,7 @@ Result: **400 4K textures per second** on RTX 4090, compared to ~10 textures per
 
 ---
 
-## 12. NeuralVDB, Omniverse, and NVIDIA Production Use
+## 13. NeuralVDB, Omniverse, and NVIDIA Production Use
 
 **Omniverse and the RTX Renderer.** NVIDIA Omniverse's RTX Renderer uses Slang for shader authoring throughout its path-tracing mode. Material Definition Language (MDL) materials are compiled to OptiX callable programs via MDL Core; as of 2026, MaterialX materials can additionally generate Slang source via `MaterialXGenSlang`, which then compiles to PTX. Chapter 69 covers the Omniverse architecture in depth; this section focuses on the Slang-specific production details.
 
@@ -1552,7 +1620,7 @@ Result: **400 4K textures per second** on RTX 4090, compared to ~10 textures per
 
 ---
 
-## 13. SlangPy: Python and PyTorch Integration
+## 14. SlangPy: Python and PyTorch Integration
 
 SlangPy exposes Slang GPU kernels directly to Python with zero C++ wrapper code, supporting Vulkan, D3D12, Metal, and CUDA backends. PyTorch tensors are detected automatically and passed as GPU buffer bindings.
 
@@ -1604,7 +1672,7 @@ The predecessor `slang-torch` library ([github.com/shader-slang/slang-torch](htt
 
 ---
 
-## 14. Slang + Vulkan as a Substrate for Differentiable World Model Rendering
+## 15. Slang + Vulkan as a Substrate for Differentiable World Model Rendering
 
 **World models** are AI systems that learn a probabilistic model of how an environment evolves over time — given a current visual observation and an action, the model predicts what the agent will observe next. Recent systems include:
 
@@ -1614,9 +1682,9 @@ The predecessor `slang-torch` library ([github.com/shader-slang/slang-torch](htt
 - **Genie 2** (Google DeepMind, 2024) — interactive 3D environment generation from a single image
 - **Cosmos** (NVIDIA, January 2025) — world foundation model for physical AI (robotics, autonomous vehicles), trained on video token sequences
 
-The Linux graphics stack is directly relevant because world models that use **neural radiance field** or **3D Gaussian splatting** decoders — or that render predicted future states into image space to compute a visual training loss — require a differentiable rendering path. Slang's autodiff (§6–7) provides that path; Vulkan provides the GPU-portable runtime substrate for both training and inference.
+The Linux graphics stack is directly relevant because world models that use **neural radiance field** or **3D Gaussian splatting** decoders — or that render predicted future states into image space to compute a visual training loss — require a differentiable rendering path. Slang's autodiff (§7–8) provides that path; Vulkan provides the GPU-portable runtime substrate for both training and inference.
 
-### 14.1 The World Model Training Pipeline
+### 15.1 The World Model Training Pipeline
 
 A world model with a visual rendering component has two interleaved phases:
 
@@ -1634,15 +1702,15 @@ A world model with a visual rendering component has two interleaved phases:
 
 Slang addresses step 3 of training (the differentiable renderer) and step 3 of inference (the lean forward-only GPU renderer). Vulkan's compute queues and `VK_KHR_timeline_semaphore` (Chapter 148) coordinate the two phases without CPU synchronisation in the hot path.
 
-### 14.2 The Differentiable Visual Decoder in Slang
+### 15.2 The Differentiable Visual Decoder in Slang
 
-The visual decoder maps a latent vector **z** into image space. In a NeRF-based world model this is a volumetric ray-march whose density and colour fields are conditioned on **z**. The forward pass follows the pattern from §9.2, with one addition: gradients must flow back through **z** into the dynamics model:
+The visual decoder maps a latent vector **z** into image space. In a NeRF-based world model this is a volumetric ray-march whose density and colour fields are conditioned on **z**. The forward pass follows the pattern from §10.2, with one addition: gradients must flow back through **z** into the dynamics model:
 
 ```slang
 // File: world_model_decoder.slang
 // Differentiable visual decoder: latent z → rendered pixel colour.
 // Gradients flow through z back to the dynamics model; through netWeights
-// to the decoder MLP via the custom backward pattern from §7.5.
+// to the decoder MLP via the custom backward pattern from §8.5.
 
 [Differentiable]
 float3 decodeLatentToColor(
@@ -1689,11 +1757,11 @@ float worldModelPixelLoss(
 
 The backward pass via `bwd_diff(worldModelPixelLoss)` produces two gradient signals simultaneously:
 - **`dL/dz`** — gradient of pixel loss w.r.t. the latent state, flowing back through the dynamics model optimizer
-- **`dL/d(netWeights)`** — gradient w.r.t. decoder MLP weights, written atomically into `netGrads` via the §7.5 custom backward pattern
+- **`dL/d(netWeights)`** — gradient w.r.t. decoder MLP weights, written atomically into `netGrads` via the §8.5 custom backward pattern
 
 This dual gradient flow — from pixel loss back into both the scene representation network and the temporal dynamics model — is what makes differentiable rendering essential for end-to-end world model training.
 
-### 14.3 The SlangPy Training Loop
+### 15.3 The SlangPy Training Loop
 
 In practice the dynamics model (RNN, transformer, or diffusion) is a PyTorch module, while the differentiable renderer is a Slang kernel invoked via SlangPy. The two interact through the latent tensor `z_pred`:
 
@@ -1737,7 +1805,7 @@ for batch in dataloader:
 
 The critical property is that `z_pred.grad` is populated by the Slang backward kernel without a GPU→CPU→GPU round-trip. PyTorch's autograd continues the backward pass through `dynamics_model.step()` using `z_pred.grad` as the upstream gradient — the boundary between the PyTorch graph and the Slang autodiff graph is invisible to the training loop.
 
-### 14.4 Inference on Vulkan: Real-Time World Model Rollout
+### 15.4 Inference on Vulkan: Real-Time World Model Rollout
 
 During inference (game playing, autonomous driving simulation, real-time robotics), the world model predicts future frames at interactive rates. The Slang decoder runs as a plain Vulkan compute dispatch — no gradient tracking, no PyTorch dependency:
 
@@ -1789,7 +1857,7 @@ slangc world_model_decoder.slang -target spirv -profile spirv_1_5  \
 
 The inference SPIR-V is typically 30–50% smaller than the training SPIR-V because the adjoint computation, intermediate buffer writes, and `[MaxIters]` stack allocations are absent. This makes inference deployment on embedded GPU hardware (Jetson Orin, Intel Meteor Lake integrated GPU) practical.
 
-### 14.5 NVIDIA Cosmos: A Production World Model on the Slang Stack
+### 15.5 NVIDIA Cosmos: A Production World Model on the Slang Stack
 
 NVIDIA Cosmos (announced January 2025, arXiv:2501.12392) is a world foundation model for physical AI — autonomous vehicles, robotics, and industrial digital twins. [Source](https://github.com/NVIDIA/Cosmos) Its architecture:
 
@@ -1805,7 +1873,7 @@ The decoder's visual loss during training is computed through a differentiable r
 
 ---
 
-## 15. Comparison with GLSL, WGSL, HLSL, and MDL
+## 16. Comparison with GLSL, WGSL, HLSL, and MDL
 
 | Feature | Slang | GLSL | HLSL | WGSL | MDL |
 |---|---|---|---|---|---|
@@ -1830,9 +1898,9 @@ The decoder's visual loss during training is computed through a differentiable r
 
 ---
 
-## 16. Building Slang from Source on Linux
+## 17. Building Slang from Source on Linux
 
-### 16.1 Prerequisites and Source Checkout
+### 17.1 Prerequisites and Source Checkout
 
 ```bash
 # System requirements:
@@ -1860,7 +1928,7 @@ The submodule tree includes:
 - `external/glslang`: glslang (for the `-emit-spirv-via-glsl` path)
 - `external/lz4`, `external/miniz`: required for static linking
 
-### 16.2 CMake Configuration and Build
+### 17.2 CMake Configuration and Build
 
 The fastest path is the bundled workflow preset:
 
@@ -1914,7 +1982,7 @@ libslang-compiler.a  libcompiler-core.a  libcore.a  miniz.a  lz4.a
 ```
 Static builds are appropriate for self-contained Slang-as-compiler-plugin use cases (e.g., embedding `slangc` in a build system plugin). For runtime shader compilation in a game engine, the shared library is preferred.
 
-### 16.3 CMake Integration in Downstream Projects
+### 17.3 CMake Integration in Downstream Projects
 
 After `cmake --install`, Slang generates a `SlangConfig.cmake` that makes `find_package(slang)` work:
 
@@ -1954,7 +2022,7 @@ add_custom_target(shaders ALL
 add_dependencies(neural_renderer shaders)
 ```
 
-### 16.4 Distribution Packages and Vulkan SDK
+### 17.4 Distribution Packages and Vulkan SDK
 
 Slang is available without a source build via several distribution mechanisms:
 
@@ -1972,21 +2040,21 @@ The Vulkan SDK distribution is the lowest-friction path for teams already using 
 
 ---
 
-## 17. Integrations
+## 18. Integrations
 
 **Chapter 24 — SPIR-V and the Vulkan Shader Interface.** Slang's primary production output is SPIR-V. All SPIR-V Vulkan decorations discussed in Chapter 24 (`OpDecorate Binding`, `OpDecorate Location`, `OpDecorate DescriptorSet`, `OpExecutionMode LocalSize`) are generated by `slangc` from the corresponding Slang annotations (`[[vk::binding]]`, `[[vk::location]]`, `[numthreads]`). The SPIR-V capabilities used by Slang's cooperative vector backend (`SPV_NV_cooperative_vector`) are a superset of the capabilities discussed in Chapter 24.
 
 **Chapter 28 — Windows Compatibility (DXVK, VKD3D).** Slang is an HLSL superset and compiles to DXIL via DXC or to SPIR-V directly. DXVK and VKD3D-Proton translate DirectX titles' DXBC/DXIL shaders to SPIR-V (Chapter 28); Slang's HLSL-compatible surface means shader code written for Slang compiles without modification on the Windows D3D12 path as well as the Linux Vulkan path. This is one of the arguments for adopting Slang over HLSL in cross-platform rendering pipelines.
 
-**Chapter 67 — OptiX 9.** Slang's PTX output target is consumed by OptiX 9. Slang shaders can be authored for `[shader("closesthit")]` and `[shader("raygen")]` entry points, compiled to PTX via `slangc -target ptx`, and loaded as `OptixModule` objects. The cooperative vectors discussed in §8 of this chapter are the same hardware mechanism as OptiX 9's neural shader capability described in Chapter 67 §8.
+**Chapter 67 — OptiX 9.** Slang's PTX output target is consumed by OptiX 9. Slang shaders can be authored for `[shader("closesthit")]` and `[shader("raygen")]` entry points, compiled to PTX via `slangc -target ptx`, and loaded as `OptixModule` objects. The cooperative vectors discussed in §9 of this chapter are the same hardware mechanism as OptiX 9's neural shader capability described in Chapter 67 §8.
 
 **Chapter 70 — RTX Kit.** RTXNS v1.3 exposes `NeuralNetwork<>` as a Slang-native template that compiles to cooperative vector SPIR-V via `slangc`. RTXNTC's neural texture decompression shader is authored in Slang. Chapter 70 §6 covers the integration from the SDK perspective; this chapter provides the underlying Slang language and compiler context.
 
-**Chapter 69 — NVIDIA Omniverse and OpenUSD.** Chapter 69 §7 introduced Slang's autodiff and SlangPy in the context of the Omniverse RTX Renderer. MaterialX's new Slang shader generator (§12 above) means that USD scenes with MaterialX materials can now emit Slang source for their surface shaders, enabling the autodiff system to be applied to material parameter optimisation within a full Hydra-based rendering pipeline.
+**Chapter 69 — NVIDIA Omniverse and OpenUSD.** Chapter 69 §7 introduced Slang's autodiff and SlangPy in the context of the Omniverse RTX Renderer. MaterialX's new Slang shader generator (§13 above) means that USD scenes with MaterialX materials can now emit Slang source for their surface shaders, enabling the autodiff system to be applied to material parameter optimisation within a full Hydra-based rendering pipeline.
 
 **Chapter 77 — Shader Toolchain.** The Slang compiler occupies a distinct position in the Linux shader toolchain: upstream of SPIR-V (alongside glslang and DXC) but below the Mesa NIR layer. Chapter 77 covers the full glslang → SPIR-V → Mesa NIR pipeline; Slang's SPIR-V output enters the same Mesa pipeline at the `VkCreateShaderModule` boundary and is consumed identically by RADV, ANV, and NVK. The chapter on shader toolchain covers the diagnostic path (`spirv-val`, `spirv-dis`) that applies equally to Slang-emitted SPIR-V.
 
-**Chapter 115 — NeRFStudio and Neural Scene Representations.** The neural rendering use cases in §9.2 of this chapter (differentiable volume rendering, NeRF training kernels) intersect with the NeRFStudio ecosystem covered in Chapter 115. NeRFStudio's training infrastructure uses PyTorch; the shader-side component of a hybrid NeRF renderer (ray march in a Vulkan compute shader, gradient flowing back through the volume sampling into PyTorch-managed network weights) is exactly the SlangPy integration pattern described in §13 of this chapter.
+**Chapter 115 — NeRFStudio and Neural Scene Representations.** The neural rendering use cases in §10.2 of this chapter (differentiable volume rendering, NeRF training kernels) intersect with the NeRFStudio ecosystem covered in Chapter 115. NeRFStudio's training infrastructure uses PyTorch; the shader-side component of a hybrid NeRF renderer (ray march in a Vulkan compute shader, gradient flowing back through the volume sampling into PyTorch-managed network weights) is exactly the SlangPy integration pattern described in §14 of this chapter.
 
 ---
 
