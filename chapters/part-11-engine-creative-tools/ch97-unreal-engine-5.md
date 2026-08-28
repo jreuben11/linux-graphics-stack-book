@@ -20,6 +20,7 @@
 - [8. Linux Packaging and Steam Deck](#8-linux-packaging-and-steam-deck)
 - [9. Performance Tuning on Linux](#9-performance-tuning-on-linux)
 - [10. Linux-Specific Considerations](#10-linux-specific-considerations)
+- [11. Comparative Note: EVE Online's Carbon/Trinity Goes Open Source](#11-comparative-note-eve-onlines-carbontrinity-goes-open-source)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -690,6 +691,21 @@ The following features are either unsupported or have known issues on Linux as o
 
 ---
 
+## 11. Comparative Note: EVE Online's Carbon/Trinity Goes Open Source
+
+UE5 is not the only commercial engine whose internals became publicly inspectable during this book's research window. On July 1, 2026, Fenris Creations — the CCP Games successor studio — published the source for **Carbon**, the proprietary cross-platform framework that has powered EVE Online (and the newer EVE Frontier) for over two decades, across more than two dozen modules on `github.com/carbonengine`, most under the MIT license. [Source](https://www.gamingonlinux.com/2026/07/carbon-engine-framework-powering-eve-online-is-now-open-source/) [Source](https://fenris.com/news/2026/fenris-creations-opens-carbon-engine-to-the-world)
+
+Two modules are directly relevant to a rendering-focused chapter:
+
+- **Trinity** (`carbonengine/trinity`, MIT, 449 stars as of this writing) — Carbon's rendering engine, responsible for EVE's signature large-scale space rendering.
+- **Destiny** (`carbonengine/destiny`, MIT, 199 stars) — the world-simulation engine handling physics, collision, and pathfinding for EVE's massive fleet battles, including the game's Guinness World Record 8,825-player PvP engagement. [Source](https://www.mmorpg.com/news/fenris-creations-makes-eve-onlines-carbon-engine-fully-open-source-2000138420)
+
+**Does this open a Linux rendering path? No.** Trinity's own README specifies the build prerequisites: CMake with the **Visual Studio v141 (VS2017) toolset**, and three renderer-backend build options — `BUILD_DX11`, `BUILD_DX12`, `BUILD_METAL`. There is no `BUILD_VULKAN` option, no GNU/Linux build preset among the CMake presets, and no Vulkan or Linux windowing code path in the repository. [Source](https://github.com/carbonengine/trinity) Destiny, for its part, cannot currently be built outside CCP's own infrastructure at all — its README states the build requires Perforce access to CCP-internal dependency branches. [Source](https://github.com/carbonengine/destiny) This is, honestly, an archival/inspection-grade release: it reveals a real, shipped, DirectX-and-Metal rendering architecture, but it does not extend, and was never intended to extend, the Vulkan/Linux stack this book covers.
+
+One adjacent detail is worth noting rather than overselling: several of Carbon's *non-rendering* modules — `core` ("cross-platform abstractions for system calls"), `io` (low-level networking), and `scheduler` (Greenlet-coroutine scheduling) — already have Linux-targeted forks maintained under CCP's own `ccpgames` GitHub organization, predating the July 2026 public release. [Source](https://github.com/ccpgames) This is consistent with EVE Online's server-side "Tranquility" cluster having run on Linux for years; it says nothing about client-side rendering. The Trinity/Destiny release is a useful comparative data point for this book — another AAA-scale commercial engine's internals becoming publicly readable, alongside UE5's EULA-gated source and Godot's/Bevy's fully open repositories (Chapters 40–41) — but unlike UE5's Vulkan RHI, Trinity offers no Linux graphics stack of its own to analyze.
+
+---
+
 ## Roadmap
 
 ### Near-term (6–12 months)
@@ -765,6 +781,10 @@ This chapter connects to several other chapters in the book:
 22. [Niagara Overview — Epic Games](https://dev.epicgames.com/documentation/en-us/unreal-engine/overview-of-niagara-effects-for-unreal-engine) — Niagara GPU simulation architecture, FNiagaraGPUSystemTick
 23. [Unreal Insights — Epic Games](https://dev.epicgames.com/documentation/en-us/unreal-engine/unreal-insights-in-unreal-engine) — Profiling tool for CPU/GPU timeline analysis on Linux
 24. [RenderDoc In-Application API](https://renderdoc.org/docs/in_application_api.html) — RenderDoc frame capture integration with UE5 on Linux
+25. [Carbon engine framework powering EVE Online is now open source — GamingOnLinux](https://www.gamingonlinux.com/2026/07/carbon-engine-framework-powering-eve-online-is-now-open-source/) — Announcement coverage of the Carbon/Trinity/Destiny open-source release
+26. [Fenris Creations Opens Carbon Engine to the World](https://fenris.com/news/2026/fenris-creations-opens-carbon-engine-to-the-world) — Official Fenris Creations announcement
+27. [carbonengine/trinity — GitHub](https://github.com/carbonengine/trinity) — Trinity rendering engine source, README documenting DX11/DX12/Metal build options and VS2017 toolchain requirement (no Vulkan/Linux path)
+28. [carbonengine/destiny — GitHub](https://github.com/carbonengine/destiny) — Destiny world-simulation/physics/pathfinding engine source
 
 ---
 
