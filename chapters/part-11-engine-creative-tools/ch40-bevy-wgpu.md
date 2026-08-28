@@ -1545,6 +1545,20 @@ struct LevelAsset(Handle<Level>);
 
 `bevy_asset_loader`'s `standard_dynamic_assets` Cargo feature depends directly on `bevy_common_assets` to parse `.ron` dynamic-asset manifests — the two crates in this subsection compose by direct dependency, not just by convention.
 
+### 8.8 Editors and Meta-Frameworks Layered on Bevy
+
+The crates above all extend Bevy's *runtime* — they register plugins into an existing app. A separate, less mature category attempts to build a higher-level *authoring* or *framework* layer on top of Bevy's ECS itself, and it is worth being precise about how far each effort actually gets.
+
+**The official Bevy Editor** is the primary first-party attempt, developed in the `bevyengine/bevy_editor_prototypes` repository and built directly on Bevy's own ECS, using a new scene-serialization format called **BSN** (Bevy Scene Notation) as its target file format. As of this writing it remains pre-alpha: the project's own roadmap defines six stages, and current work sits at Stage 0–1 (foundational read-only scene viewing), well short of the Stage 5 "MVP" milestone the roadmap sets as the bar for shipping an experimental alpha to end users. The current prototype falls back to plain `.ron` scene files rather than BSN, which is itself still under construction. [Source](https://bevyengine.github.io/bevy_editor_prototypes/roadmap.html)
+
+Pending that official editor, the community has produced independent, third-party editors rather than a single converged standard — among them `space_editor` (rewin123) and `bevy_experimental_editor` (jbuehler23), both explicitly positioned as stopgaps rather than long-term platforms. [Source](https://github.com/bevyengine/bevy_editor_prototypes)
+
+**Bones**, Fish Folk's "meta-engine" for moddable, rollback-networked 2D games (used by *Jumpy*), is the closest thing to a framework that subsumes Bevy for a specific genre — but it inverts the expected relationship rather than confirming it. Bones is built around its own deterministic ECS, chosen specifically because Bevy's ECS does not guarantee the trivial world snapshot/restore that rollback netcode requires; Bevy is plugged in *underneath* Bones as one interchangeable render backend via the `bones_bevy_renderer` crate, not as the substrate a higher-level framework is built on top of. [Source](https://github.com/fishfolk/bones)
+
+One further data point rules out a plausible-looking candidate: **Ambient**, a multiplayer-first Rust/WebGPU engine with its own ECS, is sometimes mentioned alongside Bevy because of superficially similar goals, but it does not use Bevy's ECS or renderer at all, and as of 2026 the project states that "work on the Ambient runtime is paused indefinitely," with its team having moved on to a successor project. [Source](https://github.com/ambientrun/ambient)
+
+The net picture: Bevy's third-party ecosystem is dense at the *plugin* layer (§8.1–§8.7) but has not yet produced a mature, adopted layer above the ECS itself comparable to what Fyrox (§9) or Godot ship as a first-party editor and scene model.
+
 ---
 
 ## 9. Fyrox: The All-in-One Rust-Native Alternative
