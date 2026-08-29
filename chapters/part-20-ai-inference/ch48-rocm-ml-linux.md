@@ -859,6 +859,8 @@ The AMD Instinct MI300X is an MCM (Multi-Chip Module) built from twelve chiplets
 
 [Source: AMD MI300X data sheet](https://www.amd.com/content/dam/amd/en/documents/instinct-tech-docs/data-sheets/amd-instinct-mi300x-data-sheet.pdf)
 
+The 12 dies are stitched together with **AMD Infinity Fabric AP**, a proprietary die-to-die interconnect — not the vendor-neutral **UCIe** (Universal Chiplet Interconnect Express) standard, though AMD, Intel, and NVIDIA are all UCIe consortium board members. UCIe (1.0 in March 2022, 2.0 in August 2024, adding 3D-stacking support) specifies a package-level PHY carrying tunneled CXL.io/CXL.mem/CXL.cache and PCIe traffic between chiplets from potentially different vendors and process nodes, standardizing what MI300X's Infinity Fabric AP and Intel Ponte Vecchio's EMIB/Foveros interconnect (Ch71) each do today with a proprietary fabric. This layer is invisible to ROCm and to the DRM/KFD stack — software addresses the package as a single GPU regardless of which die-to-die fabric links the chiplets underneath — so its relevance here is architectural context rather than something the driver programs directly. As of this writing no shipping GPU product uses UCIe for its die-to-die fabric; board membership signals standards-body participation, not a committed product roadmap. [Source: UCIe Consortium](https://en.wikipedia.org/wiki/UCIe)
+
 Total on-package resources:
 - **304 Compute Units** (8 × 38 CU), though commonly described as 192 in reference to the 192 CU configuration of the GCD-only variant
 - **192 GB HBM3** at **5.3 TB/s** aggregate bandwidth (8 stacks × 24 GB × 662.4 GB/s per stack)
@@ -996,6 +998,8 @@ Intel's GPU compute stack on Linux follows a parallel architecture to ROCm. The 
 - **SYCL/DPC++** — the primary programming model
 
 [Source: Intel oneAPI Level Zero](https://www.intel.com/content/www/us/en/docs/dpcpp-cpp-compiler/developer-guide-reference/2023-0/intel-oneapi-level-zero.html)
+
+This subsection is scoped to the GPU compute driver stack — the direct parallel to ROCm's KFD/HSA/HIP layers — not the full oneAPI library suite. Notably absent for that reason: **oneTBB** (Threading Building Blocks), the CPU-side task-parallelism runtime that oneMKL and oneDNN use to express multithreading, now developed under the UXL Foundation alongside the rest of oneAPI. A SYCL/DPC++ workload's GPU kernels run through the Level Zero stack shown below regardless of oneTBB, but any CPU-side preprocessing or fallback path in an oneMKL/oneDNN-backed pipeline is where oneTBB enters — library-level oneAPI coverage (oneMKL, oneDNN, oneTBB) is out of scope for this driver-focused section. [Source: Intel oneTBB documentation](https://www.intel.com/content/www/us/en/docs/oneapi/programming-guide/2024-2/intel-oneapi-threading-building-blocks-onetbb.html)
 
 ```mermaid
 graph TD

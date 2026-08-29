@@ -635,18 +635,18 @@ with a modified prompt → decode output. In ComfyUI this requires `KSamplerAdva
 
 ```mermaid
 graph TD
-    A[Latent tensor x_T\n pure noise at t=T] --> B[Step loop: t = T → 0]
-    B --> C{CFG enabled?}
-    C -- yes --> D[UNet forward: conditioned]
-    C -- yes --> E[UNet forward: unconditioned]
+    A["Latent tensor x_T<br/>pure noise at t=T"] --> B["Step loop: t = T to 0"]
+    B --> C{"CFG enabled?"}
+    C -- yes --> D["UNet forward: conditioned"]
+    C -- yes --> E["UNet forward: unconditioned"]
     D --> F["combine: uncond + cfg*(cond - uncond)"]
     E --> F
-    C -- no --> G[UNet forward: single pass]
-    F --> H[Scheduler: compute x_{t-1} from noise pred]
+    C -- no --> G["UNet forward: single pass"]
+    F --> H["Scheduler: compute x_t-1 from noise pred"]
     G --> H
-    H --> I{t == 0?}
+    H --> I{"t == 0?"}
     I -- no --> B
-    I -- yes --> J[Latent x_0 → VAEDecode → IMAGE]
+    I -- yes --> J["Latent x_0 -> VAEDecode -> IMAGE"]
 ```
 
 ---

@@ -87,6 +87,16 @@ Every engine-level abstraction elsewhere in this chapter — Core SDK's `OVRPlug
 
 **Note: needs verification.** Meta's native "Core Concepts" page is confirmed to exist at the URL cited below, but it defines `XrSession` only at a glossary level and does not document the frame loop, `XrEventDataSessionStateChanged` handling, or the Android `onResume`/`onPause` lifecycle tie-in — it explicitly directs readers to the Khronos `hello_xr` sample and the community OpenXR Tutorial for that material instead. [Source: Meta — Core Concepts](https://developers.meta.com/horizon/documentation/native/android/mobile-openxr-core-concepts/) Ch27's generic OpenXR session-lifecycle material is the better citation for the frame-loop and session-state mechanics themselves. Manifest metadata keys sometimes cited in secondary material (`com.oculus.vr.focusaware`, `com.oculus.handtracking.frequency`, `com.oculus.supportedDevices`) were not independently verified during this chapter's research and should not be quoted as exact strings without checking current native samples directly.
 
+### 3.1 Where Godot and Bevy Fit — Neither Is In This Suite
+
+Every package in this chapter is Meta-branded: Unity, Unreal, Kotlin (Meta Spatial SDK, §6), or the native C/C++ path just documented. Meta ships no equivalent SDK for Godot or Bevy, and neither engine appears anywhere in Meta's own developer documentation for the packages above. A Quest developer working in either engine reaches the headset entirely through this section's native OpenXR foundation — not through anything else in this chapter.
+
+**Godot** has built-in OpenXR support (the `XRInterface`/OpenXR module, present since Godot 4.0) rather than a bolted-on plugin, and its own deployment documentation walks through exporting directly to Quest. Vendor-specific behavior — including Meta's — is handled by an "OpenXR Vendors" plugin installed from the Asset Library, which surfaces a "Meta XR Features" panel in the Android export settings; this is Godot's own community-maintained wrapper around the same `XR_FB_*`/`XR_META_*` extension surface that Core SDK's `OVRPlugin` wraps for Unity, not a Meta-provided integration. [Source: Godot — Deploying to Android for XR headsets](https://docs.godotengine.org/en/stable/tutorials/xr/deploying_to_android.html) Ch41 covers Godot's rendering device architecture in depth; this chapter's §3 native-loader material (loader package, manifest intent-filter, `XR_KHR_loader_init_android`) is the layer Godot's own Android export template negotiates on the engine's behalf.
+
+**Bevy** has no first-party XR support at all as of this writing — Ch40 §14 documents the community `bevy_openxr` crate, which wraps Monado or SteamVR's runtime via wgpu's Vulkan backend and shares swapchain images with the compositor through `VK_KHR_external_memory_fd`, the same external-memory mechanism this book's OpenXR chapters use elsewhere. Nothing in that crate or in upstream Bevy is Meta-specific; a Bevy application targeting Quest negotiates the loader and manifest requirements in this section directly, with no `OVRPlugin`-equivalent layer standing between the engine and Horizon OS's runtime.
+
+The practical consequence for either engine: none of the convenience layers this chapter documents — MRUK (§11), the Interaction SDK (§5), the Haptics SDK (§8) — has a Godot or Bevy equivalent shipped by Meta. A team choosing either engine for a Quest project is committing to either building those primitives directly against the vendor extensions this section names, or relying on whatever a third-party plugin (like Godot's OpenXR Vendors plugin) chooses to expose.
+
 ---
 
 ## 4. Meta XR Core SDK
@@ -282,6 +292,7 @@ One release-process detail is visible across the version numbers this chapter ci
 - **[Chapter 85: Android Compositor: SurfaceFlinger, HardwareBuffer, and the Buffer Pipeline](ch85-android-surfaceflinger.md)** — the compositor and buffer-pipeline foundation Horizon OS is built from as an AOSP fork (§2), underneath everything OVRPlugin and Spatial SDK's Panel rendering do.
 - **[Chapter 86: Vulkan on Android: Drivers, ANGLE, and Mobile GPU Performance](ch86-android-vulkan.md)** — the Vulkan rendering backend Core SDK's swapchain and compositor-layer submission ultimately runs on.
 - **[Chapter 164: Android Runtime and Native Interop: ART, JNI, and the NDK](ch164-android-runtime-native-interop.md)** and **[Chapter 161: Android Game Development Kit](ch161-android-game-development-kit.md)** — Horizon OS's underlying Android runtime and native-interop model that any native-C++ Quest app (§3's loader/manifest contract, Platform SDK's native init path, the Haptics SDK's C renderer, the Audio SDK's `OVR_Audio.h`) ultimately runs against, and the JNI boundary Meta Spatial SDK's Kotlin code crosses less often than the Unity/Unreal suite does.
+- **[Chapter 40: Bevy and wgpu](ch40-bevy-wgpu.md)** and **[Chapter 41: Godot 4 Rendering Device Architecture](ch41-godot4-rendering-device.md)** — the two engines §3.1 identifies as outside this entire suite: Ch40 §14 documents the community `bevy_openxr` crate a Bevy Quest app depends on in place of any Meta-branded layer, and Ch41 covers the Godot rendering-device architecture that Godot's own Android export template negotiates §3's native loader against.
 
 ---
 
@@ -303,6 +314,7 @@ One release-process detail is visible across the version numbers this chapter ci
 - [GitHub — meta-quest/Meta-OpenXR-SDK](https://github.com/meta-quest/Meta-OpenXR-SDK)
 - [Meta — Implement Passthrough (native)](https://developers.meta.com/horizon/documentation/native/android/mobile-passthrough/)
 - [Meta — Core Concepts (native OpenXR)](https://developers.meta.com/horizon/documentation/native/android/mobile-openxr-core-concepts/)
+- [Godot — Deploying to Android for XR headsets](https://docs.godotengine.org/en/stable/tutorials/xr/deploying_to_android.html)
 - [Meta — Meta XR Core SDK Overview (Unity)](https://developers.meta.com/horizon/documentation/unity/unity-core-sdk/)
 - [Meta — OVRCameraRig documentation](https://developers.meta.com/horizon/documentation/unity/unity-ovrcamerarig/)
 - [Meta — Unity XR Plugin Management](https://developers.meta.com/horizon/documentation/unity/unity-xr-plugin/)

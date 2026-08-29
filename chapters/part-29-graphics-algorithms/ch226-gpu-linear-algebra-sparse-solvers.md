@@ -12,6 +12,7 @@
    - [1.3 What is GPU Linear Algebra?](#13-what-is-gpu-linear-algebra)
    - [1.4 What is a Sparse Matrix?](#14-what-is-a-sparse-matrix)
    - [1.5 What is a Sparse Solver?](#15-what-is-a-sparse-solver)
+   - [1.6 Eigen: The CPU Baseline](#16-eigen-the-cpu-baseline)
 2. [Dense BLAS Operations](#2-dense-blas-operations)
 3. [Dense Matrix Factorizations](#3-dense-matrix-factorizations)
 4. [Eigensolvers](#4-eigensolvers)
@@ -24,6 +25,7 @@
 11. [Mixed Precision and Low-Precision Arithmetic](#11-mixed-precision-and-low-precision-arithmetic)
 12. [Integration with the Graphics Pipeline](#12-integration-with-the-graphics-pipeline)
 13. [Sparse Direct Solvers](#13-sparse-direct-solvers)
+14. [Neural PDE Solvers: PINNs and Operator Learning](#14-neural-pde-solvers-pinns-and-operator-learning)
 - [Integrations](#integrations)
 
 ---
@@ -77,6 +79,16 @@ In this chapter, sparse matrices are the input to iterative solvers (§7), multi
 A sparse solver is an algorithm that computes the solution vector x to the linear system Ax = b where A is a sparse matrix. Two broad families exist. Direct solvers (LU, Cholesky, QR factorization) transform A into triangular factors through a sequence of elimination steps and then solve by forward and backward substitution; they are robust and exact in floating-point arithmetic, but require explicit management of fill-in — the triangular factors of a sparse A can be substantially denser than A itself, consuming memory proportional to the factored sparsity pattern rather than nnz(A). Iterative solvers (Conjugate Gradient, GMRES, BiCGSTAB, and their preconditioned variants) apply a sequence of SpMV operations and vector updates that converge toward x; they never form factors, so their memory footprint stays proportional to nnz(A), but they require a convergence criterion and, for difficult problems, an effective preconditioner.
 
 On GPU, iterative solvers dominate for large sparse systems because each iteration is a sequence of SpMV operations — well-matched to the memory-bandwidth characteristics of GPU hardware — whereas direct factorization of large sparse systems involves complex dependency graphs (elimination trees) that are difficult to parallelise across thousands of GPU lanes. Algebraic multigrid (AMG, §8) constructs a hierarchy of progressively coarser problems to accelerate convergence of the iterative smoother, achieving mesh-independent convergence rates that pure Krylov methods cannot match for ill-conditioned systems. rocALUTION provides iterative solvers and AMG preconditioners on ROCm. [Source: rocALUTION documentation, https://rocm.docs.amd.com/projects/rocALUTION/en/latest/]
+
+### 1.6 Eigen: The CPU Baseline
+
+Every GPU library in this chapter has an implicit CPU counterpart that the rest of this book cites far more often than any GPU BLAS: **Eigen**, a header-only C++ template library for dense and sparse linear algebra. It is the linear-algebra backend behind CGAL's Poisson surface reconstruction (Ch113), SolveSpace's constraint solver (Ch176/Ch176b), libigl and geometry-central (Ch212, Ch224), and the SLAM back-ends G2O and FAST-LIO2 (Ch209, Ch210-SLAM) — every one of those chapters assumes Eigen's semantics as the reference CPU implementation this chapter's GPU libraries are an alternative to, not a replacement for. Understanding what Eigen actually does clarifies why those workloads stay on CPU at all, and where the boundary with this chapter's GPU stack falls.
+
+Eigen's core mechanism is **expression templates**: `mat1 = mat2 + mat3` does not evaluate `mat2 + mat3` into a temporary and then copy it into `mat1`. It builds an abstract expression tree at compile time and defers evaluation until assignment, producing a single fused loop that traverses the arrays once rather than the two-traversal, extra-load/store pattern a naively eager library produces. Eigen is not purely lazy, though — matrix products introduce a temporary automatically to avoid aliasing errors (`mat = mat * mat` would otherwise read partially-overwritten data), and its cost model caches sub-expressions when reevaluating them would be more expensive than storing the result; `.eval()` and `.noalias()` let a caller override the default in either direction. [Source: Eigen documentation — Lazy Evaluation and Aliasing, https://libeigen.gitlab.io/eigen/docs-nightly/TopicLazyEvaluation.html]
+
+That fused loop is where Eigen's CPU vectorization happens: Eigen auto-vectorizes it against whatever SIMD instruction set the compiler target exposes — SSE/AVX/AVX-512 on x86, NEON on ARM — with no separate GPU-style dispatch layer. This is the exact mechanism behind Ch210-SLAM's FAST-LIO2 detail that its Eigen-based IEKF automatically uses NEON on a Jetson Orin's Cortex-A78AE cores when built with `-DENABLE_NEON=ON`: it is Eigen's ordinary expression-template evaluation targeting a different instruction set, not a separate acceleration path. For large or dynamically-sized objects, Eigen can additionally substitute its own dense kernels for a vendor BLAS/LAPACK — Intel MKL via `EIGEN_USE_MKL_ALL`, or any F77-compatible BLAS/LAPACK via the narrower `EIGEN_USE_BLAS`/`EIGEN_USE_LAPACKE` macros — though this substitution applies only to `float`, `double`, `complex<float>`, and `complex<double>` scalar types. [Source: Eigen documentation — Using BLAS/LAPACK from Eigen, https://libeigen.gitlab.io/eigen/docs-nightly/TopicUsingIntelMKL.html] Eigen's sparse module mirrors this chapter's own solver taxonomy from §1.5 on the CPU side — `SimplicialLLT`/`SimplicialLDLT`, `SparseLU`, `SparseQR`, and iterative `ConjugateGradient`/`BiCGSTAB` classes — and can itself delegate factorization to the same external libraries §13 covers as GPU-adjacent references, via dedicated support modules wrapping SuiteSparse's CHOLMOD, UmfPack, and PARDISO.
+
+Eigen is not, in any production sense, a GPU library. Its `unsupported/Tensor` module documents CUDA and OpenCL offload, but the module's own documentation describes this support as "experimental" and "a moving target," not a stabilised interface comparable to rocBLAS or cuSolver. [Source: Eigen — Tensor support, https://libeigen.gitlab.io/pages/tensor_support/] That is precisely why every chapter citing Eigen in this book treats it as the CPU-side matrix-assembly and small-to-medium-factorization layer, with any GPU offload — when the workload's scale demands it — handled by the dedicated libraries this chapter documents (rocSOLVER, rocSPARSE, cuDSS) rather than by Eigen itself. Eigen's expression-template fusion is a compile-time answer to the same "avoid redundant memory traffic" problem this chapter's roofline analysis (§1.1) poses at the hardware level — the two are the same design pressure resolved on different sides of the CPU/GPU boundary.
 
 ---
 
@@ -778,6 +790,54 @@ CHOLMOD, the sparse Cholesky component of Tim Davis's SuiteSparse, remains the r
 
 ---
 
+## 14. Neural PDE Solvers: PINNs and Operator Learning
+
+Every solver in §7, §8, and §13 discretises the PDE onto a mesh or grid first, then solves the resulting linear system. Two families of learned methods skip the discretisation step entirely, representing the solution — or the solution operator — as a neural network trained by automatic differentiation instead of assembled and factored as a sparse matrix. They are not interchangeable with each other: one retrains per problem instance, the other amortises training across an entire family of instances.
+
+### 14.1 Physics-Informed Neural Networks (PINNs)
+
+A PINN represents the PDE solution itself as a small MLP, u_θ(x, t), and trains it by minimising a loss built from the PDE residual rather than from labelled solution data. Collocation points are sampled throughout the domain (no mesh, no matrix assembly); automatic differentiation computes the spatial and temporal derivatives u_θ needs to plug into the governing PDE at each point, and the loss sums the squared residual of the PDE itself with the squared mismatch against boundary and initial conditions. [Source: Raissi, Perdikaris & Karniadakis, "Physics-informed neural networks: A deep learning framework for solving forward and inverse problems involving nonlinear partial differential equations", Journal of Computational Physics 378, 2019]
+
+This buys mesh-free evaluation and a natural route to inverse problems (unknown PDE coefficients become additional trainable parameters, discovered via the same gradient descent that fits u_θ), at a cost this chapter's solvers don't pay: a PINN is trained per problem instance. A new boundary condition, domain shape, or coefficient field means retraining from scratch — there is no equivalent to reusing a symbolic factorization (§13.2) or restarting a Krylov iteration (§7) from a nearby solution.
+
+### 14.2 Neural Operators: FNO and DeepONet
+
+Neural operators target exactly the retraining cost §14.1 pays: instead of learning one solution, they learn the *operator* mapping a PDE instance's input data (an initial condition, a coefficient field) to its solution, trained once across a distribution of instances and then evaluated on new instances in a single forward pass — the operator-learning counterpart to reusing this chapter's symbolic factorization across many numeric solves, but generalising across the family of right-hand sides rather than reusing a fixed sparsity pattern.
+
+The **Fourier Neural Operator (FNO)** parameterises the operator's integral kernel directly in Fourier space: each layer FFTs the input field, applies a learned linear transform to a truncated set of low-frequency Fourier modes, discards the rest, and inverse-FFTs back to physical space alongside a local pointwise skip connection. [Source: Li et al., "Fourier Neural Operator for Parametric Partial Differential Equations", arXiv:2010.08895, ICLR 2021] This is architecturally the same primitive as this chapter's §9.1 Toeplitz matvec via FFT — both diagonalise a linear operator in Fourier space and multiply pointwise — except FNO's per-mode weights are learned rather than derived analytically from the operator's kernel, and the same VkFFT/cuFFT infrastructure (§10.6) executes both. FNO's authors report it as "up to three orders of magnitude faster compared to traditional PDE solvers" on their benchmark problems (Burgers', Darcy flow, Navier-Stokes), resolution-invariant inference, and the first ML-based method to demonstrate zero-shot super-resolution on turbulent flow. [Source: Li et al., arXiv:2010.08895 abstract]
+
+```python
+# fno_layer.py — illustrative structure of one FNO spectral-convolution layer
+# simplified from Li et al. (2021); real implementations (neuraloperator, PhysicsNeMo)
+# batch multi-channel FFTs and complex weight tensors
+def fourier_layer(x, weights, modes):
+    x_ft = torch.fft.rfft(x, dim=-1)                    # physical -> Fourier space
+    out_ft = torch.zeros_like(x_ft)
+    out_ft[..., :modes] = x_ft[..., :modes] * weights    # learned kernel, low modes only
+    x_filtered = torch.fft.irfft(out_ft, n=x.size(-1))   # back to physical space
+    return x_filtered + local_linear(x)                  # + pointwise skip connection
+```
+
+**DeepONet** takes a different architectural route to the same operator-learning goal: a *branch* network encodes the input function sampled at a fixed set of sensor points, a *trunk* network encodes the query coordinate at which the output is requested, and their dot product approximates the operator's output at that coordinate — a construction motivated by a universal-approximation theorem for nonlinear operators rather than by a fast-transform argument the way FNO is. [Source: Lu, Jin, Pang, Zhang & Karniadakis, "Learning nonlinear operators via DeepONet based on the universal approximation theorem of operators", Nature Machine Intelligence 3, 218–229, 2021, arXiv:1910.03193]
+
+### 14.3 GPU Implementation and the FFT Bottleneck
+
+A naive FNO layer built on stock PyTorch pays a real GPU tax for the FFT round trip in §14.2's spectral layer: cuFFT does not natively support fused input/output trimming or zero-padding, so the FFT, mode-truncation/GEMM, zero-pad, and inverse-FFT stages each launch as separate kernels with full global-memory round trips between them. TurboFNO closes this gap with a fused FFT-GEMM-iFFT GPU kernel built with its own architecture-aware FFT optimisations, reporting up to 150% throughput over a PyTorch cuFFT-plus-cuBLAS baseline — the same "separate kernel launches vs. fused dispatch" tradeoff this chapter's §12.1 makes for GEMM-heavy Vulkan compute pipelines, applied to the spectral-operator case. [Source: "TurboFNO: High-Performance Fourier Neural Operator with Fused FFT-GEMM-iFFT on GPU", arXiv:2504.11681, SC 2025]
+
+### 14.4 Production Framework: NVIDIA PhysicsNeMo
+
+NVIDIA's PhysicsNeMo (renamed from Modulus — `import modulus` became `import physicsnemo`) is the production framework that packages both families above, alongside GNN-based surrogates and transformer architectures, behind a common training and deployment stack rather than requiring each to be built from scratch. Its GNN surrogate path (MeshGraphNet) currently uses DGL as its backend with a stated plan to move to PyTorch Geometric — the same DGL-to-PyG consolidation this book's Ch228 §11.4 documents happening independently across the classical GPU graph-analytics stack (RAPIDS `cugraph-pyg`). [Source: NVIDIA/physicsnemo, https://github.com/NVIDIA/physicsnemo]
+
+### 14.5 Where Neural Solvers Fit Against §7, §8, and §13
+
+Neither family in this section is a drop-in replacement for the classical solvers earlier in this chapter, for reasons that follow directly from how each is built:
+
+- **No certified error bound.** §7's CG and §13's direct factorization either converge to a residual below a chosen tolerance or fail visibly; a PINN's residual loss can be small in an aggregate sense while still missing sharp features — shock fronts, boundary layers — that a mesh resolves by construction, because collocation-point sampling has no equivalent of adaptive mesh refinement concentrating resolution where the solution is stiff.
+- **The economics only work for repeated queries.** An operator network's expensive training pass only pays off when the same PDE family is solved many times against varying inputs — parametric design sweeps, uncertainty quantification, real-time control loops — which is exactly the amortisation argument §13's direct factorization already makes for repeated solves against a fixed sparsity pattern, just amortising across varying physics rather than varying right-hand sides. A single high-accuracy solve of one specific instance is still better served by §7's iterative solvers or §13's direct factorization.
+- **The likely convergence point is hybrid, not substitution.** A trained operator network's forward pass is a plausible source of a fast initial guess for a handful of classical correction iterations — structurally analogous to the mixed-precision iterative refinement of §11.1, but refining a learned estimate instead of a low-precision factorization — rather than replacing the classical solve outright. This chapter does not treat that hybrid pattern as established production practice; where it appears in the literature, treat specific claimed speedups the way §13.3 treats cuDSS's preview status — as an active area, not a settled result.
+
+---
+
 ## Integrations
 
 **Ch210 (GPU Physics and Volumetric Algorithms).** The physics simulation stiffness matrices constructed in Ch210 are the primary input to the sparse solvers of §7 (CG, BiCGSTAB) and the AMG preconditioners of §8. The GPU-resident iteration patterns of §7 connect directly to Ch210's constraint projection loops. The Vulkan timeline semaphore integration of §12 synchronises the physics compute result with Ch210's volume rendering pass. Ch210 §49.4's nonlinear implicit-integration Newton-Raphson loop and §50.5's ADMM contact solver both bottom out in a sparse linear solve per iteration — the CG/AMG stack of §7–§8 for the common iterative case, or the direct factorization of §13 when the same sparsity pattern is refactored across many steps.
@@ -792,7 +852,11 @@ CHOLMOD, the sparse Cholesky component of Tim Davis's SuiteSparse, remains the r
 
 **Ch227 (Monte Carlo Sampling Using Linear Algebra).** Monte Carlo importance sampling requires solving sparse systems (Laplacian smoothing of density estimates, transport equations on graphs). The CG and AMG solvers of §7–§8, and the Toeplitz FFT convolution of §9, provide the numerical engine that Ch227 calls for its density-estimation and sampling correction steps.
 
-**Ch229 (ML Inference GEMM).** The batched GEMM infrastructure of §2 — `rocblas_dgemm_batched`, MAGMA `_vbatched`, cooperative matrix tiles (§11.3) — is the same throughput path used in Ch229 for neural network layer evaluation. The mixed-precision iterative refinement (§11.1) and BF16 MFMA acceleration (§11.2) connect the linear algebra precision engineering of this chapter to ML inference quantisation discussed in Ch229.
+**Ch229 (ML Inference GEMM).** The batched GEMM infrastructure of §2 — `rocblas_dgemm_batched`, MAGMA `_vbatched`, cooperative matrix tiles (§11.3) — is the same throughput path used in Ch229 for neural network layer evaluation. The mixed-precision iterative refinement (§11.1) and BF16 MFMA acceleration (§11.2) connect the linear algebra precision engineering of this chapter to ML inference quantisation discussed in Ch229. §14's neural PDE solvers are deployed through the same inference stack Ch229 covers end-to-end.
+
+**Ch212 (GPU Geometry Algorithms — Neural Geometry, Specialized Techniques, and GPU Primitives).** §92 of that chapter covers GNN- and SE(3)-equivariant geometric deep learning on meshes and point clouds — the architectural sibling of §14's PDE-focused operator learning, applying the same message-passing and equivariance principles to shape classification and segmentation rather than solution-operator regression.
+
+**Ch113 (CGAL), Ch176/Ch176b (OpenCASCADE and Constraint Solvers), Ch209 (Open-Source SLAM Stacks), Ch210-SLAM (SLAM Theory and SOTA).** These chapters' CPU-side numerical cores — CGAL's Poisson surface reconstruction, SolveSpace's Newton-Raphson constraint solver, G2O's factor-graph optimiser, and FAST-LIO2's iterated EKF — are all built directly on Eigen (§1.6), not on this chapter's GPU libraries. §1.6's expression-template and BLAS-substitution model explains the CPU vectorization (including FAST-LIO2's NEON dispatch on Jetson Orin) those chapters cite without re-deriving it; §13's direct sparse-factorization coverage (CHOLMOD, cuDSS) is the GPU-adjacent alternative to Eigen's own `SimplicialLLT`/`SparseLU` classes when those workloads' sparsity pattern and scale justify moving off CPU.
 
 ## Roadmap
 
