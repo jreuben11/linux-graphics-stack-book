@@ -52,6 +52,8 @@ Linux provides a full-stack music production environment spanning the MIDI wire 
 
 Systems engineers will find detailed coverage of USB MIDI class-compliance (Section 4) and the real-time scheduling constraints that govern every audio callback (Section 16).
 
+Two closing sections connect this infrastructure to specific musical practice: **chiptune** (Section 17) — sound-chip architectures, bandlimited step synthesis, and the Furnace tracker/`libgme`/`sidplayfp` emulation ecosystem — and **genre-specific production techniques** (Section 18) for synthwave, chillwave, vaporwave, trance, and techno, each mapped to concrete open-source Linux synth and effect plugins from Sections 5–14.
+
 For the kernel-level ALSA PCM engine and ASoC framework see Ch38b; for PipeWire's session management and audio graph internals see Ch38.
 
 ---
@@ -803,6 +805,104 @@ self->voices = calloc(MAX_VOICES, sizeof(Voice));
 ```
 
 SuperCollider's RTAlloc, FluidSynth's voice allocator, and scsynth's node tree all follow this pattern. C11 `stdatomic` operations (`atomic_load`, `atomic_store`, `atomic_compare_exchange`) are safe in the audio thread when used on appropriately aligned types — they compile to hardware atomics without kernel involvement.
+
+---
+
+## 17. Chiptune: Sound Chip Emulation, Bandlimited Synthesis, and Trackers
+
+Chiptune reproduces the sound of 1980s–90s video-game and home-computer audio chips — either by driving real silicon or by emulating it in software. The synthesis model differs fundamentally from the SoundFont and subtractive/wavetable engines in Sections 5–14: each chip exposes a small, fixed set of hardware registers (waveform, duty cycle, volume, frequency divider) rather than a general oscillator/filter/envelope graph, and the composition tool is traditionally a **tracker** — a vertical pattern grid of note/instrument/effect columns — rather than a MIDI piano roll.
+
+### 17.1 Sound Chip Architectures
+
+| Chip | System | Channels | Notable characteristics |
+|---|---|---|---|
+| **2A03 (RP2A03)** | NES/Famicom | 2 pulse (4 duty cycles), 1 triangle, 1 noise (LFSR), 1 DPCM sample | Pulse channels have only 4 selectable duty cycles (12.5/25/50/75%); no true PCM channel voice besides 1-bit DPCM |
+| **MOS 6581/8580 (SID)** | Commodore 64 | 3 oscillators (saw/tri/pulse/noise), 1 multimode resonant filter | Ring modulation and hard sync between oscillator pairs; a single shared analog filter — the defining "SID sound" |
+| **YM2612 + SN76489** | Sega Genesis/Mega Drive | 6× 4-operator FM (YM2612) + 3 square + 1 noise (PSG) | FM chip shared with arcade boards; PSG provides the "chip" texture layered under FM leads/bass |
+| **Game Boy APU** | Game Boy/Color | 2 pulse, 1 programmable wavetable, 1 noise (LFSR) | The wavetable channel allows 32-sample 4-bit custom waveforms, distinguishing it from the NES's fixed duty cycles |
+| **AY-3-8910/YM2149** | ZX Spectrum, Amstrad CPC, MSX | 3 square + shared noise + envelope generator | Simple square-wave PSG widely cloned across 8-bit home computers |
+
+Each chip's timbral identity comes from its specific limitations — the SID's filter, the NES's duty-cycle steps, the Game Boy's custom wavetable — which is why accurate chiptune reproduction requires chip-specific emulation cores rather than a generic square/pulse oscillator.
+
+### 17.2 Bandlimited Step Synthesis (BLEP)
+
+A hardware pulse/square wave is a true discontinuity in amplitude, which contains harmonics extending to arbitrarily high frequency. Naively rendering that discontinuity at a fixed sample rate (e.g., stepping the output value directly at the moment the chip's waveform changes) aliases those high harmonics back down into the audible band, producing a harsh, "scratchy" digital-emulation artifact instead of the clean tone of the real chip. [Source](https://www.nayuki.io/page/band-limited-square-waves)
+
+The standard fix is **BLEP** (band-limited step), based on the BLIT (band-limited impulse train) technique described by Stilson and Smith at CCRMA: decompose the waveform into a sum of Heaviside steps, convolve a single step with a low-pass-filtered (sinc-windowed) correction kernel, and add the resulting band-limited edge into the output buffer at the step's fractional sample position. [Source](https://ccrma.stanford.edu/~stilti/papers/blit.pdf)
+
+**Blip_Buffer** (`blip_buf`), from Shay Green ("blargg"), is the reference open-source implementation: a library that accepts amplitude-change events timed in source-clock units (e.g., the NES's 1.79 MHz CPU clock) and produces band-limited, resampled output at an arbitrary target rate (44.1/48 kHz) with adjustable low-pass and high-pass filtering. [Source](https://github.com/blarggs-audio-libraries/Blip_Buffer) It is the synthesis core underneath both `libgme` (§17.4) and Furnace's built-in chip cores (§17.3).
+
+### 17.3 Furnace: Multi-System Tracker
+
+**Furnace** is an open-source, cross-platform (Linux/Windows/macOS) multi-chip tracker compatible with DefleMask module import, packaged in Arch Linux, openSUSE, Void Linux, and Nix. [Source](https://github.com/tildearrow/furnace) It composes chiptunes against emulation cores for a wide range of hardware — Nuked (OPL/OPN2), MAME's chip cores, SameBoy (Game Boy), Mednafen PCE (PC Engine), NSFplay and puNES (NES 2A03), reSID (Commodore SID), Stella (Atari TIA), SAASound, `vgsound_emu`, and `ymfm` — selectable per-song so a single tracker can target NES, SNES, Genesis, Game Boy, VIC-20, AY-3-8910 systems, or arcade sound hardware. [Source](https://www.linuxlinks.com/furnace-multi-system-chiptune-tracker/)
+
+Furnace's pattern editor follows the traditional tracker event model: each channel is a vertical column of rows, and each row holds a note, an instrument index, a volume, and one or more two-character effect commands (e.g., `0xy` arpeggio, `Bxx` jump to order, `Axy` volume slide) — a fundamentally different authoring model from the piano-roll/MIDI-event model used elsewhere in this chapter, since a tracker channel carries at most one active note at a time rather than an arbitrary polyphonic stream. Furnace also accepts a live MIDI keyboard for real-time note entry (supported from v0.6pre7 onward), though this only fills the single-note-per-channel-per-row model — it is not a general polyphonic MIDI performance surface. [Source](https://github.com/tildearrow/furnace/discussions/1295) Compositions export to VGM (a register-write log format replayable on real or emulated hardware) or, for the Commander X16, to ZSM.
+
+### 17.4 Playback and Analysis Libraries: libgme and sidplayfp
+
+**`libgme`** (Game Music Emu, originally by Blargg) is a C++ playback library that emulates the sound generation of NSF/NSFE (NES, including VRC6/Namco 106/FME-7 expansion audio), SPC (SNES), GBS (Game Boy), GYM/VGM/VGZ (Sega Genesis/Master System), HES (PC Engine), KSS (MSX/Z80), SAP (Atari POKEY), and AY (ZX Spectrum/Amstrad) file formats, using `Blip_Buffer`-based band-limited resampling to an arbitrary output rate. It is the backend used by media players such as Audacious to play chiptune rip archives directly. [Source](https://github.com/libgme/game-music-emu)
+
+**`sidplayfp`**, a fork of `sidplay2`, is a cycle-based Commodore 64 emulation environment purpose-built to play SID-format music files; it offers a choice between Dag Lem's **reSID** and Antti Lankila's **reSIDfp** emulation engines, both reverse-engineered, GPL-licensed software models of the MOS6581/8580 SID chip's oscillators and analog filter. [Source](https://en.wikipedia.org/wiki/ReSID) [Source](https://libsidplayfp.github.io/libsidplayfp/html/index.html)
+
+### 17.5 Bridging Chiptune into the MIDI/LV2 Chain: ADLplug
+
+Because trackers and file-format emulators (§17.3–17.4) are not live MIDI instruments, integrating an authentically chip-accurate voice into the DAW pipeline described in Sections 7–10 requires a plugin that accepts MIDI note events and drives a genuine chip-emulation core internally, rather than approximating chip timbre with a generic subtractive synth's square oscillator.
+
+**ADLplug** (by Jean-Pierre Cimalando) is an open-source FM chip synthesizer plugin (VST2/VST3/LV2/standalone) built around **libADLMIDI** (Yamaha YMF262/OPL3) and **libOPNMIDI** (Yamaha YM2612/OPN2) emulation, letting a MIDI keyboard or DAW MIDI track drive the same FM chips used by Sound Blaster OPL cards and the Sega Genesis, with a selectable emulation-fidelity/speed tradeoff and instrument-bank/patch editing. [Source](https://github.com/Wohlstand/ADLplug) It can be hosted directly in Ardour (§10) as an LV2 instrument, or loaded into Carla (§9.3) alongside other plugin formats. For PSG- and NES-style square/pulse chip voices rather than FM, no equivalently mainstream, actively packaged open-source LV2/VST plugin with a genuine cycle-accurate PSG core was confirmed at time of writing — **Note: needs verification** against current plugin directories before recommending a specific package for that path; the accurate alternative remains rendering through Furnace/`libgme` and importing the resulting audio, or driving real or emulated chip hardware via VGM playback.
+
+---
+
+## 18. Genre-Specific Synthesis and Production Techniques
+
+The synthesis engines, plugin standards, and DAW infrastructure covered in Sections 5–14 are genre-agnostic; a given electronic music genre's identity comes from a specific combination of oscillator/filter timbre, a characteristic effects chain, and rhythmic/arrangement conventions. This section maps five closely related genres to concrete, packaged Linux tooling — extending the plugin and DAW material from earlier sections rather than introducing a new synthesis architecture.
+
+### 18.1 Synthwave: Analog Emulation, Gated Reverb, and Arpeggiation
+
+Synthwave's palette models late-1970s/1980s polyphonic analog synthesizers (Prophet-5, Jupiter-8, Juno-60) and drum machines (LinnDrum, Simmons SDS-V):
+
+- **Pads and basslines**: Surge XT's Classic oscillator (Polyblep virtual-analog, §13.1) or **Odin 2** — an open-source VST3/CLAP/LV2/AU synth with Moog-ladder and Korg-35 filter emulations, a 24-voice polyphonic engine, and a built-in arpeggiator/step sequencer — reproduce warm analog-style pad and bass timbres. [Source](https://github.com/TheWaveWarden/odin2) **amsynth**, a lighter two-oscillator subtractive synth modeled on Minimoog/Juno-60 topology (LV2/VST2/DSSI, standalone via JACK/ALSA), suits simpler analog-style leads. [Source](https://github.com/amsynth/amsynth)
+- **Arpeggiation**: Surge XT's and Odin 2's built-in arpeggiators drive the steady 16th-note synth-arpeggio figures characteristic of the genre, synced to host tempo.
+- **Gated reverb drums**: the signature 1980s snare sound feeds a large-decay reverb (an LSP or Calf reverb LV2 plugin, hosted directly in Ardour per §7–§8) into a fast-attack, short-hold downward-expander/gate (an LSP Gate instance) so the natural reverb tail is truncated abruptly rather than decaying — programmed via Hydrogen's pattern-based sequencer (§18.5) driving LinnDrum/Simmons-style sample kits. [Source](https://github.com/hydrogen-music/hydrogen)
+
+### 18.2 Chillwave: Tape Saturation, Ensemble Chorus, and Lo-Fi Degradation
+
+Chillwave applies synthwave's analog palette through deliberate lo-fi degradation and washy modulation rather than a crisp mix:
+
+- **Tape emulation**: **Airwindows ToTape9** (part of the Airwindows Consolidated project, packaged for CLAP/LV2/VST3 on Linux) models cassette-tape bias, flutter, and brightness compression, giving pads and drums a soft, saturated cassette-tape character. [Source](https://gearspace.com/board/new-product-alert/1462412-airwindows-totape9-free-mac-windows-linux-pi-clap-au-vst3-vst2-lv2-rack.html)
+- **Ensemble/chorus width**: Calf Studio Gear's **Multi Chorus** (LV2, part of the 47-plugin Calf suite) layered on pads and vocal samples produces the washy, "underwater" modulation characteristic of the genre. [Source](https://github.com/calf-studio-gear/calf)
+- **Lo-fi bit/rate reduction**: Calf's **Crusher** plugin, dialed subtly (a small bit-depth or sample-rate reduction rather than the extreme settings used in harsher genres), softens digital transients without fully destroying fidelity.
+- **Sample layering**: chopped vintage sample material routed through a long-predelay, low-pass-damped reverb send sits underneath the synthesized elements, a technique that leans on the same reverb plugins used for the gated drum sound in §18.1 but with the gate removed so the tail decays naturally.
+
+### 18.3 Vaporwave: Extreme Time-Stretch and Formant-Shifted Pitch
+
+Vaporwave's core production technique is independent tempo and pitch manipulation of sampled source material (typically slowed to roughly 60–80% of its original tempo), rather than a specific synthesizer timbre:
+
+- **Rubber Band Library** performs time-stretching and pitch-shifting independently of one another; it is integrated into Ardour's region time-stretch tool and Audacity's Change Tempo/Change Pitch effects, and ships a standalone `rubberband` command-line utility for offline batch processing of sample material. [Source](https://breakfastquay.com/rubberband/)
+
+```bash
+# Slow a sample to 70% tempo without changing pitch, then drop pitch
+# by 3 semitones independently for the characteristic "warped" vaporwave vocal
+rubberband --time 1.43 input.wav slowed.wav
+rubberband --pitch -3 slowed.wav warped.wav
+```
+
+- **Space and decay**: an extreme-decay hall reverb (LSP Impulse Reverb or Calf Reverb, LV2 plugins hosted as in §7–§8) with low-pass-filtered feedback produces the genre's cavernous "mall" ambience; layering **ToTape9** (§18.2) on the mix bus adds wow/flutter pitch instability and tape-hiss character consistent with the aesthetic of degraded VHS/cassette source material.
+- Because the technique operates on pre-recorded samples rather than MIDI-triggered synthesis, the signal chain sits downstream of this chapter's MIDI infrastructure (§1–§4): samples are imported as audio regions in Ardour (§10) and processed with the time-stretch and effects plugins above, rather than being driven by note events.
+
+### 18.4 Trance: Supersaws, Sidechain Pumping, and Trance Gates
+
+- **Supersaw leads and pads**: Vital's wavetable oscillator source (`mtytel/vital`) is GPLv3-licensed; **Vitalium** is a community rebuild of that source with Vital's proprietary branding, name, and bundled non-free presets removed, distributed as a standalone/LV2/VST3/CLAP plugin. Its per-oscillator unison stacking (multiple detuned voices with adjustable spread) builds the "supersaw" sound popularized by the Roland JP-8000 and definitive of trance leads. [Source](https://github.com/mtytel/vital)
+- **Sidechain pumping**: **LSP Sidechain Compressor Stereo** (LV2, with feed-forward, feed-back, and external sidechain input modes, and Peak/RMS/LPF/SMA/Middle sidechain detection) keyed from the kick drum ducks the pad and bass on every beat, producing trance's defining rhythmic "pump." [Source](https://lsp-plug.in/?page=manuals&section=sc_compressor_stereo)
+- **Trance gates**: rhythmic volume gating of a sustained pad — via an LSP Gate instance triggered by a step pattern, or a step-drawn volume automation lane in Ardour (§10) — carves a held chord into 16th-note rhythmic pulses, a staple trance arrangement technique distinct from sidechain ducking (which follows the kick, not an arbitrary pattern).
+- **Bass and plucks**: Odin 2's or Surge XT's FM oscillator algorithms (§13.1, §18.1) provide the resonant, filter-swept bass and pluck lead lines layered against the supersaw pad.
+
+### 18.5 Techno: Four-on-the-Floor Sequencing and Acid Basslines
+
+- **Kick sequencing**: Hydrogen's pattern-based step sequencer (a dedicated Qt5 drum machine/sequencer packaged across Linux distributions) or a MIDI step pattern in Ardour drives a sample-based kick on every quarter note — the 4/4 foundation underlying the genre. [Source](https://github.com/hydrogen-music/hydrogen)
+- **Acid basslines**: the resonant, self-oscillating low-pass filter sweep associated with the Roland TB-303 is reproduced by **JC303**, an actively maintained JUCE port (VST2/VST3/LV2/CLAP/AU, Linux included) of Robin Schmidt's original **Open303** DSP research project, which reverse-engineered the TB-303's filter and envelope circuitry; Odin 2's Moog-ladder/Korg-35 filters with self-oscillating resonance and its built-in accent/slide-capable step sequencer offer a less specialized approximation of the same pattern style. [Source](https://github.com/midilab/jc303)
+- **Metallic percussion and stabs**: **Dexed**, an open-source, GPLv3, six-operator Yamaha DX7-style FM synthesizer plugin (VST/AU/LV2, cross-platform including Linux) built on the `music-synthesizer-for-android` engine, supplies the bell-like, inharmonic metallic percussion timbres common in techno percussion layers, exploiting FM synthesis's characteristic non-sinusoidal partial spacing. [Source](https://github.com/asb2m10/dexed)
+- **Modulation and arrangement**: Surge XT's near-universal modulation matrix (§13.1) — routing LFOs and envelopes to filter cutoff over long time scales — produces the slowly evolving, "hypnotic" pad and lead character typical of extended techno arrangements.
+- **Mix**: sends favor BPM-synced delay (Calf's Vintage Delay LV2 plugin) over reverb, and high-pass-filtered return busses keep low-frequency content concentrated in the kick and bass for club-system translation.
 
 ---
 
