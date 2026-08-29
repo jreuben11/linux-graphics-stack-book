@@ -29,6 +29,7 @@
 6. [The Physical AI Data Factory Blueprint](#6-the-physical-ai-data-factory-blueprint)
    - [6.1 Curate → Augment → Evaluate](#61-curate--augment--evaluate)
    - [6.2 Case Study: GR00T-Mimic and GR00T-Dreams](#62-case-study-gr00t-mimic-and-gr00t-dreams)
+     - [6.2.1 Running These Pipelines Locally](#621-running-these-pipelines-locally)
    - [6.3 Partner Ecosystem](#63-partner-ecosystem)
 7. [Linux Deployment Specifics](#7-linux-deployment-specifics)
    - [7.1 GPU Scheduling: Device Plugin, GPU Operator, and Feature Discovery](#71-gpu-scheduling-device-plugin-gpu-operator-and-feature-discovery)
@@ -201,6 +202,86 @@ OSMO's role in this specific pipeline is exactly the multi-backend workflow orch
 **Isaac GR00T N1**, described by NVIDIA as the world's first open, fully customizable foundation model for generalized humanoid robot reasoning and skills, is the clearest concrete example of this pipeline's payoff. [Source](https://nvidianews.nvidia.com/news/nvidia-isaac-gr00t-n1-open-humanoid-robot-foundation-model-simulation-frameworks) GR00T N1 was trained on a combination of teleoperated robot data, synthetic data generated via the GR00T Blueprint, and human demonstration video from the internet. Chapter 211b §9 covers the GR00T model family's own architecture — its dual-system design, checkpoint lineage, and fine-tuning surface — in depth; this section stays scoped to the data-generation pipeline that feeds it.
 
 **GR00T-Mimic** is the reference workflow for the synthetic-data half of that mix: built on Omniverse and Cosmos Transfer 1, it generates large volumes of synthetic robot-manipulation motion trajectories from a small number of human demonstrations, using domain randomization and 3D upscaling to multiply a handful of real demonstrations into a much larger, more diverse training set. [Source](https://github.com/NVIDIA-Omniverse-blueprints/synthetic-manipulation-motion-generation) In one reported run, this workflow generated 780,000 synthetic trajectories — equivalent to roughly 6,500 hours, or nine continuous months, of human demonstration data — in 11 hours. [Source](https://developer.nvidia.com/blog/enhance-robot-learning-with-synthetic-trajectory-data-generated-by-world-foundation-models) **GR00T-Dreams** extends this with an evaluation loop: it uses Cosmos Predict2 as the world model generating candidate synthetic trajectories, and Cosmos Reason 2 to evaluate whether each generated trajectory adheres to physical laws before it is accepted into the training set — an end-to-end, smaller-scale instance of exactly the Curate/Augment/Evaluate shape described in §6.1. [Source](https://nvidia-cosmos.github.io/cosmos-cookbook/recipes/end2end/gr00t-dreams/post-training.html) Combining this synthetic data with real teleoperation data produced a 40% performance improvement for GR00T N1 compared to training on real data alone. [Source](https://developer.nvidia.com/blog/enhance-robot-learning-with-synthetic-trajectory-data-generated-by-world-foundation-models)
+
+#### 6.2.1 Running These Pipelines Locally
+
+The two workflows have different operational shapes: GR00T-Mimic is a single containerized blueprint aimed at a workstation-class GPU, while GR00T-Dreams is a multi-stage research pipeline spanning three separate repositories, expected to run on a multi-GPU node.
+
+**GR00T-Mimic.** The blueprint ships as a Docker Compose project pre-loaded with Isaac Sim, Isaac Lab, and Isaac Lab Mimic; the Cosmos Transfer photorealism step runs on a separate node, since its VRAM requirement exceeds what the local simulation GPU needs. [Source](https://github.com/NVIDIA-Omniverse-blueprints/synthetic-manipulation-motion-generation)
+
+| Component | Requirement |
+|---|---|
+| Local host (Isaac Sim/Lab/Mimic) | Ubuntu 22.04, NVIDIA GPU with 48GB+ VRAM (RTX A6000 class), driver ≥535.129.03, Docker + NVIDIA Container Toolkit ≥1.17.0 |
+| Cosmos Transfer node | Separate H100-class GPU, 80GB VRAM — AWS P5, GCP A3, or Azure ND H100 v5 |
+
+```bash
+git clone https://github.com/NVIDIA-Omniverse-blueprints/synthetic-manipulation-motion-generation.git
+cd synthetic-manipulation-motion-generation
+
+xhost +local:                        # allow the container to open an X11 display
+docker compose -f docker-compose.yml up -d
+# → notebook at http://localhost:8888/lab/tree/generate_dataset.ipynb
+
+docker compose -f docker-compose.yml down   # shutdown
+```
+[Source](https://github.com/NVIDIA-Omniverse-blueprints/synthetic-manipulation-motion-generation)
+
+`docker compose up` itself gates on license acceptance for Isaac Sim, Isaac Lab, Isaac Lab Mimic, and the Cosmos NVIDIA Open Model License Agreement — the container will not start until all four are accepted. The actual generation workflow (recording seed demonstrations, invoking `isaaclab_mimic`, dispatching frames to Cosmos Transfer) is driven from inside the `generate_dataset.ipynb` notebook rather than from additional shell commands.
+
+**GR00T-Dreams.** No single container exists for this pipeline; it is assembled from three repositories — `cosmos-predict2.5`, `cosmos-reason2`, and `cosmos-cookbook` (scripts and configs only) — cloned side by side, with `IMAGINAIRE_OUTPUT_ROOT` set to a shared output directory (defaults to `/tmp/imaginaire4-output`). The recipe below (2B model variant; a 14B variant is also documented) walks from raw demonstration video through a post-trained Cosmos Predict2.5 checkpoint to Cosmos Reason2-scored rollouts:
+
+```bash
+# --- Stage 1: prepare training data (from the cosmos-predict2.5 root) ---
+hf download nvidia/GR1-100 --repo-type dataset --local-dir datasets/benchmark_train/hf_gr1/ && \
+  mkdir -p datasets/benchmark_train/gr1/videos && \
+  mv datasets/benchmark_train/hf_gr1/gr1/*mp4 datasets/benchmark_train/gr1/videos && \
+  mv datasets/benchmark_train/hf_gr1/metadata.csv datasets/benchmark_train/gr1/
+python -m scripts.create_prompts_for_gr1_dataset --dataset_path datasets/benchmark_train/gr1
+
+# --- Stage 2: post-train Cosmos Predict2.5 on the demonstration video ---
+torchrun --nproc_per_node=1 --master_port=12341 -m scripts.train \
+  --config=cosmos_predict2/_src/predict2/configs/video2world/config.py -- \
+  experiment=predict2_video2world_training_2b_groot_gr1_480
+  # append job.wandb_mode=disabled to skip Weights & Biases logging
+
+# --- Stage 3: convert the DCP checkpoint to a loadable .pt ---
+python scripts/convert_distcp_to_pt.py $CHECKPOINT_DIR/model $CHECKPOINT_DIR
+  # produces model.pt, model_ema_fp32.pt, model_ema_bf16.pt (use the bf16 EMA for inference)
+
+# --- Stage 4: generate synthetic rollout video from the post-trained model ---
+torchrun --nproc_per_node=8 examples/inference.py \
+  -i assets/sample_gr00t_dreams_gr1/gr00t_image2world.json \
+  -o outputs/gr00t_gr1_sample \
+  --checkpoint-path $CHECKPOINT_DIR/model_ema_bf16.pt \
+  --experiment predict2_video2world_training_2b_groot_gr1_480
+
+# --- Stage 5: Cosmos Reason2 physical-plausibility critic (from the cosmos-reason2 root) ---
+cp -r cosmos-cookbook/scripts/examples/predict2.5/gr00t-dreams/inference_videophy2.py \
+  cosmos-reason2/examples/gr00t-dreams
+cp cosmos-cookbook/docs/recipes/end2end/gr00t-dreams/assets/video_reward.yaml \
+  cosmos-reason2/prompts/video_reward.yaml
+
+uv run examples/gr00t-dreams/inference_videophy2.py \
+  --video-dir ./cosmos-predict2.5/outputs/gr1_object_run \
+  --output-dir outputs/gr1_object_run_critic
+
+# --- Stage 6: extract robot actions from the retained video with an Inverse Dynamics Model ---
+python IDM_dump/convert_directory.py \
+  --input_dir "${COSMOS_PREDICT2_OUTPUT_DIR}" \
+  --output_dir "results/dream_gen_benchmark/cosmos_predict2_14b_gr1_object_step3"
+# per-embodiment preprocessing lives under IDM_dump/scripts/preprocess (franka, gr1, so100, robocasa)
+
+# unsupported embodiments: fine-tune a custom IDM before Stage 6 can run
+PYTHONPATH=. torchrun scripts/idm_training.py \
+  --dataset-path demo_data/robot_sim.PickNPlace/ --embodiment_tag gr1
+```
+[Source](https://nvidia-cosmos.github.io/cosmos-cookbook/recipes/end2end/gr00t-dreams/post-training.html); Stage 6 sourced to the [NVIDIA/GR00T-Dreams repository](https://github.com/nvidia/gr00t-dreams)
+
+Stage 5 is the concrete implementation of the "Evaluate" stage from §6.1: Cosmos Reason2 scores each generated video on a 1–5 physical-plausibility scale, and the recipe's documented filtering threshold retains only videos scoring 4.0–5.0, discarding 1.0–2.0 outright — the same accept/reject gate the Physical AI Data Factory Blueprint describes in the abstract, applied here as a runnable script rather than a managed OSMO stage. Checkpoints land in Distributed Checkpoint (DCP) format under `${IMAGINAIRE_OUTPUT_ROOT}/PROJECT/GROUP/NAME/checkpoints/`, which is why Stage 3's conversion step exists — DCP is a training-time sharded format, not something `examples/inference.py` can load directly.
+
+**Correction:** an earlier version of this section stated that neither pipeline's video-to-LeRobot conversion was documented upstream. That was wrong for GR00T-Dreams. Stage 6 above — "Extracting robot actions using a fine-tuned IDM to LeRobot Format" in the `NVIDIA/GR00T-Dreams` repository — is exactly that conversion: `IDM_dump/convert_directory.py` reorganizes Cosmos Predict2.5's raw video output, an embodiment-specific preprocessing script (franka/gr1/so100/robocasa) prepares it, and a fine-tuned Inverse Dynamics Model turns the video into pseudo-actions — "labeled action sequences (neural trajectories)," in NVIDIA's own framing — which is the LeRobot-format state/action data GR00T trains on. For a new embodiment, the pipeline requires a `modality.json` and `stats.json` under `IDM_dump/global_metadata/{embodiment_name}` (the same schema §9.3 of Chapter 211b describes) plus a config entry in `gr00t/experiment/data_config_idm.py`, training a custom IDM via `scripts/idm_training.py` if one doesn't already exist for that embodiment [Source](https://github.com/nvidia/gr00t-dreams).
+
+GR00T-Mimic's conversion is documented too, but by a different and simpler route: because Isaac Lab Mimic already outputs structured HDF5 trajectories (state and action, not just pixels) rather than raw video, there is no IDM step at all — the blueprint's own `convert_hdf5_to_lerobot.py` script, driven by a config file, converts the HDF5 dataset directly to the LeRobot format GR00T N1.5 expects [Source](https://isaac-sim.github.io/IsaacLab/main/source/overview/imitation-learning/teleop_imitation.html).
 
 ### 6.3 Partner Ecosystem
 

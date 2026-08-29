@@ -48,6 +48,7 @@ This chapter draws that boundary explicitly, then documents what lives on the Is
   - [9.6 Inference: In-Process Policy and Client/Server](#96-inference-in-process-policy-and-clientserver)
 - [10. Synthetic Data Generation: Mimic and Cosmos Chaining](#10-synthetic-data-generation-mimic-and-cosmos-chaining)
 - [11. Isaac Lab versus MJX](#11-isaac-lab-versus-mjx)
+- [12. Adjacent Standard: Anthropic's Model Hardware Standard](#12-adjacent-standard-anthropics-model-hardware-standard)
 - [Integrations](#integrations)
 - [References](#references)
 
@@ -314,14 +315,16 @@ This is why Isaac Lab ships per-library wrapper classes rather than relying on s
 
 Isaac Lab ships wrappers for exactly four external RL libraries:
 
-| Library | Character |
-|---|---|
-| **RSL-RL** | Compact GPU-resident PPO implementation; the usual choice for legged-locomotion tasks |
-| **RL-Games** | High-throughput implementation originally developed against Isaac Gym-era workloads |
-| **skrl** | Modular, multi-backend library with broad algorithm coverage |
-| **Stable-Baselines3** | Widely used CPU-oriented reference implementation; the interoperability option |
+| Library | Character | Algorithms actually implemented |
+|---|---|---|
+| **RSL-RL** | Compact GPU-resident PPO implementation; the usual choice for legged-locomotion tasks | PPO, plus a student-teacher **distillation** algorithm for policy compression — that is the library's entire algorithm surface [Source](https://github.com/leggedrobotics/rsl_rl/tree/main/rsl_rl/algorithms) |
+| **RL-Games** | High-throughput implementation originally developed against Isaac Gym-era workloads | PPO (implemented as an asymmetric actor-critic, continuous and discrete variants) and SAC in the current PyTorch backend; the legacy TensorFlow 1.x path additionally had Rainbow DQN and A2C, since removed [Source](https://github.com/Denys88/rl_games) |
+| **skrl** | Modular, multi-backend library with broad algorithm coverage | Thirteen single-agent algorithms — A2C, AMP, CEM, DDPG, DDQN, DQN, PPO, Q-learning, RPO, SAC, SARSA, TD3, TRPO — plus two multi-agent algorithms, IPPO and MAPPO [Source](https://skrl.readthedocs.io/en/latest/) |
+| **Stable-Baselines3** | Widely used CPU-oriented reference implementation; the interoperability option | Seven algorithms in SB3 core — A2C, DDPG, DQN, HER, PPO, SAC, TD3. Related but *not* in core SB3: ARS, Maskable PPO, RecurrentPPO, QR-DQN, and TQC live in the separate `sb3-contrib` package; CrossQ, DroQ, and SimBa live in SBX (the JAX reimplementation), not SB3 itself [Source](https://stable-baselines3.readthedocs.io/en/master/guide/algos.html) |
 
 [Source](https://github.com/isaac-sim/IsaacLab/tree/release/3.0.0-beta2/source/isaaclab_rl)
+
+Isaac Lab's own wrapper code does not add or restrict algorithms — it adapts each library's existing agent classes to Isaac Lab's `gym.Env`-based environments (§6.1), so this table is each library's full native algorithm set, not an Isaac Lab-specific subset.
 
 **Ray RLlib is not among them.** This correction matters because RLlib is a prominent library and its absence is easy to assume away. Ray *does* appear in Isaac Lab, but in a different role entirely: as KubeRay-based cluster orchestration and hyperparameter tuning — launching and sweeping many training jobs — not as a provider of RL algorithms consuming Isaac Lab environments [Source](https://github.com/isaac-sim/IsaacLab/tree/release/3.0.0-beta2/scripts/reinforcement_learning/ray). Ray schedules the runs; RSL-RL, RL-Games, skrl, or SB3 does the learning inside them.
 
@@ -457,6 +460,8 @@ There is also a separate **GR00T-H / GR00T-H-N1.7** line targeting medical and s
 
 Two primary-source defects are worth flagging, because a reader consulting the model cards will hit them. The N1.7 card retains stale boilerplate describing SigLip2 and T5 components inherited from an earlier card template, which does not match the stated Cosmos-Reason2 backbone; and its parameter-size hyperlinks are inconsistent between 2B and 8B figures. Where the card contradicts itself, the accompanying technical report is the more reliable source.
 
+**Cosmos-Reason2 plays two structurally different roles across this stack, not one.** Inside GR00T-N1.7 it is System 2 itself — the embedded VLM that turns an image and a language instruction into the latent intent System 1's diffusion transformer conditions on, running as part of the robot's own policy at inference time. Outside GR00T, the same model family powers the **Cosmos Evaluator** stage of NVIDIA's Physical AI Data Factory Blueprint (Chapter 240 §6.1): there, Cosmos Reason scores *generated* video from Cosmos Predict/Transfer for physical plausibility and rejects bad synthetic samples before they reach any training run — upstream of GR00T, evaluating the data GR00T will later be trained on, not reasoning inside the robot. Prior to N1.7 (Eagle-2-backed N1/N1.5/N1.6), no such overlap existed; the convergence is new as of this checkpoint, not a founding design choice.
+
 ### 9.3 Embodiment Tags and the GR00T LeRobot Format
 
 Cross-embodiment training requires knowing which robot each trajectory came from. GR00T handles this with **embodiment tags** — an enumeration selecting which per-embodiment encoder/decoder MLP pair to use. `EmbodimentTag.NEW_EMBODIMENT` is the value for a robot not in the pretraining set, which is what a user fine-tuning on their own hardware selects.
@@ -562,6 +567,8 @@ The technique segments a human demonstration into object-centric subtasks — ea
 
 The object-centric framing is what makes the multiplication valid: because each subtask is defined relative to its object, moving the object in the new scene moves the entire sub-trajectory coherently, preserving the demonstrated contact-time behaviour instead of producing a kinematically plausible but physically wrong path.
 
+**GR00T and Cosmos are not competing models — they sit on opposite ends of the same data pipeline.** GR00T (§9) is the *policy*: a vision-language-action model that consumes trajectories and outputs robot actions. Cosmos (Chapter 240 §2) is the *world model*: a family of video generation and understanding models — Predict, Transfer, Reason — that NVIDIA ships as NIM microservices and that produce or augment the video Mimic's object-centric multiplication alone cannot supply. Neither substitutes for the other: Mimic multiplies trajectories geometrically inside the simulator, while Cosmos operates on the rendered or generated pixels those trajectories produce, and GR00T is trained on the result. The two pipelines below make this concrete — each is a different route from a handful of seed demonstrations to a GR00T training set, distinguished by which Cosmos model does the work and whether a simulator rollout happens at all. (The two families also diverge sharply on weights licensing, not just function: Cosmos has shipped weights under the permissive OpenMDW-1.1 licence, while no published GR00T checkpoint has — see §9.5.)
+
 Two pipelines chain this with generative video models, and they differ in which model does the work:
 
 - **GR00T-Mimic** — Omniverse/Isaac Sim renders the multiplied trajectories, and Cosmos Transfer-1 performs a photorealism transfer on the rendered frames, closing the sim-to-real appearance gap.
@@ -589,6 +596,20 @@ MuJoCo XLA (MJX) is the natural comparison point: another GPU-parallel simulator
 [Source](https://mujoco.readthedocs.io/en/stable/mjx.html)
 
 The decision rule that follows: if the observation space is proprioceptive and the priority is solver throughput, hardware portability, or gradients through the dynamics, MJX is the stronger fit — and its Apache-2.0 licence with no proprietary runtime underneath is materially simpler to redistribute. If the observation space is visual and the requirement is photorealistic RGB, ray-traced LiDAR, or domain randomisation over materials and lighting, Isaac Sim's RTX path is the differentiator, and the Kit substrate is the price of admission. MJX-Warp's batch renderer narrows this gap for pixel observations, but it is a rasterised-observation renderer rather than an RTX path-tracing pipeline, so it does not target photorealism or ray-traced sensor physics.
+
+---
+
+## 12. Adjacent Standard: Anthropic's Model Hardware Standard
+
+Everything in §§4–9 solves one instance of a general problem: an AI system (an RL policy, a VLA foundation model like GR00T) needs a stable, discoverable interface to heterogeneous sensors and actuators, and the interface it gets shapes what the AI can safely do. Isaac Sim's answer is simulation-side — RTX sensor schemas and physics-sensor readouts (§4) standing in for real hardware during training. In 2026-08, Anthropic published a research-preview standard aimed at the same problem on the *physical* side: giving an LLM-driven agent a uniform interface to real lab and manufacturing hardware, independent of simulation [Source](https://www.anthropic.com/news/model-hardware-standard-research-preview).
+
+**What it standardizes.** The Model Hardware Standard (MHS) defines a **driver** layer — "software that translates between a computer's operating system and a hardware device" — exposing each device through a small, uniform primitive set (`read`/`write`-style commands, e.g. "get temperature," "set temperature") rather than a bespoke per-device API. A device's capabilities, adjustable parameters, and enforced safety limits are captured in a machine-readable reference file, authored partly in natural language, that MHS generates per device. Devices announce themselves in this format so agents and other devices can discover and address them across a network without a hand-written "translator" program per pairing [Source](https://www.anthropic.com/news/model-hardware-standard-research-preview). This is architecturally the same problem V4L2's Media Controller pipeline and libcamera's pipeline-handler abstraction solve for cameras (Ch96) and DRM/KMS solves for display hardware: a kernel- or userspace-level HAL that lets a generic consumer address heterogeneous hardware through one schema instead of N drivers — except MHS's "consumer" is an LLM agent rather than a compositor or V4L2 application, and the schema is designed to be read by a language model, not just parsed by a C struct.
+
+**Orchestration surfaces.** MHS exposes three ways to drive a device — MCP (Model Context Protocol), a command-line interface, and generated code/API files — and is explicitly model-agnostic: "any agent harness can access it using standard protocols, such as the Model Context Protocol," not only Claude [Source](https://www.anthropic.com/news/model-hardware-standard-research-preview). The Janelia Research Campus pilot — the standard's original design partner — replaced point-to-point per-instrument connections on a microscopy rig with a single shared-memory state dictionary that heterogeneous device processes (MATLAB detectors, Python cameras, C# electrophysiology control) all read and write, then built a modular online-analysis pipeline (slot → transform → write-back) directly on top of that shared state [Source](https://www.anthropic.com/news/model-hardware-standard-research-preview).
+
+**Safety architecture.** MHS enforces device-level limits declared in the driver's reference file — Janelia cites this directly for laser-power capping during fluorescence microscopy, so an agent cannot issue a command that exceeds a hardware-safe bound regardless of what it intends. Independent pilots report the same pattern at the policy layer: a Carnegie Mellon evaluation induced six failure conditions (missing plate, rotated plate, a busy reader, a disconnected camera, an unreachable device, and an emergency stop) and MHS blocked all six before any device moved; a quantum-computing pilot (QuEra) reported the agent pausing for human confirmation on actions it judged even slightly risky [Source](https://www.anthropic.com/news/model-hardware-standard-research-preview).
+
+**Where this sits relative to the rest of the chapter.** MHS is not a robotics simulator, not a VLA model, and — as of this writing — not confirmed to be Linux-specific; the announcement describes cross-platform device processes (including an "older Windows ActiveX/COM scripting interface" example) without committing to an OS. *Note: needs verification — no published spec or reference implementation repository is linked from the research-preview page as of 2026-08-29; access is application-gated (`https://forms.gle/UdQ8JubjMN1R5CJt8`), and the technical claims above are drawn entirely from Anthropic's own announcement rather than from source code this book could inspect directly.* The reason it belongs in this chapter rather than nowhere: GR00T (§9) and Isaac Lab RL policies (§6–§7) are trained in simulation against RTX/physics-sensor schemas precisely so the resulting policy can be deployed against *some* real-hardware interface later — MHS is one candidate answer to what that real-hardware interface looks like when the agent doing the operating is a general-purpose LLM rather than a fine-tuned VLA checkpoint, and its driver/reference-file/safety-limit model is the closest current industry analogue, outside Isaac's own ROS 2 bridge (§5), to a standardized hardware-abstraction layer built agent-first instead of simulator-first.
 
 ---
 
