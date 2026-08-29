@@ -334,6 +334,28 @@ G2P (transfer back to particles):
 
 The cubic B-spline weight function wᵢₚ = N(xᵢ − xₚ/dx) covers a 3×3×3 stencil, giving each particle 27 grid-node interactions. P2G uses `atomicAdd` on grid mass and momentum (VK_EXT_shader_atomic_float); G2P is a fully parallel gather. MPM handles snow compaction, sand, and fracture by choosing the appropriate constitutive model for the deformation gradient update. [Source: Stomakhin et al. "A Material Point Method for Snow Simulation", SIGGRAPH 2013; Hu et al. "A Moving Least Squares Material Point Method", SIGGRAPH 2018]
 
+### 49.4 Newton-Raphson for Nonlinear Implicit Integration
+
+§49.1 noted that stiff springs need backward Euler for stability, but glossed over a fact that matters once the force model is genuinely nonlinear (corotational FEM's rotation extraction, MPM's constitutive models, or cloth's bending and area-preservation terms): backward Euler's implicit update is itself a nonlinear root-finding problem, not a single linear solve.
+
+The implicit Euler step seeks velocities v^{n+1} satisfying
+
+```
+M(v^{n+1} - v^n) = dt · f(x^n + dt·v^{n+1})
+```
+
+Because the internal force f depends nonlinearly on the unknown v^{n+1} through the updated positions, this is a nonlinear system g(v^{n+1}) = 0. The standard tool is Newton-Raphson: linearise g around the current estimate using its Jacobian (here, the force derivative with respect to position — the stiffness matrix K — combined with the mass matrix), solve the resulting linear system for a correction Δv, and iterate:
+
+```
+Solve:  (M - dt² · ∂f/∂x) · Δv = -g(v_k)
+Update: v_{k+1} = v_k + Δv
+Repeat until ‖g(v_k)‖ < tolerance
+```
+
+Each Newton iteration requires a full sparse linear solve — a system with the same sparsity pattern (mesh connectivity) every step, making it a direct match for the sparse CG and preconditioned iterative solvers of Ch226 §7–8; the Jacobian assembly reuses the corotational stiffness computed per-tet in §49.2. Because each outer Newton iteration costs one inner linear solve, engines budget only 1–3 Newton iterations per timestep, relying on warm-starting from the previous frame's solution to keep the linearisation close enough to convergent.
+
+Baraff and Witkin's "Large Steps in Cloth Simulation" (SIGGRAPH 1998), the paper that popularised implicit integration for real-time cloth, deliberately avoids this iteration: rather than a true Newton-Raphson loop, it takes a single linearisation step using a first-order Taylor expansion of the force around the current state, then accepts the resulting velocity update without re-evaluating and re-solving. This trades some accuracy — the result is not the exact solution of the nonlinear system — for one linear solve per timestep instead of several, which was decisive for the 1998 hardware target and remains a common simplification in real-time cloth solvers that cannot afford a full Newton loop. Production FEM and MPM solvers targeting simulation fidelity over strict frame budget (offline cloth, surgical simulation, most modern deformable-body research code) restore the full outer Newton iteration, often paired with a line search or trust-region step to guarantee convergence when the initial guess is far from the root. [Source: Baraff & Witkin, "Large Steps in Cloth Simulation", SIGGRAPH 1998, https://graphics.stanford.edu/courses/cs448-01-spring/papers/baraff2.pdf]
+
 ---
 
 ### 50. Rigid Body Dynamics on GPU
@@ -434,6 +456,20 @@ void main() {
 ```
 
 [Source: Featherstone "Rigid Body Dynamics Algorithms", 2008; GPU implementation in NVIDIA PhysX 5 articulation solver]
+
+### 50.5 Contact as a Complementarity Problem: LCP, CCP, and ADMM
+
+§50.3's sequential-impulse (SI) solver is presented as an iterative velocity-correction scheme, but it is worth naming what it actually solves: rigid-body contact with inequality constraints (bodies may separate but not interpenetrate) is a **linear complementarity problem** (LCP). For a contact with normal impulse λ, relative normal velocity Cλ + b (C the constraint Jacobian, b the bias/restitution term), the non-penetration condition is the complementarity relation
+
+```
+0 ≤ λ  ⊥  Cλ + b ≥ 0
+```
+
+read as: the impulse λ and the separation velocity Cλ + b are both non-negative, and at least one of them is zero at the solution — either the contact is active (λ > 0, velocity exactly zero) or it is separating (λ = 0, velocity non-negative). Coulomb friction adds a second constraint coupling the tangential impulse magnitude to λ through the friction cone ‖λ_t‖ ≤ μλ_n, which is not linear — the friction-augmented problem is a **cone complementarity problem** (CCP), not an LCP, because the feasible set for λ_t is a cone rather than a half-space.
+
+The projected Gauss-Seidel (PGS) impulse loop of §50.3 is precisely one well-known iterative method for MLCPs (mixed LCPs, since bodies also carry unconstrained velocity variables): each contact's `dL=max(co.lambda+dL,0.0)-co.lambda` line is a projection of the impulse onto its feasible range [0, ∞) — a complementarity projection — applied in a Gauss-Seidel sweep with graph-colouring substituting for the sequential ordering a CPU solver would use. This is why SI solvers need 4–20 iterations to converge on stacked or high-mass-ratio scenes: PGS convergence degrades with the LCP's condition number, exactly as Gauss-Seidel convergence degrades for ill-conditioned linear systems. [Source: Catto, "Iterative Dynamics with Temporal Coherence", GDC 2005, https://box2d.org/files/ErinCatto_SequentialImpulses_GDC2006.pdf; Catto, "Soft Constraints: Reinventing the Spring", GDC 2011, https://box2d.org/files/ErinCatto_SoftConstraints_GDC2011.pdf]
+
+**ADMM** (Alternating Direction Method of Multipliers) is an alternative to PGS for the same complementarity problem, and is the approach taken by Newton's `SolverKamino` — a collaboration between Disney Research, NVIDIA, and Google DeepMind targeting robotics systems with **kinematic loops** (parallel manipulators, multi-limbed or multi-contact robots) where closed kinematic chains make the constraint Jacobian's sparsity pattern harder for a purely sequential PGS sweep to exploit efficiently. ADMM splits the joint contact-and-dynamics problem into subproblems — an unconstrained dynamics solve and a per-contact complementarity projection — solved alternately and coupled through a dual (Lagrange-multiplier-like) variable, with the update reformulated to exploit the constraint Jacobian's block sparsity directly, plus warm-starting from the previous step's multipliers and an adaptively scaled penalty (step-size) parameter to accelerate convergence on stiff kinematic loops. Unlike PGS's per-contact sequential projection, ADMM's dynamics subproblem is a single sparse linear solve per iteration — again a direct consumer of Ch226's sparse solver machinery (§7–8) — making it better suited to GPU batch execution across many independent robot instances, which is Newton's primary use case (see also ch211b §8.3 for Kamino's role in Isaac Sim's Newton integration). [Source: Tsounis, Grandia & Bächer, "On Solving the Dynamics of Constrained Rigid Multi-Body Systems with Kinematic Loops", arXiv:2504.19771, 2025; Kamino project page, https://disneyresearch.github.io/kamino/; implementation at https://github.com/newton-physics/newton/tree/main/newton/_src/solvers/kamino]
 
 ---
 
@@ -1109,6 +1145,29 @@ void main() {
 
 [Source: Gumhold "Splatting Illuminated Ellipsoids with Depth Correction", VMV 2003; Müller "Particle-Based Fluid Simulation for Interactive Applications", SCA 2003]
 
+### 56.5 Long-Range Forces: Barnes-Hut and the Fast Multipole Method
+
+§56.2's spatial hashing accelerates DEM's *short-range* contact search, where only immediate neighbours interact. Some GPU physics workloads instead face genuinely long-range, all-pairs forces — gravitational N-body, Coulombic/electrostatic simulation, and vortex-method fluid solvers that represent flow as interacting vortex particles rather than a grid. Naively, N particles each attracting every other particle costs O(N²) force evaluations per step, which is intractable past a few tens of thousands of bodies.
+
+**Barnes-Hut** (1986) reduces this to O(N log N) by exploiting the fact that a cluster of distant particles can be approximated by its aggregate mass and centre of mass, as a single pseudo-particle. The algorithm builds an octree over the particles each step; force evaluation for a given particle walks the tree, and at each node applies the multipole-acceptance criterion — if the node's bounding-box size s divided by the distance d to the particle is below a threshold θ (typically ≈0.5–1.0), the entire subtree is summarised by one mass-weighted force contribution instead of descending further:
+
+```
+function computeForce(particle p, node n):
+    if n is a leaf:
+        accumulate direct pairwise force from n's body
+    else if size(n) / distance(p, n.centerOfMass) < theta:
+        accumulate force from n's aggregate mass and center of mass
+    else:
+        for each child c of n:
+            computeForce(p, c)
+```
+
+The GPU mapping (Burtscher & Pingali, 2011) restructures this recursive tree walk as a six-kernel pipeline dispatched once per timestep: (1) compute the bounding box of all bodies, (2) build the octree by inserting bodies with atomic pointer-swaps, (3) compute each internal node's centre of mass bottom-up, (4) sort bodies into an order that improves the coherence of later warp-parallel tree traversal, (5) walk the tree per-body to accumulate forces — this stage dominates runtime and is written to keep each CUDA warp traversing the same tree region for coalesced memory access — and (6) integrate positions and velocities. This design achieves roughly a 15× GPU speedup over the reference CPU Barnes-Hut implementation at one million bodies. [Source: Barnes & Hut, "A Hierarchical O(N log N) Force-Calculation Algorithm", Nature 324, 1986; Burtscher & Pingali, "An Efficient CUDA Implementation of the Tree-Based Barnes Hut n-Body Algorithm", in *GPU Computing Gems Emerald Edition*, 2011, https://iss.oden.utexas.edu/Publications/Papers/burtscher11.pdf]
+
+The **Fast Multipole Method** (FMM, Greengard & Rokhlin 1987) pushes further, to O(N) at the cost of substantially more involved preprocessing: rather than Barnes-Hut's one-directional summarisation (distant clusters approximated when evaluating one particle's force), FMM computes multipole expansions for every cell and additionally translates them into *local* expansions for every other cell at a comparable octree level, so that all particles within a leaf cell can evaluate their total force from neighbouring cells' local expansion coefficients in one pass rather than one tree walk per particle. The higher setup cost pays off at very large N, and GPU treecode/FMM hybrids — evaluating near-field pairs directly and far-field contributions via truncated multipole expansions — have been demonstrated with CUDA implementations achieving strong scaling to hundreds of millions of particles. [Source: Greengard & Rokhlin, "A Fast Algorithm for Particle Simulations", J. Comput. Phys. 73, 1987; Yokota & Barba, "Treecode and Fast Multipole Method for N-Body Simulation with CUDA", arXiv:1010.1482; Bedorf, Gaburov & Portegies Zwart, "A Sparse Octree Gravitational N-Body Code That Runs Entirely on the GPU Processor", J. Comput. Phys., https://doi.org/10.1016/j.jcp.2011.12.024]
+
+Note the naming collision with §61.3's "Fast Marching Method" below: both are commonly abbreviated FMM in the literature, but they solve unrelated problems — the Fast Marching Method is a single-pass eikonal-equation solver for level-set/SDF propagation (§61.3), while the Fast Multipole Method here is an N-body force-summation algorithm. The two share no algorithmic machinery.
+
 ---
 
 ### 57. Terrain Sculpting and Hydraulic Erosion
@@ -1645,6 +1704,29 @@ void main() {
 
 ---
 
+### GPU Differentiable Physics: The Adjoint Method
+
+Every solver in this category so far computes a forward trajectory: given initial state and parameters, produce positions and velocities forward in time. Robotics learning, inverse design, and system identification instead need the *gradient* of some downstream loss (task reward, matched trajectory, target shape) with respect to simulation parameters — material stiffness, contact friction coefficients, initial conditions, control torques. Computing that gradient efficiently through a full physics timestep is itself a solver algorithm: reverse-mode (adjoint) automatic differentiation.
+
+Forward-mode differentiation propagates a derivative alongside each forward computation and costs one pass per input parameter being differentiated — intractable when a controller has thousands of parameters. Reverse-mode differentiation instead runs the forward simulation once, records (or re-derives) every intermediate operation, and then walks backward from the scalar loss, applying the chain rule through each operation's local Jacobian-transpose (its *adjoint*) to accumulate ∂loss/∂parameter for every parameter simultaneously in a single backward pass — the same principle that makes backpropagation through a neural network tractable regardless of parameter count.
+
+NVIDIA Warp — already covered in this book as a kernel-authoring framework for physics (§48–56 use Warp-equivalent compute patterns throughout) — implements this via source-code transformation: each `@wp.kernel`-decorated function is compiled twice, once to a forward kernel and once to a corresponding adjoint (backward) kernel generated automatically from the forward kernel's operations. A `wp.Tape` records which kernels were launched, in what order, and with which arguments during the forward pass; calling `tape.backward(loss)` replays that record in reverse, invoking each operation's generated adjoint kernel to propagate gradients back to the original input buffers (positions, velocities, material parameters):
+
+```python
+# warp_adjoint_sketch.py — differentiable timestep, structure per Warp's tape API
+tape = wp.Tape()
+with tape:
+    for step in range(num_steps):
+        wp.launch(integrate_bodies, dim=num_bodies,
+                  inputs=[state_in, control_params], outputs=[state_out])
+        state_in = state_out
+    wp.launch(compute_loss, dim=1, inputs=[state_out, target], outputs=[loss])
+
+tape.backward(loss)                       # runs generated adjoint kernels in reverse
+grad = control_params.grad                # dLoss/dControlParams, populated in-place
+```
+
+Storing every intermediate state across a long rollout for the backward pass is memory-expensive — the classic space-for-time tradeoff of reverse-mode autodiff. Warp mitigates this with gradient checkpointing implemented via CUDA graph replay: rather than retaining every timestep's full state, the framework can re-execute (replay) a captured CUDA graph of the forward integration to regenerate intermediate states on demand during the backward pass, trading recomputation for memory. This differentiable-solver approach underlies the gradient-based system identification and control-optimisation workflows referenced elsewhere in this book for Newton (§50.5), MJX/DiffMJX (ch211a), and PhysGaussian-style differentiable rendering-physics pipelines (this chapter's Roadmap). [Source: NVIDIA Warp differentiability documentation, https://nvidia.github.io/warp/modules/differentiability.html]
 
 ---
 
@@ -1723,6 +1805,8 @@ void main() {
 [Source: Osher & Sethian "Fronts Propagating with Curvature-Dependent Speed", J. Comput. Phys. 1988; Sussman et al. "A Level Set Approach for Computing Solutions to Incompressible Two-Phase Flow", J. Comput. Phys. 1994]
 
 ### 61.3 GPU Fast Marching Method (FMM)
+
+This FMM is the eikonal-equation Fast Marching Method, unrelated to the Fast Multipole Method of the same abbreviation covered for N-body force summation in §56.5 — the two solve different problems and share no algorithmic machinery.
 
 FMM builds the SDF outward from an initialised narrow band using a heap-like wavefront. GPU parallelism: Jeong & Whitaker (2008) parallel FMM tiles each grid block and uses a local heap per workgroup, merging wavefronts at block boundaries:
 

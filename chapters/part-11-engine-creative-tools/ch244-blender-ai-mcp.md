@@ -1340,6 +1340,48 @@ pip install --target ~/.var/app/org.blender.Blender/config/blender/5.1/scripts/a
 
 **The sandbox's `/tmp` is private, not the host's.** Flatpak gives each sandboxed app its own `/tmp`, distinct from the host's — a script that shells out to `flatpak run org.blender.Blender --background --python script.py` and expects to hand off files via `/tmp` (a common pattern for headless pipelines, §14.1, or for a Blender MCP addon relaying data to an external process) will find nothing there, because the invoking host process and the sandboxed Blender process do not share that directory. Pass data through a path under `$HOME` (which flatpak does expose, subject to its filesystem permissions) or through `flatpak run --filesystem=/tmp` to explicitly bind-mount the host's `/tmp` into the sandbox, rather than assuming shared temp-file semantics.
 
+### 14.6 Pinterest API Integration for Reference Images and Publishing
+
+Pinterest's public [Developer Platform](https://developers.pinterest.com/) (`api.pinterest.com/v5`) is a content-management API — Pins, Boards, catalogs, ads, and analytics — not an AI service. It does not expose Pinterest's internal Pinterest Lens visual-search technology, and it has no image-analysis or image-generation endpoint of any kind. Its useful role in an AI-driven Blender pipeline is as plumbing on either side of the actual AI work covered elsewhere in this chapter: a **source** of reference imagery to feed a vision-language model or a generative tool's image-to-3D/image-to-image input (§9's Meshy and Hyper3D Rodin, §12's Dream Textures img2img), and a **sink** for publishing the resulting AI-generated or Blender-rendered assets back out as new Pins.
+
+**Authentication.** Pinterest v5 uses OAuth 2.0 with the `authorization_code` grant. The token endpoint is `POST https://api.pinterest.com/v5/oauth/token`, authenticated with HTTP Basic auth (base64-encoded `client_id:client_secret`) and a form body carrying `grant_type=authorization_code`, `code`, and `redirect_uri`. [Source: developers.pinterest.com/docs/getting-started/set-up-authentication-and-authorization/] Relevant scopes for this pipeline are `boards:read` and `pins:read` (pulling reference images) and `boards:write`/`pins:write` (publishing). Newly created apps start in **trial** access, restricted to the app owner's own Pinterest account; pulling from or publishing to other users' boards requires applying for **standard** access. [Source: github.com/pinterest/api-quickstart README] For a pipeline that only ever touches one team's own reference boards and one team's own output board, trial access is sufficient indefinitely.
+
+**Pulling reference images.** `GET /v5/boards` lists the authenticated user's boards; `GET /v5/boards/{board_id}/pins` lists the Pins on one, and each Pin's `media.images` object carries the image URLs at several resolutions:
+
+```python
+import requests
+
+API = "https://api.pinterest.com/v5"
+headers = {"Authorization": f"Bearer {access_token}"}
+
+# List Pins on a mood-board, download the originals as generation references
+resp = requests.get(f"{API}/boards/{board_id}/pins", headers=headers)
+for pin in resp.json()["items"]:
+    image_url = pin["media"]["images"]["originals"]["url"]
+    img_bytes = requests.get(image_url).content
+    with open(f"/tmp/refs/{pin['id']}.jpg", "wb") as f:
+        f.write(img_bytes)
+```
+
+The downloaded files then feed into the pipeline as ordinary reference images — as the `image` input to Meshy's or Hyper3D Rodin's image-to-3D endpoints (§9), or as the reference/init image for Dream Textures' img2img mode (§12) — Pinterest's role ends at the download; nothing downstream needs to know the reference came from a Pin rather than a local file.
+
+**Publishing generated assets back.** `POST /v5/pins` creates a new Pin from a `PinCreate` body. Confirmed fields: `link`, `title`, `description`, `dominant_color` (hex), `alt_text`, `board_id`, `board_section_id`, `media_source`, `parent_pin_id`, `note`; the call returns the created `Pin` object with HTTP 201. [Source: raw.githubusercontent.com/pinterest/pinterest-python-generated-api-client/main/docs/PinsApi.md] `media_source.source_type` accepts `image_url` (single image), `multiple_image_urls` (carousel), and `video_id` (video with cover image) — publishing a locally-rendered Blender turntable or an AI-generated concept image therefore requires hosting it at a reachable URL first (e.g. an S3/GCS bucket or the pipeline's own asset server); a render written straight to local disk cannot be attached inline:
+
+```python
+pin_body = {
+    "board_id": output_board_id,
+    "title": "Generated concept — GPU-rendered turntable",
+    "alt_text": "AI-referenced, Blender-rendered 3D asset",
+    "media_source": {
+        "source_type": "image_url",
+        "url": "https://assets.example.com/renders/turntable_0042.png",
+    },
+}
+resp = requests.post(f"{API}/pins", headers=headers, json=pin_body)
+```
+
+**Note: needs verification.** Whether `media_source` also supports a base64-inline `image_base64` source type (which would avoid the intermediate hosting step) could not be confirmed from Pinterest's own documentation during research for this chapter — search results referencing it were not corroborated by a primary source. Treat `image_url` as the confirmed path and verify against the current [Pinterest v5 API reference](https://developers.pinterest.com/docs/api/v5/) before assuming inline upload is available.
+
 ---
 
 ## 15. Practical Limits of AI-Driven Blender
@@ -2397,6 +2439,10 @@ Three threads worth tracking for anyone building on this chapter's patterns:
 - [Meshy AI — Text to 3D API](https://docs.meshy.ai/en/api/text-to-3d) — REST API reference, parameters, status codes
 - [Meshy AI — Authentication](https://docs.meshy.ai/en/api/authentication) — API key setup
 - [Meshy AI — Integrations](https://www.meshy.ai/integrations) — Blender plugin, Unity, Unreal, Omniverse
+- [Pinterest Developer Platform — API v5 reference](https://developers.pinterest.com/docs/api/v5/) — Pins/Boards content-management API (§14.6)
+- [Pinterest — Authentication and Authorization](https://developers.pinterest.com/docs/getting-started/set-up-authentication-and-authorization/) — OAuth 2.0 token endpoint and flow (§14.6)
+- [pinterest-python-generated-api-client — PinsApi](https://github.com/pinterest/pinterest-python-generated-api-client/blob/main/docs/PinsApi.md) — `PinCreate` field schema, generated from Pinterest's own OpenAPI spec (§14.6)
+- [pinterest/api-quickstart](https://github.com/pinterest/api-quickstart) — Official quickstart, trial vs. standard access tiers (§14.6)
 - [Hyper3D Rodin API specification](https://developer.hyper3d.ai/api-specification/rodin-generation) — Generation tiers, HighPack textures
 - [fal.ai — Hyper3D Rodin](https://fal.ai/models/fal-ai/hyper3d/rodin/api) — FAL.ai proxy endpoint
 - [Tripo3D API](https://www.tripo3d.ai/api) — TripoSR-based commercial API

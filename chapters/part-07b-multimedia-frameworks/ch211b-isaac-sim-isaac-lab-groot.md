@@ -40,6 +40,10 @@ This chapter draws that boundary explicitly, then documents what lives on the Is
   - [7.4 Headless Operation and Opt-In Cameras](#74-headless-operation-and-opt-in-cameras)
   - [7.5 What the Published Benchmarks Actually Say](#75-what-the-published-benchmarks-actually-say)
 - [8. Newton: The Linux Foundation Physics Engine](#8-newton-the-linux-foundation-physics-engine)
+  - [8.1 Quickstart](#81-quickstart)
+  - [8.2 Features](#82-features)
+  - [8.3 The Eight Solvers, in Depth](#83-the-eight-solvers-in-depth)
+  - [8.4 Integration Status in the NVIDIA Stack](#84-integration-status-in-the-nvidia-stack)
 - [9. The GR00T Foundation-Model Family](#9-the-gr00t-foundation-model-family)
   - [9.1 Dual-System Architecture](#91-dual-system-architecture)
   - [9.2 Checkpoint Lineage and Backbones](#92-checkpoint-lineage-and-backbones)
@@ -81,7 +85,7 @@ What remains is genuinely robotics-shaped: a robotics extension namespace (`isaa
 
 Isaac Sim 4.5 renamed essentially every extension in the product. The old namespace `omni.isaac.*` was replaced by `isaacsim.*`, and the flat extension list was reorganised into functional groups — `isaacsim.core`, `isaacsim.sensors`, `isaacsim.robot`, `isaacsim.ros2`, `isaacsim.storage`, and so on. NVIDIA published a full old-name-to-new-name mapping table for the transition [Source](https://docs.isaacsim.omniverse.nvidia.com/4.5.0/overview/extensions_renaming.html).
 
-> **Note: needs verification.** The *version* that introduced the rename (4.5) is confirmed by the documentation URL above, which is versioned. The exact calendar release date of Isaac Sim 4.5 could not be confirmed from a primary source and is therefore not stated here.
+Isaac Sim 4.5 shipped in January 2025, announced alongside Isaac Lab 2.0 at CES 2025 [Source](https://forums.developer.nvidia.com/t/isaac-sim-4-5-and-isaac-lab-2-0-is-now-available/323239). The `isaac-sim/IsaacSim` GitHub repository's own tagged release history only extends back to v5.0.0, the first version published on GitHub under the Apache-2.0 licence discussed in §2.4; 4.5 predates any git-tag-dated changelog entry.
 
 The practical consequence for anyone reading tutorials, blog posts, or Stack Overflow answers: any code importing `omni.isaac.core` predates 4.5 and will not run on a current install. This is not a deprecation shim situation — the old module names are gone.
 
@@ -123,15 +127,11 @@ Note also `isaacsim.storage.native.get_assets_root_path`: Isaac Sim's robot and 
 
 ### 2.4 Licensing: Apache-2.0 Source over a Proprietary Runtime
 
-Isaac Sim's repository carries an Apache-2.0 licence, and this is widely reported as "Isaac Sim is now open source." The licence file's own preamble is more careful than that summary, and the distinction matters for anyone planning to redistribute:
+Isaac Sim's repository carries an Apache-2.0 licence on the `isaac-sim/IsaacSim` source itself, but that grant does not extend to the Omniverse Kit SDK runtime the source compiles and links against, nor to the bundled models, textures, and other asset content, which carry their own terms [Source](https://github.com/isaac-sim/IsaacSim/blob/v6.0.1/LICENSE). The licence text contains no explicit gate requiring NVIDIA Developer Program or AI Enterprise membership for redistribution; it does reference a separate agreement covering the non-Apache, NVIDIA-owned components underneath. So the accurate characterisation is *source-available with a permissive licence on the Isaac layer*, sitting on a proprietary runtime, and readers with redistribution requirements should read the licence file directly.
 
-The Apache-2.0 grant covers the source in the `isaac-sim/IsaacSim` repository. It does not extend to the Omniverse Kit SDK runtime that the source is compiled and linked against, nor to the bundled models, textures, and other asset content, which carry their own terms [Source](https://github.com/isaac-sim/IsaacSim/blob/v6.0.1/LICENSE). The repository is best characterised as *source-available with a permissive licence on the Isaac layer*, sitting on a proprietary runtime — not as an end-to-end open-source stack.
+The repository is also not currently a participatory open-source project: the README's Contributing section states "We do not support direct community contributions at the moment" [Source](https://github.com/isaac-sim/IsaacSim/blob/v6.0.1/README.md#contributing), and `CONTRIBUTING.md` redirects bug reports and feedback to the NVIDIA Omniverse developer forums [Source](https://github.com/isaac-sim/IsaacSim/blob/v6.0.1/CONTRIBUTING.md) — a code drop with a permissive licence rather than an upstream that accepts patches.
 
-The repository is also explicit that it is not currently a participatory open-source project: the README's Contributing section states "We do not support direct community contributions at the moment" [Source](https://github.com/isaac-sim/IsaacSim/blob/v6.0.1/README.md#contributing), and `CONTRIBUTING.md` redirects bug reports and feedback to the NVIDIA Omniverse developer forums [Source](https://github.com/isaac-sim/IsaacSim/blob/v6.0.1/CONTRIBUTING.md). Functionally, this is a code drop with a permissive licence rather than an upstream you can send patches to.
-
-> **Note: needs verification.** Claims that redistribution of Isaac Sim requires membership in the NVIDIA Developer Program or an NVIDIA AI Enterprise licence could not be confirmed against a primary source. What *can* be stated from the licence text is that the grant is oriented toward use rather than redistribution, and is conditioned on running on NVIDIA GPUs. Readers with redistribution requirements should read the licence file directly rather than relying on any secondary summary, including this one.
->
-> **Note: needs verification.** Specific minimum NVIDIA driver versions for Isaac Sim 5.x and 6.x are deliberately omitted here; they change per release and the repository's own requirements documentation is the authoritative source.
+Minimum driver versions are pinned per release rather than stated once for the whole product line: Isaac Sim 5.1.0 requires Linux driver 580.65.06 or newer, and Isaac Sim 6.0.0 requires 580.95.05 or newer [Source](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/installation/requirements.html) [Source](https://docs.isaacsim.omniverse.nvidia.com/6.0.0/installation/requirements.html). Both releases also require a GeForce RTX 4080 or better with at least 16GB VRAM — GPUs without RT cores, including the A100 and H100, are unsupported for Isaac Sim itself. Check the requirements page for the specific version being installed rather than assuming these numbers carry forward.
 
 ---
 
@@ -405,7 +405,7 @@ arg_group.add_argument("--enable_cameras", action="store_true",
 
 These are orthogonal. `--headless` suppresses the display; `--enable_cameras` opts *in* to camera sensors and pulls in their extension dependencies. Headless-with-cameras is a valid and common combination: a cluster node rendering tiled observations with no display attached. Camera sensors being opt-in means that a proprioception-only training run — the majority of locomotion work — never loads the camera extension stack at all.
 
-> **Note: needs verification.** A stronger claim sometimes made — that `--enable_cameras` measurably slows startup or per-step time — could not be confirmed against a documented benchmark. What the documentation does state is that headless mode can significantly improve performance when rendering is not required, and it offers hardware-scaled guidance for camera counts (see §7.5). Those are the defensible statements.
+Isaac Lab's own documentation confirms the cost directly: "enabling recording is equivalent to enabling rendering during training, which will slow down both startup and runtime performance" [Source](https://isaac-sim.github.io/IsaacLab/main/source/how-to/record_video.html). `--enable_cameras` pays that same rendering cost even without video recording enabled, since it is what loads the camera-sensor extension stack in the first place.
 
 ### 7.5 What the Published Benchmarks Actually Say
 
@@ -430,6 +430,86 @@ Newton is a GPU-accelerated physics engine hosted as a Linux Foundation project,
 
 Licensing is two-part, and the code licence file has a non-obvious name: `LICENSE.md` carries Apache-2.0 for the code, while documentation is CC-BY-4.0 [Source](https://github.com/newton-physics/newton/blob/main/LICENSE.md).
 
+### 8.1 Quickstart
+
+Installation is a single `pip` extra, and the package ships a self-contained example runner:
+
+```bash
+pip install "newton[examples]"
+python -m newton.examples
+```
+
+Requirements are Python 3.10+, an NVIDIA GPU (Maxwell or newer) with driver 545+ for the GPU path, and CPU-only operation on Linux, Windows, or macOS as a fallback [Source](https://github.com/newton-physics/newton).
+
+Below the example runner, the core API is a four-object pattern common to Warp-based simulators: build a `Model` from a `ModelBuilder`, allocate a pair of `State` buffers plus `Control` and `Contacts`, then step a solver against them in a swap-buffer loop:
+
+```python
+import newton
+import warp as wp
+
+# Build the model
+builder = newton.ModelBuilder()
+builder.add_ground_plane()
+body = builder.add_body(xform=wp.transform(p=wp.vec3(0, 0, 2), q=wp.quat_identity()))
+builder.add_shape_sphere(body, radius=0.5)
+model = builder.finalize()
+
+# Allocate simulation state
+state_0 = model.state()
+state_1 = model.state()
+control = model.control()
+collision_pipeline = newton.CollisionPipeline(model)
+contacts = collision_pipeline.contacts()
+
+# Select a solver
+solver = newton.solvers.SolverXPBD(model, iterations=10)
+
+# Step: clear forces, detect collisions, step the solver, swap buffers
+for frame in range(num_frames):
+    state_0.clear_forces()
+    collision_pipeline.collide(state_0, contacts)
+    solver.step(state_in=state_0, state_out=state_1, control=control,
+                contacts=contacts, dt=sim_dt)
+    state_0, state_1 = state_1, state_0
+```
+
+Swapping `state_0`/`state_1` rather than mutating one buffer in place is the same double-buffering discipline the tensor API in §7.1 relies on for GPU-resident state — it avoids read/write hazards when the solver kernel and the next frame's collision query would otherwise race on the same memory [Source](https://newton-physics.github.io/newton/latest/tutorials/00_introduction.html).
+
+### 8.2 Features
+
+Newton's own documentation states the following capabilities [Source](https://newton-physics.github.io/newton/latest/guide/overview.html):
+
+- **GPU acceleration** via NVIDIA Warp, the same kernel JIT the Isaac Lab tensor API (§7.1) is built on
+- **Eight interchangeable solvers** covering rigid bodies, articulations, cloth, and granular materials — detailed individually in §8.3
+- **Multi-physics coverage**: rigid bodies, articulations, cloth, cables/ropes, soft bodies, and the material point method (MPM) for granular and deformable materials
+- **Differentiable simulation** for gradient-based optimisation and learning, inherited from Warp's `wp.Tape` mechanism (Ch69 §12)
+- **Import formats**: URDF, MJCF, and USD — the last giving Newton a direct path onto the same scene description Isaac Sim and Isaac Lab already use
+- **Modular solver architecture**, designed for adding new solvers and components rather than treating the solver set as fixed
+
+Example scripts bundled with the package demonstrate the range this is meant to cover: humanoids (G1, H1), quadrupeds (ANYmal), and manipulators (UR10, Franka Panda) [Source](https://github.com/newton-physics/newton).
+
+### 8.3 The Eight Solvers, in Depth
+
+"Multiple solvers" undersells what Newton actually ships: each `newton.solvers.Solver*` class is a distinct algorithm targeting a distinct physics domain, selected per-simulation rather than configured as options on one universal solver. The eight, grouped by what they solve [Source](https://newton-physics.github.io/newton/latest/api/newton_solvers.html):
+
+**Articulated and general rigid-body dynamics:**
+
+- **`SolverFeatherstone`** — a semi-implicit symplectic-Euler integrator operating on reduced (generalised) coordinates, implementing Featherstone's Composite Rigid Body Algorithm (CRBA) — the same textbook algorithm Ch210 cites as the algorithmic ancestor of PhysX's own articulation solver. Reduced coordinates mean joint angles and velocities are the state, not per-link 6-DOF transforms, which is what makes long open kinematic chains (a humanoid arm, a leg) cheap to integrate.
+- **`SolverMuJoCo`** — not a Newton-native solver but an interface to the MuJoCo physics engine itself, GPU-accelerated through `mujoco_warp`. This is Newton's primary backend (§8 above) and the one Isaac Lab's experimental Newton integration (§8.4) actually exercises.
+- **`SolverSemiImplicit`** — a plain semi-implicit (symplectic) Euler integrator with no constraint-solving sophistication beyond that. It is the baseline every other rigid-body solver in the list improves on for stiff or highly-constrained systems, and the cheapest per-step option when a scene doesn't need one.
+- **`SolverKamino`** — a Disney Research solver for constrained multi-body systems containing **kinematic loops** (closed chains), under- and over-actuation, joint limits, hard frictional contacts, and restitutive impacts. This is the solver in the list built specifically for topologies the others approximate around: parallel manipulators, planar and spatial linkages, and multi-limbed robots with coupled joints, simulated as the actual mechanical assembly rather than as an open-chain tree with the loop-closing constraint bolted on. Its algorithm is ADMM (Alternating Direction Method of Multipliers)-based constraint solving, chosen for robustness on ill-conditioned systems — large mass ratios, redundant constraints — that trip up simpler LCP-style solvers. As of this writing Kamino is pre-1.0 (a more stable BETA 2 is slated for summer 2026) [Source](https://disneyresearch.github.io/kamino/).
+
+**Deformable and particle-based dynamics:**
+
+- **`SolverXPBD`** — an implicit integrator using eXtended Position-Based Dynamics for both rigid *and* soft bodies. XPBD is position-based dynamics with a physically-consistent compliance/stiffness parameterisation added (the "extended" part), which is what makes it usable for soft bodies and not just the visually-plausible-but-not-quite-physical cloth PBD was originally built for.
+- **`SolverVBD`** — Vertex Block Descent for particles, and its rigid-body extension Augmented VBD (AVBD) for rigid bodies. VBD is an implicit, block-coordinate-descent solver: it updates each vertex (or rigid body) against its local neighbourhood while holding the rest fixed, iterating to convergence — a different implicit strategy from XPBD's projection-based approach, generally favoured for stiffer, more detailed deformable meshes.
+- **`SolverStyle3D`** — a projective-dynamics-based cloth solver, and the one purpose-built for garment simulation specifically rather than deformables in general. Newton's own example set demonstrates it on an H1 humanoid wearing a jacket. As of this writing Style3D ships as part of Newton's alpha release rather than a stabilised 1.0 component [Source](https://github.com/newton-physics/newton/discussions/639).
+- **`SolverImplicitMPM`** — an implicit Material Point Method solver for granular and elasto-plastic materials: sand, soil, and materials that flow like a fluid under some conditions and hold shape like a solid under others. MPM represents material as particles carrying state (mass, velocity, deformation) that are rasterised onto a background grid each step for the actual force/collision computation, then the updated grid state is transferred back to the particles — a hybrid Lagrangian/Eulerian scheme that is the standard approach for this material class in graphics and computational physics generally, not a Newton-specific invention.
+
+The practical reading for a robotics user: `SolverMuJoCo` and `SolverFeatherstone` cover the articulated-robot case most Isaac Lab workloads care about, `SolverKamino` is the one to reach for the moment a mechanism has a closed kinematic loop (a four-bar linkage, a parallel gripper with coupled fingers) that an open-chain solver would have to approximate, and `SolverXPBD`/`SolverVBD`/`SolverStyle3D`/`SolverImplicitMPM` are what turn a rigid-robot simulator into one that can also render the cloth, cable, or granular material the robot is interacting with in the same scene.
+
+### 8.4 Integration Status in the NVIDIA Stack
+
 Its integration status in the NVIDIA stack should be stated conservatively:
 
 - In **Isaac Sim 6.0**, Newton appears as the `isaacsim.physics.newton` extension. The physics engine is *runtime-selectable*: one engine is active at a time, and the Newton integration is documented as experimental. It is not a "dual backend" in the sense of PhysX and Newton co-simulating.
@@ -437,7 +517,7 @@ Its integration status in the NVIDIA stack should be stated conservatively:
 
 That "no support commitment" statement is a precise engineering signal, not a hedge: Newton is a direction of travel, and production work in 2026 still targets PhysX.
 
-> **Note: needs verification.** The commonly repeated statement that "PhysX remains the default physics engine in Isaac Sim 6.0" appears in summaries but was not confirmed against primary documentation. The verifiable statements are those above — runtime-selectable, one engine active at a time, Newton experimental.
+Isaac Sim's own physics documentation calls the PhysX SDK "the default PhysX SDK backend" among the engines the runtime can select [Source](https://docs.isaacsim.omniverse.nvidia.com/6.0.0/physics/newton_physics.html). The same page narrows what "Newton support" means in practice: Isaac Sim's Newton integration currently exposes primarily the MuJoCo-Warp solver through its own scene classes, while engine-specific scene-class support for Newton's other solvers — XPBD, Featherstone, SemiImplicit — is described as under development for future releases. So the eight solvers cataloged in §8.3 exist and are usable directly against the Newton library today (as in the §8.1 quickstart), but Isaac Sim's own scene-authoring layer currently wires up only one of them.
 
 ---
 
@@ -455,6 +535,8 @@ GR00T N1 and its successors use an explicitly two-system design, with the two ha
 The DiT conditions on the diffusion timestep through adaptive layer normalisation (AdaLN), the standard conditioning mechanism for diffusion transformers. Cross-embodiment support is handled at the boundaries rather than in the trunk: **embodiment-indexed MLP encoders and decoders** map each robot's proprioception vector into the shared latent space and map shared actions back out to that robot's actuator space. The trunk is embodiment-agnostic; only the thin input and output projections are per-robot [Source](https://github.com/NVIDIA/Isaac-GR00T).
 
 GR00T N1.7 additionally moves to a **relative end-effector action space**, predicting EEF deltas rather than absolute poses — which generalises better across robots whose kinematics differ but whose task-space motions are similar.
+
+The split exists because reasoning and control run at genuinely incompatible frequencies, and forcing both through one network means paying the slower system's latency on every control tick. The GR00T N1 paper reports System 2 running at 10 Hz on an NVIDIA L40 GPU while System 1 generates closed-loop motor actions at 120 Hz — a 12x gap that a single monolithic policy would either have to accept for every action (throttling control to reasoning speed) or paper over with staleness (acting on a stale scene understanding for many ticks in a row). Decoupling the two into an asynchronous pair — System 2's latent is produced once and consumed by many System 1 steps until the next update — lets the DiT keep control-loop rate without waiting on a fresh VLM forward pass, and lets the VLM run at whatever cadence its own compute cost dictates without being redesigned around a control-frequency deadline it cannot meet. The design is explicitly framed as inspired by dual-process accounts of human cognition — fast, intuitive System 1 processing paired with slower, deliberate System 2 reasoning, after Kahneman's *Thinking, Fast and Slow* — with the two systems nonetheless tightly coupled and jointly trained end-to-end rather than developed as independent modules bolted together after the fact [Source](https://arxiv.org/abs/2503.14734).
 
 ### 9.2 Checkpoint Lineage and Backbones
 
@@ -479,7 +561,51 @@ Two primary-source defects are worth flagging, because a reader consulting the m
 
 Cross-embodiment training requires knowing which robot each trajectory came from. GR00T handles this with **embodiment tags** — an enumeration selecting which per-embodiment encoder/decoder MLP pair to use. `EmbodimentTag.NEW_EMBODIMENT` is the value for a robot not in the pretraining set, which is what a user fine-tuning on their own hardware selects.
 
-Data arrives in the **GR00T LeRobot format**: the community LeRobot v2 dataset layout, extended with a `meta/modality.json` file that declares the semantic role and indexing of each state and action dimension. That extra file is what lets one training pipeline consume datasets from robots with different joint counts and different sensor suites — the modality description tells the loader how to slice each record [Source](https://github.com/NVIDIA/Isaac-GR00T/blob/main/getting_started/data_preparation.md).
+Data arrives in the **GR00T LeRobot format**: the community LeRobot v2 dataset layout, extended with a `meta/modality.json` file that declares the semantic role and indexing of each state and action dimension. That extra file is what lets one training pipeline consume datasets from robots with different joint counts and different sensor suites — the modality description tells the loader how to slice each record.
+
+The on-disk layout is chunked by episode, with per-frame numeric state/action in Parquet, camera frames in MP4, and everything else in small JSON/JSONL sidecar files:
+
+```
+.
+├─meta
+│ ├─episodes.jsonl
+│ ├─modality.json
+│ ├─info.json
+│ └─tasks.jsonl
+├─videos
+│ └─chunk-000
+│   └─observation.images.ego_view
+│     └─episode_000001.mp4
+│     └─episode_000000.mp4
+└─data
+  └─chunk-000
+    ├─episode_000001.parquet
+    └─episode_000000.parquet
+```
+
+Each `data/chunk-*/episode_*.parquet` row holds `observation.state` and `action` as single concatenated 1D arrays — not one column per joint — plus `timestamp`, `task_index`, `episode_index`, `index`, `next.reward`, `next.done`, and an `annotation.<source>.<type>` column indexing into `meta/tasks.jsonl`. `meta/modality.json` is what turns those flat concatenated arrays back into named, sliceable fields, using zero-based, Python-slice-convention `start`/`end` offsets. A real example, from the repository's `demo_data/cube_to_bowl_5` sample, for a single-arm-plus-gripper manipulator with two cameras:
+
+```json
+{
+    "state": {
+        "single_arm": { "start": 0, "end": 5 },
+        "gripper":    { "start": 5, "end": 6 }
+    },
+    "action": {
+        "single_arm": { "start": 0, "end": 5 },
+        "gripper":    { "start": 5, "end": 6 }
+    },
+    "video": {
+        "front": { "original_key": "observation.images.front" },
+        "wrist": { "original_key": "observation.images.wrist" }
+    },
+    "annotation": {
+        "human.task_description": { "original_key": "task_index" }
+    }
+}
+```
+
+`state.single_arm` and `action.single_arm` slice indices 0–5 out of the flat `observation.state`/`action` arrays as the five arm joints, `gripper` takes index 5 as the sixth dimension, and the `video` block remaps the LeRobot-standard `observation.images.<name>` video keys to the shorter `front`/`wrist` names GR00T's embodiment config expects. A new embodiment with a different joint count or an extra camera is a different `modality.json`, not a code change — which is the mechanism that lets `EmbodimentTag.NEW_EMBODIMENT` (above) work as a configuration switch rather than a retraining of the loader itself [Source](https://github.com/NVIDIA/Isaac-GR00T/blob/main/getting_started/data_preparation.md).
 
 ### 9.4 What Is Frozen During Fine-Tuning
 
@@ -493,7 +619,7 @@ The paper's own phrasing is that the language component of the vision-language b
 
 ### 9.5 Weights Licensing Differs Per Checkpoint
 
-This is the single most consequential practical detail in this section, and the answer is not uniform across the family. As observed on 2026-08-10, there is a clean boundary at N1.7:
+Repository code licence and model weights licence are independent, and for GR00T the weights licence also varies by checkpoint. As observed on 2026-08-10 — model licensing is not versioned and can change without a corresponding bump on the card, so treat this as a snapshot and check the specific model card before any deployment decision — there is a clean boundary at N1.7:
 
 | Checkpoint | Weights licence | Stated use |
 |---|---|---|
@@ -502,34 +628,7 @@ This is the single most consequential practical detail in this section, and the 
 | GR00T-N1.6-3B | NVIDIA OneWay Noncommercial Licence | Non-commercial |
 | GR00T-N1.7-3B | NVIDIA Open Model Licence Agreement | "ready for commercial/non-commercial use" |
 
-Three cautions follow:
-
-1. **None of the four model cards carries a `license:` YAML frontmatter field.** Tooling that reads Hugging Face metadata to determine a licence will find nothing and may report "unknown" or fall back to a default. The licence is stated in the card body prose and in a linked document, not in machine-readable metadata. Any automated licence audit over these repositories will produce a wrong answer unless it reads the prose.
-2. **OpenMDW-1.1 does not apply to any currently-published GR00T checkpoint.** It has been described as the licence for *future* GR00T releases, in a company blog post only — not in the corresponding newsroom press release, and not on any model card. Chapter 240 §2.2 covers OpenMDW-1.1 in the context of the Cosmos model family; do not transfer that conclusion to GR00T's current weights.
-3. **The Isaac-GR00T repository README contradicts itself.** One passage describes the release as fully commercially licensable under Apache-2.0, while the README's own License section states the standard split: code under Apache-2.0, weights under an NVIDIA model licence. The per-checkpoint model card is the authority; the README's summary sentence is not.
-
-The structural rule to carry away: **repository code licence and model weights licence are independent**, and for GR00T the weights licence also varies by checkpoint version. Apache-2.0 on the inference code says nothing about whether you may deploy the weights commercially.
-
-> **Note: needs verification.** Model licensing changes without notice and without a version bump on the card. The table above is a point-in-time observation on 2026-08-10. Verify against the specific model card before any deployment decision.
-
-**Licensing across the stack, consolidated.** This chapter has now stated a separate licence for each layer, in the section covering that layer. Because "what licence governs X" is exactly the kind of question a reader returns to the chapter for later, without wanting to re-read every section, it is worth collecting those statements in one place rather than leaving them to be found by cross-reference alone:
-
-| Component | Licence | Section |
-|---|---|---|
-| Isaac Sim source (`isaac-sim/IsaacSim`) | Apache-2.0, over a proprietary Kit SDK runtime not covered by that grant | §2.4 |
-| Isaac Sim bundled assets/models | Separate terms, not Apache-2.0 | §2.4 |
-| IsaacSimZMQ bridge | MIT | §5.3 |
-| Isaac Lab core | BSD-3-Clause | §6.3 |
-| Isaac Lab `isaaclab_mimic` | Apache-2.0 (root-level `LICENSE-mimic`, mechanically enforced per-tree) | §6.3 |
-| MimicGen (`NVlabs/mimicgen`, the original algorithm `isaaclab_mimic` reimplements) | "NVIDIA License," not Apache-2.0 | §10 |
-| Newton code | Apache-2.0 | §8 |
-| Newton documentation | CC-BY-4.0 | §8 |
-| Isaac-GR00T repository code | Apache-2.0 | §9.5 |
-| GR00T-N1/N1.5/N1.6 weights | NVIDIA OneWay Noncommercial Licence | §9.5 |
-| GR00T-N1.7 weights | NVIDIA Open Model Licence Agreement | §9.5 |
-| GR00T weights under OpenMDW-1.1 | None currently — stated as a future intention only (Ch240 §2.2 covers OpenMDW-1.1 for Cosmos, not GR00T) | §9.5 |
-
-No single licence governs "Isaac Sim" or "GR00T" as a whole, and the two axes that most often get collapsed into one — repository code licence and shipped-artifact (runtime, asset, or weights) licence — are independent at every layer in this table, not just at the GR00T checkpoint boundary discussed in §9.5.
+None of the four model cards carries a `license:` YAML frontmatter field — the licence is stated in card prose and a linked document, not in machine-readable metadata, so an automated audit that only reads Hugging Face metadata will misreport it. OpenMDW-1.1 does not apply to any currently-published GR00T checkpoint; it has been floated for *future* GR00T releases in a company blog post only, and Chapter 240 §2.2 covers it in the context of the Cosmos family, not GR00T. Apache-2.0 on the Isaac-GR00T inference code says nothing about whether the weights may be deployed commercially.
 
 ### 9.6 Inference: In-Process Policy and Client/Server
 
@@ -622,7 +721,7 @@ Everything in §§4–9 solves one instance of a general problem: an AI system (
 
 **Safety architecture.** MHS enforces device-level limits declared in the driver's reference file — Janelia cites this directly for laser-power capping during fluorescence microscopy, so an agent cannot issue a command that exceeds a hardware-safe bound regardless of what it intends. Independent pilots report the same pattern at the policy layer: a Carnegie Mellon evaluation induced six failure conditions (missing plate, rotated plate, a busy reader, a disconnected camera, an unreachable device, and an emergency stop) and MHS blocked all six before any device moved; a quantum-computing pilot (QuEra) reported the agent pausing for human confirmation on actions it judged even slightly risky [Source](https://www.anthropic.com/news/model-hardware-standard-research-preview).
 
-**Where this sits relative to the rest of the chapter.** MHS is not a robotics simulator, not a VLA model, and — as of this writing — not confirmed to be Linux-specific; the announcement describes cross-platform device processes (including an "older Windows ActiveX/COM scripting interface" example) without committing to an OS. *Note: needs verification — no published spec or reference implementation repository is linked from the research-preview page as of 2026-08-29; access is application-gated (`https://forms.gle/UdQ8JubjMN1R5CJt8`), and the technical claims above are drawn entirely from Anthropic's own announcement rather than from source code this book could inspect directly.* The reason it belongs in this chapter rather than nowhere: GR00T (§9) and Isaac Lab RL policies (§6–§7) are trained in simulation against RTX/physics-sensor schemas precisely so the resulting policy can be deployed against *some* real-hardware interface later — MHS is one candidate answer to what that real-hardware interface looks like when the agent doing the operating is a general-purpose LLM rather than a fine-tuned VLA checkpoint, and its driver/reference-file/safety-limit model is the closest current industry analogue, outside Isaac's own ROS 2 bridge (§5), to a standardized hardware-abstraction layer built agent-first instead of simulator-first.
+**Where this sits relative to the rest of the chapter.** MHS is not a robotics simulator, not a VLA model, and — as of this writing — not confirmed to be Linux-specific; the announcement describes cross-platform device processes (including an "older Windows ActiveX/COM scripting interface" example) without committing to an OS. As of 2026-08-29, no spec document or reference implementation repository is linked from the research-preview page; access is application-gated (`https://forms.gle/UdQ8JubjMN1R5CJt8`), and every technical detail above is drawn from Anthropic's own announcement rather than from source this book could inspect directly. Anthropic has stated intent to open-source MHS with the community, but has not published a date. The reason it belongs in this chapter rather than nowhere: GR00T (§9) and Isaac Lab RL policies (§6–§7) are trained in simulation against RTX/physics-sensor schemas precisely so the resulting policy can be deployed against *some* real-hardware interface later — MHS is one candidate answer to what that real-hardware interface looks like when the agent doing the operating is a general-purpose LLM rather than a fine-tuned VLA checkpoint, and its driver/reference-file/safety-limit model is the closest current industry analogue, outside Isaac's own ROS 2 bridge (§5), to a standardized hardware-abstraction layer built agent-first instead of simulator-first.
 
 ---
 

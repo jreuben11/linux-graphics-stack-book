@@ -289,6 +289,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 97: Unreal Engine 5 on Linux](chapters/part-11-engine-creative-tools/ch97-unreal-engine-5.md)
 - [Ch 176: OpenCASCADE Technology — The BRep Kernel and 3D Visualization Stack](chapters/part-11-engine-creative-tools/ch176-opencascade-cad-kernel.md)
 - [Ch 176a: State-of-the-Art CAD AI — Generative Models, Reverse Engineering, and Agentic Design](chapters/part-11-engine-creative-tools/ch176a-sota-cad-ai.md)
+- [Ch 176b: Parametric Constraint Solvers — Degrees of Freedom, Decomposition, and Numerical Methods](chapters/part-11-engine-creative-tools/ch176b-parametric-constraint-solvers.md)
 - [Ch 190: VTK — Scientific Visualization on the Linux Graphics Stack](chapters/part-11-engine-creative-tools/ch190-vtk-scientific-visualization.md)
 - [Ch 241: GIMP, Krita, and darktable — GPU-Accelerated Raster and RAW Photo Editing on Linux](chapters/part-11-engine-creative-tools/ch241-gimp-krita-darktable-photo-editing.md)
 - [Ch 242: DaVinci Resolve — Professional Color Grading and the Linux GPU Pipeline](chapters/part-11-engine-creative-tools/ch242-davinci-resolve-color-grading.md)
@@ -410,6 +411,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Ch 164: Android Runtime and Native Interop — ART, JNI, and the NDK](chapters/part-19-android-graphics/ch164-android-runtime-native-interop.md)
 - [Ch 166: Android XR: Jetpack XR SDK, OpenXR Platform Contracts, and Spatial Extensions](chapters/part-19-android-graphics/ch166-android-xr-expanded.md)
 - [Ch 191: LiteRT and MediaPipe](chapters/part-19-android-graphics/ch191-litert-mediapipe.md)
+- [Ch 250: The Meta XR SDK Suite and Horizon OS Platform — Core, Interaction, Spatial, Audio, Haptics, Voice, Platform, Simulator, and MRUK on Quest](chapters/part-19-android-graphics/ch250-meta-xr-sdk-suite.md)
 
 ---
 
@@ -533,6 +535,14 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 
 ---
 
+### Part XXXI — Future Directions
+
+*Every other part of this book ends at a physical display — a panel, a projector, an eye receiving photons through a lens. This closing part is deliberately speculative: it asks what changes in the stack if the display is a nerve, not a panel. It covers optic-nerve and visual-cortex brain-computer interfaces — technology built today exclusively to restore vision to the blind, but discussed by at least one company as a candidate future AR/VR display technology.*
+
+- [Ch 251: Optic Nerve and Visual Cortex BCI — When the Display Is a Nerve, Not a Panel](chapters/part-31-future-directions/ch251-optic-nerve-bci.md)
+
+---
+
 ### Appendices
 
 - [Appendix A: Glossary](chapters/appendices/appendix-a-glossary.md)
@@ -557,7 +567,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - [Appendix T: Terminal Graphics Protocol Reference](chapters/appendices/appendix-t-terminal-graphics-protocol-reference.md)
 - [Appendix U: WebGPU API Quick Reference](chapters/appendices/appendix-u-webgpu-api-reference.md)
 
-**Total: 276 chapters + 21 appendices**
+**Total: 283 chapters + 21 appendices**
 
 ## Repository Structure
 
@@ -743,6 +753,7 @@ chapters/
     ch97-unreal-engine-5.md
     ch176-opencascade-cad-kernel.md
     ch176a-sota-cad-ai.md
+    ch176b-parametric-constraint-solvers.md
     ch190-vtk-scientific-visualization.md
     ch241-gimp-krita-darktable-photo-editing.md
     ch242-davinci-resolve-color-grading.md
@@ -808,6 +819,7 @@ chapters/
     ch164-android-runtime-native-interop.md
     ch166-android-xr-expanded.md
     ch191-litert-mediapipe.md
+    ch250-meta-xr-sdk-suite.md
   part-20-ai-inference/
     ch48-rocm-ml-linux.md
     ch88-npu-ai-accelerators.md
@@ -877,6 +889,8 @@ chapters/
     part-intro.md
     ch247-production-renderer-shading.md
     ch248-render-farm-infrastructure.md
+  part-31-future-directions/
+    ch251-optic-nerve-bci.md
   appendices/
     appendix-a-glossary.md
     appendix-b-environment-variables.md

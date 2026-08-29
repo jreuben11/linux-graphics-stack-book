@@ -28,6 +28,13 @@
 - [14. CLAP Plugin Standard](#14-clap-plugin-standard)
 - [15. Sequencing and Notation: MuseScore, LilyPond, and MIDI Pipelines](#15-sequencing-and-notation-musescore-lilypond-and-midi-pipelines)
 - [16. Real-Time Safety: Lock-Free Buffers and RT Scheduling](#16-real-time-safety-lock-free-buffers-and-rt-scheduling)
+- [17. Chiptune: Sound Chip Emulation, Bandlimited Synthesis, and Trackers](#17-chiptune-sound-chip-emulation-bandlimited-synthesis-and-trackers)
+- [18. Genre-Specific Synthesis and Production Techniques](#18-genre-specific-synthesis-and-production-techniques)
+  - [18.1 Synthwave: Analog Emulation, Gated Reverb, and Arpeggiation](#181-synthwave-analog-emulation-gated-reverb-and-arpeggiation)
+  - [18.2 Chillwave: Tape Saturation, Ensemble Chorus, and Lo-Fi Degradation](#182-chillwave-tape-saturation-ensemble-chorus-and-lo-fi-degradation)
+  - [18.3 Vaporwave: Extreme Time-Stretch and Formant-Shifted Pitch](#183-vaporwave-extreme-time-stretch-and-formant-shifted-pitch)
+  - [18.4 Trance: Supersaws, Sidechain Pumping, and Trance Gates](#184-trance-supersaws-sidechain-pumping-and-trance-gates)
+  - [18.5 Techno: Four-on-the-Floor Sequencing and Acid Basslines](#185-techno-four-on-the-floor-sequencing-and-acid-basslines)
 - [Integrations](#integrations)
 
 ---
