@@ -19,6 +19,7 @@
 6. [RawTherapee: The Deliberate CPU-Only Counterpoint](#6-rawtherapee-the-deliberate-cpu-only-counterpoint)
 7. [vkdt: A Vulkan-Native Compute-Graph Pipeline](#7-vkdt-a-vulkan-native-compute-graph-pipeline)
 8. [RAW Decoding as the Shared CPU-Bound Layer: RawSpeed and LibRaw](#8-raw-decoding-as-the-shared-cpu-bound-layer-rawspeed-and-libraw)
+- [Roadmap](#roadmap)
 9. [Integrations](#9-integrations)
 
 ---
@@ -106,6 +107,23 @@ This architecture is what makes vkdt capable of workloads that sit outside darkt
 Beneath all of the GPU-acceleration differences above, RAW decoding itself is a layer every one of these applications keeps on the CPU. darktable's primary decoder is **RawSpeed** (`github.com/darktable-org/rawspeed`), a decode-only library — it does not extract metadata or embedded thumbnails, perform demosaicing, or do anything beyond turning a manufacturer's RAW container and its vendor-specific (often lossless-JPEG-based) compression into raw sensor data, including vendor-specific decode paths for the many mutually incompatible RAW formats camera makers ship. RawSpeed v3 measured 20–40%+ faster than v1 on modern high-megapixel files — for example, roughly 2× faster decode of Sony A7R IV files — but the speed gain is entirely within the CPU decode step; RawSpeed has no GPU path. Because RawSpeed does not support every camera darktable needs to read (Fujifilm's GFX 50S II being one cited example), darktable does not rely on RawSpeed exclusively: it falls back to **LibRaw** for cameras RawSpeed cannot decode, rather than presenting a single one-library-per-application mapping. [Source](https://github.com/darktable-org/rawspeed)
 
 LibRaw itself (used directly by RawTherapee and as darktable's fallback) is likewise a CPU-only decode library. The practical upshot is that "decode on the CPU, then accelerate downstream processing however each application chooses to" is the one architectural pattern all five applications in this chapter share — GIMP's off-by-default OpenCL, Krita's display-only GPU use, darktable's per-module OpenCL, RawTherapee's pure-CPU pipeline, and vkdt's full Vulkan compute graph all begin from the same CPU-bound RAW-decode step before their designs diverge.
+
+## Roadmap
+
+### Near-term (6-12 months)
+
+- **GIMP's post-3.2 direction points away from OpenCL, not toward expanding it.** Speaking at FOSDEM 2026, GIMP developer Ondřej Míchal described GEGL's existing OpenCL support (§2.2) as never having worked "in any meaningful manner" even before it was hidden from recent releases, and framed hardware acceleration for image operations as a priority built on "modern" GPU APIs rather than OpenCL, whose vendor support has been declining. No specific API (Vulkan or otherwise) or implementation timeline has been committed to publicly yet. [Source: FOSDEM 2026 coverage via LavX News](https://news.lavx.hu/article/gimp-s-post-3-2-roadmap-hardware-acceleration-cmyk-support-and-more)
+- **darktable narrowed its OpenCL device support in 5.6.0 rather than expanding it.** The legacy AMD-APP OpenCL driver was blacklisted after developer Jens-Hanno Schwalm found it "had been blacklisted because leading to problems regularly" — the kind of driver-specific instability that §5.2's `darktable-cltest` diagnostic and device-priority mechanism exist to surface. Affected users can manually re-enable the driver via configuration, but there is no committed plan to restore default support. [Source: discuss.pixls.us — OpenCL GPU acceleration disabled in 5.6.0](https://discuss.pixls.us/t/opencl-gpu-acceleration-disabled-in-5-6-0/58805)
+
+### Medium-term (1-3 years)
+
+- **Krita's GPU-canvas work is headed toward mobile/QML, not a desktop Vulkan renderer.** The 2026 Krita roadmap describes continuing Alvin Wong's 2025 prototype of embedding an OpenGL-based canvas inside a QML application, targeting Krita's mobile build, rather than any new rendering backend for `KisOpenGLCanvas2` (§4) on desktop. The parallel Qt6 port ships alongside a Qt5 build starting with Krita 5.3/6.0 (March 24, 2026), but no Vulkan adoption is mentioned. [Source: Krita — 2026 Roadmap](https://krita.org/en/posts/2026/roadmap-2026/)
+- **If GIMP's GPU-API pivot lands on Vulkan, it would still not converge with vkdt's architecture.** Even a Vulkan-based GIMP canvas, per the near-term item above, is aimed at accelerating zoom/pan/composite previews — the same category of display-only acceleration Krita already does via OpenGL (§4) — not at replacing GEGL's node graph with a compute-graph pixel pipeline the way vkdt (§7) replaces darktable's pixelpipe entirely. The two GPU-API adoptions, if both happen, would remain architecturally distinct.
+
+### Long-term
+
+- **RawTherapee's CPU-only position (§6) shows no sign of changing.** A GitHub issue requesting OpenCL support has been open on the RawTherapee repository since 2014 with no maintainer commitment to implement it, consistent with this chapter's framing of RawTherapee as a deliberate architectural counterpoint rather than a project trailing behind darktable by oversight. [Source: RawTherapee/RawTherapee issue #1678](https://github.com/Beep6581/RawTherapee/issues/1678)
+- **vkdt is likely to remain the outlier architecture, not a preview of where the others are heading.** Krita's and GIMP's 2026 roadmaps both point toward incremental, display-layer GPU acceleration rather than pipeline-wide rewrites, and darktable's own 5.6.0 change tightened its existing OpenCL-as-accelerator model rather than loosening it in vkdt's direction. Barring a change in any of these projects' stated priorities, the OpenCL-as-accelerator pattern (§2, §5) is likely to remain the default for GIMP and darktable's main branch, with vkdt continuing as Johannes Hanika's experimental, feature-reduced alternative rather than an eventual replacement.
 
 ## 9. Integrations
 

@@ -16,9 +16,12 @@
 3. [NeRFStudio Architecture: ns-train, Pipelines, and the tyro Config System](#3-nerfstudio-architecture)
 4. [Instant-NGP and tiny-cuda-nn: Hash Encoding and MLP Acceleration](#4-instant-ngp-and-tiny-cuda-nn)
 5. [Nerfacto: The Flagship Model](#5-nerfacto-the-flagship-model)
+   - [5.6 Practical Tuning Guide: NerfactoModelConfig](#56-practical-tuning-guide-nerfactomodelconfig)
 6. [3D Gaussian Splatting: splatfacto and gsplat](#6-3d-gaussian-splatting-splatfacto-and-gsplat)
+   - [6.7 Practical Tuning Guide: SplatfactoModelConfig](#67-practical-tuning-guide-splatfactomodelconfig)
 7. [The gsplat CUDA Rasterizer: Forward and Backward Passes](#7-the-gsplat-cuda-rasterizer)
 8. [COLMAP Integration and the ns-process-data Pipeline](#8-colmap-integration-and-ns-process-data)
+   - [8.2 COLMAP: What It Is and How the Pipeline Works](#82-colmap-what-it-is-and-how-the-pipeline-works)
 9. [The Viser Viewer: WebSocket Streaming and Three.js Rendering](#9-the-viser-viewer)
 10. [ROCm/HIP Portability: AMD GPU Status](#10-rocm-hip-portability)
 11. [Vulkan-Based Real-Time Splat Renderers](#11-vulkan-based-real-time-splat-renderers)
@@ -513,6 +516,26 @@ loss_dict = {
 
 The interlevel and distortion losses penalise the proposal networks to be consistent with the final NeRF samples and to concentrate weight near surfaces [Source](https://arxiv.org/abs/2111.12077).
 
+### 5.6 Practical Tuning Guide: NerfactoModelConfig
+
+The dataclass in §5.2 lists every field, but not what to change to get a specific result. The groupings below map `NerfactoModelConfig` fields [Source](https://github.com/nerfstudio-project/nerfstudio/blob/main/nerfstudio/models/nerfacto.py) to practical outcomes, based on their documented purpose and on the built-in `nerfacto`/`nerfacto-big`/`nerfacto-huge` presets in `method_configs.py` [Source](https://github.com/nerfstudio-project/nerfstudio/blob/main/nerfstudio/configs/method_configs.py).
+
+**Fine detail vs. training time/VRAM.** Hash-grid capacity is the primary detail knob: `num_levels`, `log2_hashmap_size`, and `max_res` jointly set how many distinct spatial frequencies the encoding can represent before hash collisions start averaging unrelated points together. `nerfacto-big` raises `num_levels` and widens `hidden_dim`/`hidden_dim_color` for ~12 GB of VRAM; `nerfacto-huge` pushes further to ~24 GB. Raise `max_res` first for scenes with fine repeated texture (foliage, brick, fabric) — it increases the resolution of the finest hash level without touching MLP cost. Raise `hidden_dim`/`hidden_dim_color` when the scene has complex view-dependent shading (specular highlights, glass) that a thin colour MLP under-fits. Lowering all three below the `nerfacto` defaults trades detail for training speed and VRAM headroom on smaller GPUs.
+
+**Render/train speed vs. sampling quality.** `num_proposal_samples_per_ray` (default `(256, 96)`) and `num_nerf_samples_per_ray` (default `48`) control how many points are evaluated per ray at each proposal stage and at the final field. These are the most direct latency knobs — halving them roughly halves per-ray cost — at the expense of thin-geometry aliasing and noisier depth. `num_proposal_iterations` (default `2`) trades one MLP evaluation pass for tighter importance sampling around the true surface; dropping to `1` speeds up training on scenes with obvious, isolated foreground objects where the proposal network converges quickly.
+
+**Unbounded outdoor / room-scale scenes.** `proposal_initial_sampler="piecewise"` (the default) and scene contraction (`disable_scene_contraction=False`) map the infinite scene volume into a bounded unit sphere so the hash grid doesn't waste capacity on empty far-field space — leave both at their defaults for street-level or drone captures. For strictly bounded object-scan captures (a turntable scan of a single object), setting `disable_scene_contraction=True` avoids the contraction warp distorting geometry outside the region of interest and can sharpen small objects.
+
+**Uneven lighting/exposure across training images.** `use_appearance_embedding=True` (default) lets each training image learn a per-image latent that absorbs exposure, white-balance, and minor lighting drift, which otherwise shows up as low-frequency "clouding" in the recovered geometry. Increase `appearance_embed_dim` (default `32`) if captures come from multiple cameras/sessions with strongly different colour response. At inference on novel views, `use_average_appearance_embedding=True` substitutes the mean of all training embeddings rather than an unseen one; disabling it and instead conditioning on `zeros` is occasionally sharper for single-session, colour-consistent captures.
+
+**Floaters and background haze.** `distortion_loss_mult` (default `0.002`) is the main floater suppressant — it penalises weight mass spread out along a ray instead of concentrated at one depth. Raising it (e.g. `0.005`–`0.01`) on scenes with visible semi-transparent haze artefacts tightens geometry at the cost of slightly harder edges on genuinely thin structures (hair, fences). `interlevel_loss_mult` keeps the proposal network's coarse density estimate consistent with the final field's fine one; leave it near the default unless the proposal network is visibly failing to find thin geometry (visible in the viewer as samples concentrating in empty space).
+
+**Surface normals for downstream mesh extraction.** `predict_normals=False` by default — nerfacto only predicts normals when a chapter workflow needs them (e.g. feeding a Poisson mesher, §21). Enabling it adds a normals head to the field and activates `orientation_loss_mult` and `pred_normal_loss_mult`, which penalise normals that face away from the camera and disagree with the density-gradient normal respectively. Both default small (`1e-4`, `1e-3`) because over-weighting them biases density toward flat, low-frequency surfaces.
+
+**Imprecise or COLMAP-free poses.** `camera_optimizer=CameraOptimizerConfig(mode="SO3xR3")` is on by default and refines each camera's rotation and translation during training via backpropagation — useful when input poses come from a fast/approximate SfM pass or handheld capture with rolling shutter. Setting `mode="off"` is appropriate only when poses are already sub-pixel accurate (e.g. synthetic data or a lidar-calibrated rig), since disabling it removes a source of resilience to pose noise at essentially no training-speed cost.
+
+**No CUDA/tcnn backend.** `implementation="torch"` swaps the `tiny-cuda-nn` fused hash-encoding/MLP kernels (§4) for a pure PyTorch fallback — several times slower to train, but the only option on GPUs or platforms where `tcnn` fails to build (see §10 for the ROCm/HIP case). Everything else in `NerfactoModelConfig` behaves identically under either backend.
+
 ---
 
 ## 6. 3D Gaussian Splatting: splatfacto and gsplat
@@ -614,9 +637,27 @@ flowchart TD
     I[Densification: split large, duplicate small, cull dead] --> A
 ```
 
----
+### 6.7 Practical Tuning Guide: SplatfactoModelConfig
 
-## 7. The gsplat CUDA Rasterizer
+As with Nerfacto, `SplatfactoModelConfig` [Source](https://github.com/nerfstudio-project/nerfstudio/blob/main/nerfstudio/models/splatfacto.py) exposes many fields whose *effect* is more useful to a practitioner than their default value alone. Groupings below reference the field docstrings and the `splatfacto`/`splatfacto-big` presets in `method_configs.py` [Source](https://github.com/nerfstudio-project/nerfstudio/blob/main/nerfstudio/configs/method_configs.py).
+
+**Gaussian count / detail vs. VRAM.** `densify_grad_thresh` (default `0.0008`) is the primary detail knob: it's the positional-gradient magnitude above which a Gaussian is considered under-reconstructing its region and is split or duplicated. Lowering it (e.g. `0.0004`) densifies more aggressively, recovering finer detail at the cost of a much larger final Gaussian count and VRAM footprint; raising it caps growth for a fixed VRAM budget. `densify_size_thresh` decides whether an under-reconstructing Gaussian is *duplicated* (small, below threshold — fills gaps) or *split* into `n_split_samples` smaller ones (large, above threshold — refines existing coverage); `stop_split_at` (default step `15000`) freezes the Gaussian count for the remainder of training so later steps only refine colour/opacity, which stabilises convergence. For a hard cap regardless of scene complexity, set `strategy="mcmc"` and `max_gs_num` — the MCMC densification strategy [Source](https://arxiv.org/abs/2404.09591) treats the Gaussian set as samples from a fixed-size distribution (tuned via `noise_lr`, `mcmc_opacity_reg`, `mcmc_scale_reg`) rather than growing unboundedly, which bounds VRAM and render cost independent of scene difficulty. `splatfacto-big` raises capacity limits and lowers `cull_alpha_thresh` for higher quality at proportionally higher VRAM and slower rendering.
+
+**Floaters and stray Gaussians.** `cull_alpha_thresh` (default `0.1`) removes Gaussians whose opacity has decayed below threshold during training — the most direct floater control; lowering it (stricter, e.g. `0.005`, as `splatfacto-big` does) keeps only more confidently-opaque Gaussians. `cull_scale_thresh` and `cull_screen_size` remove Gaussians that have grown anomalously large in world space or that cover an implausibly large fraction of the screen — both catch the "giant translucent blob" artefact that appears over unobserved or texture-poor regions. `reset_alpha_every` (default every 30 refinement cycles) periodically resets all opacities to a low value, forcing the optimiser to re-earn confidence for every Gaussian and flushing out ones that only survive because gradient descent never revisited them.
+
+**View-dependent specular quality.** `sh_degree` (default `3`, i.e. up to 16 SH coefficients per Gaussian) bounds how strongly a Gaussian's colour can vary with viewing angle; `sh_degree_interval` (default `1000`) ramps the *active* degree up gradually over training rather than optimising all coefficients from step 0, which destabilises early density estimation. Reducing `sh_degree` to `0`–`1` on scenes with mostly diffuse/matte materials cuts per-Gaussian storage and rasterisation cost with little visible quality loss; keep it at `3` for glossy/reflective subjects where highlight motion across viewpoints matters.
+
+**Spiky/needle-shaped Gaussian artefacts.** `use_scale_regularization=False` by default; enabling it alongside `max_gauss_ratio` (default `10.0`) penalises Gaussians whose largest and smallest axes differ by more than that ratio — the degenerate "needle" shapes that can appear on thin structures or under sparse view coverage and cause popping artefacts as the camera moves.
+
+**Anti-aliasing.** `rasterize_mode="classic"` is the default screen-space EWA splatting from Kerbl et al.; `"antialiased"` applies an additional low-pass correction to each Gaussian's screen-space footprint that reduces aliasing on small/distant Gaussians at a modest rendering-speed cost — worth enabling for renders that will be viewed at resolutions below the training resolution, or for smooth camera fly-throughs where aliasing reads as shimmer.
+
+**Perceptual vs. pixel-accurate reconstruction.** `ssim_lambda` (default `0.2`) blends SSIM (structural similarity) against L1 pixel loss; raising it favours perceptually plausible structure over pixel-exact colour, which can help on scenes with view-dependent shading noise, while lowering it favours pixel fidelity for colour-critical applications (e.g. product visualisation).
+
+**Sparse-view or COLMAP-point-free captures.** `random_init=True` bypasses COLMAP sparse-point initialisation (§6.5) entirely and seeds `num_random` Gaussians uniformly inside a cube of side `random_scale` — useful only as a fallback when a scene has too few or too unreliable SfM points to seed from; convergence is markedly slower and less reliable than COLMAP-seeded initialisation, so this is a last resort rather than a tuning preference.
+
+**Per-image exposure/colour correction.** `use_bilateral_grid=True` fits a small per-image bilateral grid (shape set by `grid_shape`, default `(16, 16, 8)`) that absorbs per-photo ISP variation — auto-exposure, white balance, vignetting — the splatting equivalent of Nerfacto's appearance embeddings (§5.6). Enable it for captures shot on auto-exposure across a long session; combine with `color_corrected_metrics=True` so evaluation metrics are computed after correction rather than penalising the model for colour drift it cannot represent geometrically.
+
+**Camera pose refinement.** Unlike Nerfacto, `SplatfactoModelConfig` defaults `camera_optimizer` to `CameraOptimizerConfig(mode="off")` — 3DGS's explicit, per-point gradient signal is more sensitive to pose drift during early densification than a smooth MLP field, so nerfstudio leaves pose refinement off by default and only enabling `mode="SO3xR3"` is recommended once initial COLMAP poses are already reasonably accurate, as a fine-tuning step rather than a correction for badly-posed input.
 
 ### 7.1 The rasterization() API
 
@@ -864,7 +905,20 @@ This format is the de-facto standard, readable by PlayCanvas SuperSplat, Polycam
 
 Both NeRF and 3DGS require calibrated camera poses for each training image. NeRFStudio integrates [COLMAP](https://colmap.github.io/) [Source](https://github.com/colmap/colmap) as the default Structure-from-Motion (SfM) solver, with `ns-process-data` automating the full pipeline.
 
-### 8.2 Input Modes
+### 8.2 COLMAP: What It Is and How the Pipeline Works
+
+[COLMAP](https://colmap.github.io/) is a general-purpose Structure-from-Motion (SfM) and Multi-View Stereo (MVS) pipeline, written in C++ with CUDA acceleration, developed by Johannes Schönberger and released with two companion papers: *Structure-from-Motion Revisited* [Source](https://demuc.de/papers/schoenberger2016sfm.pdf) (CVPR 2016) for the sparse SfM stage, and *Pixelwise View Selection for Unstructured Multi-View Stereo* [Source](https://demuc.de/papers/schoenberger2016mvs.pdf) (ECCV 2016) for the dense MVS stage. It predates NeRFStudio by several years and is used across photogrammetry, robotics, and cultural-heritage digitisation independently of neural rendering — NeRFStudio consumes only its sparse SfM output (camera poses and a sparse 3D point cloud), not its MVS dense-reconstruction stage.
+
+**Sparse reconstruction (incremental SfM)** proceeds in four stages [Source](https://colmap.github.io/tutorial.html):
+
+1. **Feature extraction.** COLMAP detects SIFT keypoints and descriptors in every input image, by default via a GPU implementation (SiftGPU). Each keypoint carries a sub-pixel 2D location, scale, orientation, and a 128-dimensional descriptor vector.
+2. **Feature matching and geometric verification.** Descriptors are matched pairwise across images — `exhaustive_matcher` compares every pair (accurate, O(n²), suited to small unordered sets), `sequential_matcher` only compares temporally adjacent frames (suited to video), and `vocab_tree_matcher`/`spatial_matcher` scale to large unordered collections via a bag-of-words index or GPS priors. Each candidate match set is then geometrically verified by robustly fitting a fundamental or essential matrix with RANSAC, discarding matches inconsistent with any rigid two-view geometry. The verified pairwise matches form a **scene graph** connecting images through shared 3D structure.
+3. **Incremental reconstruction.** COLMAP selects a well-conditioned initial image pair (high match count, wide triangulation angle) and triangulates its first 3D points. It then repeatedly registers one new image at a time via Perspective-n-Point (PnP) against the existing 3D points its features match, triangulates new points visible from the newly registered camera, and re-runs **bundle adjustment** — nonlinear least-squares optimisation (via Ceres Solver) that jointly refines all camera poses, intrinsics, and 3D point positions to minimise total reprojection error. Outlier observations are filtered and points re-triangulated between bundle-adjustment rounds. This register-triangulate-adjust cycle repeats until no further image can be reliably registered.
+4. **Output.** The result is a sparse model: per-camera intrinsics and extrinsics (`cameras.bin`, `images.bin`) and a sparse 3D point cloud with per-point track information (`points3D.bin`) — exactly the artefacts §8.6's `ColmapDataParserConfig` consumes, with `points3D.bin` doubling as the Gaussian-mean initialisation for splatfacto (§6.5).
+
+COLMAP's optional **dense MVS stage** (`colmap patch_match_stereo` followed by `colmap stereo_fusion`) estimates a per-pixel depth and normal map for every registered image via PatchMatch-based multi-view stereo, then fuses all depth maps into a dense point cloud (optionally meshed via Poisson or Delaunay reconstruction). `ns-process-data` never invokes this stage — NeRF and 3DGS both learn their own dense scene representation directly from the sparse poses and photometric supervision, making COLMAP's dense reconstruction redundant for this use case, though it remains COLMAP's primary output for traditional photogrammetry workflows.
+
+### 8.3 Input Modes
 
 ```bash
 # From a directory of images
@@ -881,7 +935,7 @@ ns-process-data polycam --data capture.zip --output-dir processed/
 ns-process-data record3d --data record3d_export/ --output-dir processed/
 ```
 
-### 8.3 COLMAP Pipeline Steps
+### 8.4 COLMAP Pipeline Steps
 
 For image/video modes, `ns-process-data` executes:
 
@@ -907,7 +961,7 @@ colmap mapper \
 
 The resulting sparse reconstruction is then converted to nerfstudio's `transforms.json` format. COLMAP uses a scalar-first quaternion convention and OpenCV camera coordinates (z forward, y down); the parser converts to nerfstudio's OpenGL convention (z backward, y up) with 4×4 camera-to-world matrices.
 
-### 8.4 transforms.json Format
+### 8.5 transforms.json Format
 
 ```json
 {
@@ -933,7 +987,7 @@ The resulting sparse reconstruction is then converted to nerfstudio's `transform
 
 This format is compatible with NeRF Synthetic (Blender) datasets and the original NeRF paper's data format. The 4×4 matrix is camera-to-world (c2w), not world-to-camera.
 
-### 8.5 ColmapDataParserConfig
+### 8.6 ColmapDataParserConfig
 
 `ColmapDataParserConfig` controls how the stored reconstruction is parsed [Source](https://github.com/nerfstudio-project/nerfstudio/blob/main/nerfstudio/data/dataparsers/colmap_dataparser.py):
 
@@ -952,7 +1006,7 @@ class ColmapDataParserConfig(DataParserConfig):
     tiling_factor: int = 1               # tile images into n² sub-images
 ```
 
-### 8.6 Cameras Dataclass
+### 8.7 Cameras Dataclass
 
 The central camera abstraction is `nerfstudio/cameras/cameras.py` [Source](https://github.com/nerfstudio-project/nerfstudio/blob/main/nerfstudio/cameras/cameras.py):
 
@@ -2281,6 +2335,8 @@ python mesh_viewer.py <mesh.ply>
 GOF leads on geometry; its speed advantage over neural methods (Neuralangelo 0.61 Chamfer but ~24h) is ~60×.
 [Source: github.com/autonomousvision/gaussian-opacity-fields](https://github.com/autonomousvision/gaussian-opacity-fields)
 
+A mesh extracted by 2DGS, SuGaR, or GOF is still just a mesh — none of these methods recover CAD-usable structure (planes, cylinders, NURBS patches, sketch-extrude history). Turning that mesh into an editable parametric or B-rep model is a separate reverse-engineering problem covered in Ch176a §7.5-§7.7, which also names the reverse direction — fitting NURBS/B-rep surfaces to Gaussian primitives directly, without this mesh-extraction step — as an open gap in the published literature.
+
 ---
 
 ## 22. InstantSplat: COLMAP-Free Sparse-View 3DGS
@@ -2985,6 +3041,8 @@ This chapter connects to the following parts of the Linux graphics stack:
 **Chapter 212 — Python 3D ML Libraries:** The data structure and preprocessing layer beneath the training pipelines in this chapter — PyTorch3D `Meshes`/`Pointclouds`, Kaolin SPC octrees and USD I/O, Open3D TSDF integration, trimesh mesh loading, and sparse 3D convolution (spconv/torchsparse for LiDAR perception) — is covered in Chapter 212. threestudio's DMTet/NeuS geometry backends feed the FlexiCubes and marching-tetrahedra conversions described there; DUSt3R/MASt3R dense point map outputs feed directly into Open3D Poisson reconstruction (ch212 §1.6) and PyTorch3D `Pointclouds` (ch212 §2.1).
 
 **Chapter 211b — Isaac Sim, Isaac Lab, and GR00T; Chapter 240 — Cosmos, OSMO, and Omniverse Farm:** NuRec (`NVIDIA/instant-nurec`, `nurec-skills`, `harmonizer`) is NVIDIA Omniverse's feed-forward 3D Gaussian reconstruction pipeline for autonomous-vehicle and robotics simulation — it converts driving-log sensor recordings directly into 3DGS scene representations without the per-scene optimisation loop described in §6–7 of this chapter, then uses `harmonizer` to correct reconstruction artifacts and enforce temporally consistent lighting/appearance, and `nurec-skills` to automate the reconstruction-and-rendering workflow end to end. This is the same feed-forward reconstruction problem as DUSt3R/MASt3R (§17–18) applied to driving-log sensor streams instead of casual multi-view capture; the resulting scenes feed Isaac Sim (Chapter 211b) as simulation environments and the Cosmos/Omniverse Farm synthetic-data pipeline (Chapter 240). [Source: NVIDIA/instant-nurec, https://github.com/NVIDIA/instant-nurec; NVIDIA/nurec-skills, https://github.com/NVIDIA/nurec-skills; NVIDIA/harmonizer, https://github.com/NVIDIA/harmonizer]
+
+**Chapter 176a — State-of-the-Art CAD AI:** §20-21's Gaussian-to-mesh extraction (2DGS, SuGaR, GOF) is the upstream stage for turning a splat into CAD-usable geometry — Ch176a §7.5 covers classical/learned point-cloud-to-mesh reconstruction (Poisson, Occupancy Networks, NKSR) and §7.6 covers mesh/point-cloud-to-NURBS/B-rep fitting (ParSeNet, Point2CAD), with §7.6 also flagging that no published method fits B-rep surfaces to Gaussian primitives directly.
 
 **Chapter 46 — Vulkan Compute:** Section 11 of this chapter covers `vk_gaussian_splatting`, which demonstrates the Vulkan compute and ray-tracing pipeline for real-time splat rendering. Chapter 46 covers the Vulkan compute model in depth.
 
