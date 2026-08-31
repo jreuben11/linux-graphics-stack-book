@@ -25,6 +25,7 @@
 9. [The Viser Viewer: WebSocket Streaming and Three.js Rendering](#9-the-viser-viewer)
 10. [ROCm/HIP Portability: AMD GPU Status](#10-rocm-hip-portability)
 11. [Vulkan-Based Real-Time Splat Renderers](#11-vulkan-based-real-time-splat-renderers)
+   - [11.4 Splat File Format Ecosystem](#114-splat-file-format-ecosystem)
 12. [Production Deployment: Docker, Multi-GPU, and Distributed Training](#12-production-deployment)
 13. [Dynamic and Temporal Gaussian Splatting (4DGS)](#13-dynamic-and-temporal-gaussian-splatting-4dgs)
 14. [Python Differentiable Rendering: nvdiffrast, PyTorch3D, and Kaolin](#14-python-differentiable-rendering-nvdiffrast-pytorch3d-and-kaolin)
@@ -1248,6 +1249,33 @@ splat-transform input.ply output.splat
 
 The nerfstudio viewer's browser client itself uses `react-three-fiber` (Three.js) for rendering the 3D UI overlay — camera frustums, scene bounding boxes, GUI panels — though the neural render itself arrives as server-side JPEG frames.
 
+### 11.4 Splat File Format Ecosystem
+
+§7.8 covered nerfstudio's own `.ply` export in detail. In deployment, that `.ply` is rarely the file actually shipped to a viewer — a handful of derived formats trade the PLY's simplicity for smaller downloads and faster GPU upload, and none of them are standardized by a body with the authority PLY's ASCII/binary spec has (it long predates 3DGS, having originated at Stanford in the 1990s for general point-cloud/mesh interchange). As of this writing (Q3 2026), the closest thing to a real standard is a glTF extension still in release-candidate status.
+
+**`.ply` (uncompressed, per-Gaussian float attributes).** As documented in §7.8: 3 × float32 position, 3 × float32 log-scale, 4 × float32 quaternion, 1 × float32 opacity logit, and `3 + 3×(SH_degree+1)² − 3` float32 SH coefficients per Gaussian — roughly 200-250 bytes/Gaussian at SH degree 3. It is the interchange format every tool in this section accepts, at the cost of file size: a scene with several million Gaussians routinely exceeds 1 GB.
+
+**`.splat` (antimatter15's WebGL viewer format).** A fixed 32-byte binary record per Gaussian, laid out as 3 × float32 position (12 bytes), 3 × float32 scale (12 bytes), 4 × uint8 RGBA color (4 bytes, quantized 0-255), and 4 × uint8 rotation (4 bytes, quantized as `(q/‖q‖) × 128 + 128`) [Source](https://github.com/antimatter15/splat) — no SH beyond degree 0, so view-dependent specular color is discarded. This is the format `splat-transform` targets in the §11.3 conversion example; its appeal is that a fixed 32-byte stride needs no header parsing to memory-map directly into a GPU buffer.
+
+**`.spz` (Niantic Spatial).** A gzip-compressed, column-oriented binary format — all Gaussians' positions are stored contiguously, then all scales, then colors, rotations, and SH coefficients, rather than one interleaved record per Gaussian — which lets gzip exploit the redundancy within each parameter column far better than it could across interleaved mixed-type records [Source](https://github.com/nianticlabs/spz). SPZ 4 moved to a 32-byte plaintext header at a fixed offset outside the gzip-compressed body (earlier versions buried the header inside the compressed region) [Source](https://www.nianticspatial.com/en/blog/spz4). Released Apache-2.0 in September 2024; Niantic Spatial's own tracking issue for the format concedes the public README documents only the high-level column layout and is "not detailed enough for people to write an encoder or decoder" independently — quantization details (alpha and SH-DC color both go through a sigmoid/inverse-sigmoid transform rather than a linear 0-255 mapping) are only fully recoverable from the reference C++ decoder [Source](https://github.com/nianticlabs/spz/issues/42). Preserves SH up to degree 3.
+
+**`.ksplat` (mkkellogg's GaussianSplats3D, Three.js).** A stripped and compressed derivative of `.ply` with no specification outside the reference implementation itself [Source](https://github.com/mkkellogg/GaussianSplats3D) — the library documentation states plainly that its binary layout matches GaussianSplats3D's internal in-memory splat representation, which is why loading a `.ksplat` is faster than loading a `.ply` and building that representation at runtime. Supports two independent knobs: an SH level (0/1/2, capped at degree 2 — one degree short of the `.ply`/`.spz` degree-3 ceiling) and a compression level controlling per-field precision (16-bit vs. 8-bit), plus a spatial "bucket" system that groups nearby Gaussians to improve GPU cache locality during sorting.
+
+**`.sog` (PlayCanvas Self-Organizing/Spatially Ordered Gaussians).** Not a single binary blob but a small bundle: a `meta.json` alongside six lossless WebP images — `means_l.webp`/`means_u.webp` (position, split into low/high 8 bits per axis, dequantized through an inverse symmetric-log transform), `quats.webp` (rotation via a "smallest-three" encoding — three quaternion components as signed bytes plus a 2-bit flag marking which component was dropped and must be reconstructed), `scales.webp` (a 256-entry log-domain codebook lookup), `sh0.webp` (DC color via a second 256-entry codebook, plus opacity stored directly), and optional `shN_centroids.webp`/`shN_labels.webp` for palette-compressed higher-order SH [Source](https://developer.playcanvas.com/user-manual/gaussian-splatting/formats/sog/). Reusing WebP as the container means SOG rides on a codec every browser already accelerates in hardware, and PlayCanvas reports roughly 15-20× smaller files than an equivalent `.ply` [Source](https://blog.playcanvas.com/playcanvas-open-sources-sog-format-for-gaussian-splatting/). `splat-transform` (§11.3) also converts `.ply` directly to `.sog`.
+
+**`KHR_gaussian_splatting` (Khronos glTF extension).** The interchange-format gap flagged in this chapter's Roadmap has started closing: Khronos published a **Release Candidate** in February 2026, with Autodesk, Bentley Systems, Cesium, Esri, Huawei, Niantic Spatial, and NVIDIA among the contributors, and ratification targeted for Q2 2026 [Source](https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_gaussian_splatting/README.md). It extends a standard glTF mesh primitive (`mode: POINTS`) with a `kernel` field (currently only `"ellipse"`), a required `colorSpace`, and per-Gaussian accessor attributes for rotation, scale, and opacity (each nominally float32 but with normalized-byte/normalized-short variants for size), plus `SH_DEGREE_0_COEF_0` through optional degree-3 coefficients — mirroring the `.ply` attribute set almost one-for-one, but inside a container every existing glTF-aware tool (Blender, three.js, Unreal, USD interchange pipelines) can already parse the non-splat parts of. The spec explicitly defers compression to future extensions layered on top of this base, and defines a `COLOR_0`-attribute fallback so a renderer without splat support still displays *something* rather than nothing.
+
+| Format | Container | Per-Gaussian size (SH deg. 3) | SH ceiling | Compression | Status |
+|---|---|---|---|---|---|
+| `.ply` | Single binary/ASCII file | ~200-250 bytes | Degree 3 | None | De facto standard (§7.8) |
+| `.splat` | Single binary file | 32 bytes | Degree 0 only | None (fixed-width quantization) | Community convention |
+| `.spz` | gzip over column-oriented binary | Compressed, column-dependent | Degree 3 | gzip + quantization | Apache-2.0 reference impl., no formal spec |
+| `.ksplat` | Single binary file | Varies (8/16-bit modes) | Degree 2 | Bucketed quantization | Library-internal format, no external spec |
+| `.sog` | `meta.json` + 4-6 WebP images | ~1/15-1/20 of `.ply` | Degree 3 (optional) | WebP + codebook quantization | Open-sourced by PlayCanvas |
+| `KHR_gaussian_splatting` | glTF 2.0 extension | ≈ `.ply` (uncompressed base) | Degree 3 | Deferred to future extensions | Release Candidate, ratification ~Q2 2026 |
+
+The practical implication for a Linux pipeline: nerfstudio's `ns-export gaussian-splat` (§7.8) is the correct starting point regardless of destination, because every other format in this table is derived from `.ply` by a downstream conversion tool (`splat-transform`, `sogs`, or a viewer's own loader) rather than produced directly by training.
+
 ---
 
 ## 12. Production Deployment
@@ -1667,7 +1695,7 @@ smoothed = kal.ops.mesh.laplacian_smoothing(vertices, faces, n_iters=3)
 edge_loss = kal.metrics.pointcloud.sided_distance(vertices[0], target_pts)[0].mean()
 ```
 
-**Sparse Point Cloud (SPC):** Kaolin's SPC provides an efficient voxel representation for neural implicit functions, enabling differentiable occupancy prediction via CUDA AABB traversal.
+**Structured Point Cloud (SPC):** Kaolin's SPC provides an efficient voxel representation for neural implicit functions, enabling differentiable occupancy prediction via CUDA AABB traversal.
 
 ```python
 # Kaolin SPC from point cloud
@@ -3097,7 +3125,7 @@ This chapter connects to the following parts of the Linux graphics stack:
 ### Long-term
 - **Neural scene representations in game engines:** Unreal Engine 5 and Godot already have community 3DGS plugins; longer-horizon consolidation is expected to produce first-class runtime Gaussian splat scene nodes with LOD streaming, physics collision proxies derived from splat geometry, and lighting integration with existing PBR pipelines.
 - **Unified NeRF/3DGS inference on NPU silicon:** As NPU blocks on SoCs (Qualcomm Hexagon, Apple ANE, Intel NPU) gain broader ONNX/ExecuTorch coverage, NeRF MLP inference and Gaussian sorting kernels are candidates for NPU offload in mobile and edge capture devices, enabling on-device real-time novel view synthesis.
-- **Standardised interchange format beyond PLY:** The Khronos Group and Open Metaverse Interoperability groups have discussed a glTF extension for Gaussian splats; a ratified standard would supersede the current ad-hoc `.ply` convention and integrate neural scene assets into the broader 3D toolchain ecosystem.
+- **Standardised interchange format beyond PLY:** as detailed in §11.4, this has moved past discussion — `KHR_gaussian_splatting` reached Release Candidate status in February 2026 with backing from Autodesk, Bentley Systems, Cesium, Esri, Huawei, Niantic Spatial, and NVIDIA, targeting ratification around Q2 2026. Once ratified, it would supersede the current ad-hoc `.ply` convention and let Gaussian splats travel through existing glTF-aware asset pipelines (Blender, Unreal, USD interchange) alongside conventional meshes.
 
 ---
 

@@ -9,8 +9,8 @@ This chapter covers three complementary Python libraries that sit above the CUDA
 layer and below application-level 3D ML systems: **Open3D** (3D data processing, ICP
 registration, reconstruction, and ML inference on point clouds); **PyTorch3D** (batched
 3D data structures, differentiable rasterization, and the Implicitron NeRF framework);
-and **Kaolin** (NVIDIA's 3D deep learning library — Sparse Point Cloud octrees, USD I/O,
-PBR rendering, and Gaussian Splatting support). Chapter 115 covers the NeRFStudio and 3D
+and **Kaolin** (NVIDIA's 3D deep learning library — Structured Point Cloud octrees, USD I/O,
+PBR rendering, Simplicits physics simulation, and Gaussian Splatting support). Chapter 115 covers the NeRFStudio and 3D
 Gaussian Splatting training stack, including differentiable rasterization comparisons
 (nvdiffrast, the Kaolin/DIBRenderer path, and PyTorch3D's soft renderer); this chapter
 covers the foundational data structures and operations beneath those training loops.
@@ -40,11 +40,16 @@ covers the foundational data structures and operations beneath those training lo
    - [2.6 Implicitron: Neural Radiance Fields](#26-implicitron-neural-radiance-fields)
 3. [Kaolin: NVIDIA's 3D Deep Learning Library](#3-kaolin-nvidias-3d-deep-learning-library)
    - [3.1 Module Architecture and SurfaceMesh](#31-module-architecture-and-surfacemesh)
-   - [3.2 Sparse Point Cloud (SPC) Octree Operations](#32-sparse-point-cloud-spc-octree-operations)
+   - [3.2 Structured Point Cloud (SPC) Octree Operations](#32-structured-point-cloud-spc-octree-operations)
    - [3.3 Differentiable Rendering](#33-differentiable-rendering)
    - [3.4 USD I/O and Omniverse Integration](#34-usd-io-and-omniverse-integration)
    - [3.5 Metrics and Mesh Operations](#35-metrics-and-mesh-operations)
    - [3.6 Installation](#36-installation)
+   - [3.7 Gaussian Splat Operations](#37-gaussian-splat-operations)
+   - [3.8 Physics Simulation: Simplicits](#38-physics-simulation-simplicits)
+   - [3.9 Visualization: Timelapse, Dash3D, and the Omniverse Training Visualizer](#39-visualization-timelapse-dash3d-and-the-omniverse-training-visualizer)
+   - [3.10 Dataset Loaders](#310-dataset-loaders)
+   - [3.11 Voxelgrid and Point Cloud Utility Operations](#311-voxelgrid-and-point-cloud-utility-operations)
 4. [trimesh: CPU Mesh Utility and NumPy Bridge](#4-trimesh-cpu-mesh-utility-and-numpy-bridge)
    - [4.1 Data Model and Format Support](#41-data-model-and-format-support)
    - [4.2 Boolean Operations](#42-boolean-operations)
@@ -780,7 +785,7 @@ full NeRF training stack on top of Implicitron see Chapter 115.
 Kaolin (NVIDIA, Apache 2.0, v0.18.0,
 [github.com/NVIDIAGameWorks/kaolin](https://github.com/NVIDIAGameWorks/kaolin)) is a
 PyTorch extension library for 3D deep learning. Its most distinctive features are the
-**Sparse Point Cloud (SPC)** octree data structure — enabling GPU-efficient sparse 3D
+**Structured Point Cloud (SPC)** octree data structure — enabling GPU-efficient sparse 3D
 convolution and volumetric ray marching — and first-class USD I/O with Omniverse
 interoperability.
 [Source: kaolin.readthedocs.io/en/latest/](https://kaolin.readthedocs.io/en/latest/)
@@ -818,7 +823,7 @@ Accessing `mesh.face_normals` when only `vertices` and `faces` are provided trig
 automatic computation from the stored geometry — no explicit `compute_face_normals()`
 call required.
 
-### 3.2 Sparse Point Cloud (SPC) Octree Operations
+### 3.2 Structured Point Cloud (SPC) Octree Operations
 
 The SPC is Kaolin's packed-octree data structure for GPU-resident sparse 3D data. It
 stores occupied voxels as a `ByteTensor` in Morton (Z-curve) order, enabling O(log N)
@@ -1102,6 +1107,227 @@ architectures (NGLOD, Instant-NGP hash grid NeRF), an interactive training loop,
 Kaolin SPC / ray-tracing wrappers. The repository has been in maintenance mode since
 v1.0.3 (April 2023); active Instant-NGP-style work has migrated to NeRFStudio (ch115)
 and `tiny-cuda-nn`.
+
+### 3.7 Gaussian Splat Operations
+
+`kaolin.rep.GaussianSplatModel` (a `PointSamples` subclass —
+`GaussianSplatModel(positions, orientations, scales, opacities, sh_coeff, features=None,
+transform=None, sh_degree=None, ...)`) is the in-memory container behind the
+`import_gaussiancloud`/`export_gaussiancloud` USD round-trip shown in §3.4. Two op
+modules manipulate the underlying tensors directly: `kaolin.ops.gaussians` (the current,
+actively developed module) and an older, narrower `kaolin.ops.gaussian` (singular) that
+exposes only the densifier — both are real, separately importable submodules in v0.18.0,
+not a typo; new code should use the plural module.
+[Source: github.com/NVIDIAGameWorks/kaolin/tree/master/kaolin/ops/gaussians](https://github.com/NVIDIAGameWorks/kaolin/tree/master/kaolin/ops/gaussians)
+
+**Rigid transforms with correct SH rotation.** Rotating a Gaussian splat scene is not
+just a matter of rotating positions — the spherical-harmonic view-dependent color
+coefficients must be rotated too, or specular highlights end up pointing the wrong way.
+`transform_gaussians` decomposes the affine transform's rotation and scale and applies
+them consistently across position, orientation, scale, and (optionally) SH bands ≥ 1
+(band 0, the DC term, is rotation-invariant and passed through unchanged):
+
+```python
+import kaolin.ops.gaussians as gs_ops
+
+new_pos, new_rot, new_scale, new_sh = gs_ops.transform_gaussians(
+    positions, orientations, scales,     # (N,3), (N,4) quaternion, (N,3)
+    transform,                            # (4,4) or (N,4,4) affine
+    sh_coeff=sh_coeff,                    # (N, (degree+1)^2, 3), degree ≤ 3
+    use_log_scales=False, use_xyzw=False
+)
+```
+
+Internally, `transform_shs(shs_feat, R)` rotates each SH band via its Wigner-D matrix,
+built up recursively from the band-1 rotation matrix (degree > 3 raises
+`NotImplementedError`).
+[Source: github.com/NVIDIAGameWorks/kaolin/blob/master/kaolin/ops/gaussians/transforms.py](https://github.com/NVIDIAGameWorks/kaolin/blob/master/kaolin/ops/gaussians/transforms.py)
+
+**Volume densification.** A trained 3DGS scene is a *shell* — Gaussians cluster on
+visible surfaces, leaving the interior empty. `sample_points_in_volume` voxelizes the
+splats, estimates an approximate surface from opacity-weighted occupancy across a bank
+of synthetic viewpoints (14 axis/octant anchors plus an icosahedron-based direction set),
+and fills the interior with evenly spaced samples — the intended consumer being physics
+simulation, which needs volumetric mass rather than a hollow shell (§3.8):
+
+```python
+interior_pts = gs_ops.sample_points_in_volume(
+    xyz, scale, rotation, opacity,        # Gaussian splat parameters
+    octree_level=8,        # higher = denser interior sampling
+    opacity_threshold=0.35,  # lower for noisier/low-quality reconstructions
+    jitter=True, clip_samples_to_input_bbox=True
+)
+```
+
+[Source: github.com/NVIDIAGameWorks/kaolin/blob/master/kaolin/ops/gaussians/densifier.py](https://github.com/NVIDIAGameWorks/kaolin/blob/master/kaolin/ops/gaussians/densifier.py)
+
+### 3.8 Physics Simulation: Simplicits
+
+`kaolin.physics` (v0.16+) implements **Simplicits**, a representation-agnostic
+reduced-order elastodynamics method: rather than simulating every mesh vertex or
+Gaussian, it learns a small set of linear-blend-skinning (LBS) weight fields over a
+point sampling of the object and integrates the reduced (skinning-weight) degrees of
+freedom with a Neo-Hookean elastic material and implicit Newton time-stepping — built on
+NVIDIA Warp for the sparse linear algebra. Because the sampled points can be mesh
+surface samples, voxel centers, or Gaussian splat positions/interior samples from
+`sample_points_in_volume` (§3.7), the same simulator drives deformation for meshes,
+voxel grids, and Gaussian-splat scenes alike.
+[Source: github.com/NVIDIAGameWorks/kaolin/tree/master/kaolin/physics/simplicits](https://github.com/NVIDIAGameWorks/kaolin/tree/master/kaolin/physics/simplicits)
+
+The container hierarchy: `PhysicsPoints` (positions + Young's modulus/Poisson's
+ratio/density/approximate volume) → `SkinnedPhysicsPoints` (adds LBS skinning weights
+and their spatial gradient `dwdx`) → `SimplicitsObject` (adds a trainable
+`SkinningModule` network producing the weight field). A `SimplicitsObject` is *baked*
+into a `SimulatedObject` when added to a scene.
+
+```python
+from kaolin.physics.simplicits import SimplicitsScene, SimplicitsObject
+
+scene = SimplicitsScene(device='cuda', timestep=0.03,
+                         max_newton_steps=5, cg_tol=1e-4)
+scene.set_scene_gravity(gravity_coeff=1.0)
+scene.set_scene_floor(floor_height=0.0, floor_axis=1)
+
+# sim_obj: a trained SimplicitsObject (mesh, voxel, or Gaussian-splat point sampling)
+obj_id = scene.add_object(
+    sim_obj, num_qp=1000,                 # quadrature/sample point count
+    init_transform=init_T,                 # 3x4 or 4x4 initial pose
+    renderable_pts=gaussian_positions,     # bake skinning for the full-res render points too
+    is_kinematic=False
+)
+
+for step in range(num_steps):
+    scene.run_sim_step()
+    deformed = scene.get_object_deformed_pts(obj_id, points='rendered')
+```
+
+`get_object_deformed_pts(obj_id, points='rendered')` returns the deformed positions of
+the *renderable* points (e.g. the full Gaussian splat cloud) even though the physics
+itself integrates only the smaller `num_qp` quadrature sample — the LBS weight field
+generalizes the sparse simulation to any point set it was baked for. Training a new
+`SimplicitsObject`'s skinning network combines `kaolin.physics.simplicits.losses`
+(`loss_elastic`, `loss_ortho`, `compute_losses`) with a standard PyTorch optimizer loop;
+Warp-accelerated variants (`loss_elastic_warp`, `compute_losses_warp`) are provided for
+larger point counts.
+[Source: github.com/NVIDIAGameWorks/kaolin/blob/master/kaolin/physics/simplicits/simulation.py](https://github.com/NVIDIAGameWorks/kaolin/blob/master/kaolin/physics/simplicits/simulation.py)
+
+USD physics-material export (§3.4's `usd.add_physics_material`) round-trips the Young's
+modulus/Poisson's ratio/density values that seed `PhysicsPoints`, so a scene authored in
+Omniverse can carry its material parameters directly into a Simplicits simulation.
+
+### 3.9 Visualization: Timelapse, Dash3D, and the Omniverse Training Visualizer
+
+`kaolin.visualize.Timelapse` writes periodic training-loop checkpoints — meshes, point
+clouds, voxel grids, and their batches — as time-sampled USD, without requiring a live
+rendering context:
+
+```python
+from kaolin.visualize import Timelapse
+
+timelapse = Timelapse('./viz_logs/my_experiment')
+
+for iteration in range(num_iterations):
+    ...
+    timelapse.add_mesh_batch(
+        iteration=iteration, category='predictions',
+        vertices_list=pred_verts, faces_list=pred_faces
+    )
+    timelapse.add_pointcloud_batch(iteration=iteration, category='gt',
+                                    pointcloud_list=gt_points)
+```
+
+`TimelapseParser` reads a checkpoint directory back out (`get_file_path()`,
+`get_category_names_by_type()`, `check_for_updates()` for a live-refreshing UI) —
+the parser, not raw USD traversal, is the supported way to build a custom viewer against
+Timelapse output.
+
+Three viewers consume Timelapse checkpoints:
+
+- **Kaolin Dash3D** — a bundled CLI (`kaolin-dash3d --logdir=$TIMELAPSE_DIR --port=8080`)
+  that serves a browser-based 3D view of the checkpoint history over HTTP, useful for
+  remote training servers with no display attached. It renders triangle meshes and point
+  clouds only — no per-vertex color, semantic IDs, or textures.
+- **The Omniverse Kaolin App's Training Visualizer extension** — an interactive
+  Omniverse Kit extension that scrubs through training iterations and *does* render
+  textures and per-point labels, at the cost of requiring a local Omniverse install.
+  [Source: docs.omniverse.nvidia.com/app_kaolin/app_kaolin/manual_training-visualizer.html](https://docs.omniverse.nvidia.com/app_kaolin/app_kaolin/manual_training-visualizer.html)
+- **Generic USD viewers** (Omniverse Composer, `usdview`) — since Timelapse output is
+  plain time-sampled USD, any USD-aware tool can open it directly, at the cost of losing
+  the training-iteration-aware scrubbing UI the two viewers above provide.
+
+For interactive Jupyter-notebook viewing rather than checkpoint logging,
+`kaolin.visualize` also provides `IpyTurntableVisualizer` (orbit/pan/zoom around a
+`focus_at` point) and `IpyFirstPersonVisualizer` (mouse-look plus keyboard fly controls),
+both built on a shared `BaseIpyVisualizer` event-handling base class, plus the
+lower-level helpers `quick_viz(imgs, nrow=None, inches=15)` for tiling a batch of
+rendered images into one matplotlib figure and `update_canvas(canvas, image,
+format='PNG', quality=100)` for pushing a new frame into an existing ipywidgets canvas
+without rebuilding the widget.
+[Source: kaolin.readthedocs.io/en/latest/modules/kaolin.visualize.html](https://kaolin.readthedocs.io/en/latest/modules/kaolin.visualize.html)
+
+### 3.10 Dataset Loaders
+
+`kaolin.io` includes `torch.utils.data.Dataset` wrappers for three classic 3D shape
+benchmarks, all following the same `output_dict=True` convention (the older
+positional-tuple return via `output_dict=False` is deprecated):
+
+```python
+from kaolin.io.shapenet import ShapeNetV1
+from kaolin.io.modelnet import ModelNet
+
+shapenet = ShapeNetV1(root='/data/ShapeNetCore.v1',
+                       categories=['chair', 'table'], train=True, split=0.7,
+                       with_materials=True, output_dict=True)
+item = shapenet[0]
+# item['mesh']: kaolin.rep.SurfaceMesh: item['name'], item['synset'], item['labels']
+
+modelnet = ModelNet(root='/data/ModelNet40', categories=['chair'],
+                     split='train', output_dict=True)
+item = modelnet[0]
+# item['mesh']: namedtuple from kaolin.io.off.import_mesh(); item['label']
+```
+
+`ShapeNetV1`/`ShapeNetV2` share an identical signature and cover ShapeNetCore's 54
+synset categories; `ModelNet` reads the OFF-format ModelNet10/40 splits.
+`kaolin.io.shrec.SHREC16` targets the SHREC'16 partial-shape-matching benchmark and
+ships the same 54-category `synset_to_labels` table as the ShapeNet loaders, reusing
+`kaolin.io.obj.import_mesh` for per-model geometry.
+[Source: github.com/NVIDIAGameWorks/kaolin/blob/master/kaolin/io/shrec.py](https://github.com/NVIDIAGameWorks/kaolin/blob/master/kaolin/io/shrec.py)
+
+### 3.11 Voxelgrid and Point Cloud Utility Operations
+
+`kaolin.ops.voxelgrid` operates on plain dense `(B, X, Y, Z)` `BoolTensor`/`FloatTensor`
+voxel grids — current Kaolin (v0.18.0) has no dedicated `kaolin.rep.VoxelGrid` container
+class (the `kaolin.rep` module holds only `SurfaceMesh`, `Spc`, `GaussianSplatModel`,
+`PointSamples`, and the shared `TensorContainerBase`; there is likewise no `Quadmesh`
+class). Voxel grids are represented directly as tensors and manipulated through free
+functions:
+
+```python
+import kaolin.ops.voxelgrid as vg_ops
+
+small = vg_ops.downsample(voxelgrids, scale=[2, 2, 2])
+solid = vg_ops.fill(voxelgrids)                          # fills internal holes
+shell = vg_ops.extract_surface(voxelgrids, mode='wide')  # strips interior structure
+
+# Orthographic depth maps from the 6 axis-aligned viewing directions, and back:
+odms = vg_ops.extract_odms(voxelgrids)
+reconstructed = vg_ops.project_odms(odms, voxelgrids=voxelgrids, votes=1)
+```
+
+[Source: github.com/NVIDIAGameWorks/kaolin/blob/master/kaolin/ops/voxelgrid.py](https://github.com/NVIDIAGameWorks/kaolin/blob/master/kaolin/ops/voxelgrid.py)
+
+`kaolin.ops.pointcloud` provides two general-purpose point-cloud utilities used
+throughout the library's own dataset and metric code:
+
+```python
+import kaolin.ops.pointcloud as pc_ops
+
+centered = pc_ops.center_points(points, normalize=True)  # centers at origin, scale to [-0.5, 0.5]
+sub_idx  = pc_ops.farthest_point_sampling(points, k=2048)  # iterative FPS subset
+```
+
+[Source: github.com/NVIDIAGameWorks/kaolin/blob/master/kaolin/ops/pointcloud.py](https://github.com/NVIDIAGameWorks/kaolin/blob/master/kaolin/ops/pointcloud.py)
 
 ---
 
@@ -2031,7 +2257,11 @@ only officially supported option.
   backbones in §5 are the GPU architecture underpinning LiDAR 3D detection models in
   ch115 §5 and in Open3D-ML (§1.7 here). The `torch_geometric` `Data` object (§6) and
   Warp mesh queries (§7) apply directly to the point cloud outputs of DUSt3R/MASt3R
-  global alignment and the surfel models in 2DGS (ch115 §20).
+  global alignment and the surfel models in 2DGS (ch115 §20). The Gaussian splat
+  transform and volume-densification utilities in §3.7 here operate directly on the
+  `.ply` splat parameters ch115 §11 trains and the format variants catalogued in ch115
+  §11.4, and feed the Simplicits physics simulator in §3.8 for deformable Gaussian-splat
+  scenes.
 - **Chapter 114 (OpenCV and GPU-Accelerated Computer Vision)**: OpenCV's CUDA point
   cloud ops, `cv::viz` for 3D visualisation, and the RGBD depth processing pipeline
   that produces the frames consumed by Open3D's TSDF integrator.
