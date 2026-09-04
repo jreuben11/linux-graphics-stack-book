@@ -181,7 +181,7 @@ This chapter examines the full software path from a **GGUF** file on disk to gen
   - `hf download` with `--include`/`--exclude` glob filtering for pulling a single GGUF quantisation out of a multi-file repo
   - the `~/.cache/huggingface/hub` blob/snapshot/refs cache layout and its deduplication behaviour
   - the **Xet**-based transfer-acceleration backend that replaced `hf_transfer`
-  - a comparison of model weight distribution mechanisms — HF Hub, the **Ollama registry**, **OCI artifacts** (Docker Model Runner), **ModelScope**, and plain `git`+LFS — by content-addressing/dedup scheme, auth model, native format, and ecosystem
+  - a comparison of model weight distribution mechanisms — HF Hub, the **Ollama registry**, **OCI artifacts** (Docker Model Runner), **ModelScope**, **Kaggle Models**, and plain `git`+LFS — by content-addressing/dedup scheme, auth model, native format, and ecosystem
 - **Section 21 — Fine-Tuning Acceleration with Unsloth**
   - **Unsloth**'s hand-written Triton kernels and manually-derived backward pass for faster, lower-VRAM LoRA/QLoRA fine-tuning
   - its NVIDIA CUDA-primary support alongside newer AMD ROCm and Intel/CPU paths
@@ -1591,7 +1591,7 @@ Programmatically, the same operations are `hf_hub_download(repo_id, filename, ..
 
 ### Model Weight Distribution Mechanisms at a Glance
 
-`hf download` is one of several distinct mechanisms this chapter's tools use to move weight files from a remote store onto a Linux GPU box, each with its own take on deduplication, authentication, and native packaging. The table below adds one mechanism not otherwise discussed in this chapter — **ModelScope**, Alibaba/DAMO's Apache-2.0-licensed hub for the China-centric open-model ecosystem, which mirrors many HF Hub-hosted models and exposes its own `ms-hub`/`modelscope` download CLI as a near-drop-in alternative to `hf download`:
+`hf download` is one of several distinct mechanisms this chapter's tools use to move weight files from a remote store onto a Linux GPU box, each with its own take on deduplication, authentication, and native packaging. The table below adds two mechanisms not otherwise discussed in this chapter — **ModelScope**, Alibaba/DAMO's Apache-2.0-licensed hub for the China-centric open-model ecosystem, which mirrors many HF Hub-hosted models and exposes its own `ms-hub`/`modelscope` download CLI as a near-drop-in alternative to `hf download`; and **Kaggle Models**, Google's model hub reachable via the `kagglehub` Python client, distinctive for gating some model families (notably Google's own Gemma) behind an on-site license-consent step rather than a bare access token:
 
 | **Mechanism** | **License/ecosystem** | **Content-addressing / dedup** | **Auth model** | **Native format** | **Primary ecosystem** |
 |---|---|---|---|---|---|
@@ -1599,6 +1599,7 @@ Programmatically, the same operations are `hf_hub_download(repo_id, filename, ..
 | Ollama registry (`ollama pull`, §5.3) | Ollama, MIT | OCI-layer-style content-addressed blobs under `~/.ollama/models/blobs/`; models sharing a base checkpoint share blobs on disk | Public library unauthenticated; custom/private registries via Ollama's own auth | GGUF | Ollama's curated model library plus user-authored Modelfiles |
 | OCI artifacts (Docker Model Runner, §18) | Docker, Apache 2.0 (DMR itself) | Standard OCI registry layer content-addressing — inherited from whichever OCI-compliant registry hosts the artifact (Docker Hub, GHCR, etc.) | Registry-standard auth (`docker login`); public images pullable unauthenticated | GGUF packaged as an OCI artifact | General container-registry infrastructure, reused rather than purpose-built |
 | ModelScope (`ms-hub download` / `modelscope download`) | Alibaba/DAMO, Apache 2.0 client | Per-file SHA256 integrity checks against a hierarchical `~/.cache/modelscope/hub/` cache — not full blob-level dedup across revisions like HF Hub's | Public downloads unauthenticated; `ms-hub login --token $MODELSCOPE_API_TOKEN` for write/private operations | safetensors, GGUF, or arbitrary repo files | China-centric open-model ecosystem, mirroring many HF-hosted models |
+| Kaggle Models (`kagglehub.model_download`) | Kaggle (Google), Apache 2.0 client [Source](https://github.com/Kaggle/kagglehub) | Per-model/version download (`<owner>/<model>/<framework>/<variation>[/<version>]` handle) cached at `~/.cache/kagglehub/`; no cross-repo blob-level dedup | `kaggle.json`/`KAGGLE_API_TOKEN` for the API itself; gated families like Gemma additionally require accepting a per-model license-consent form on kaggle.com first, or the download 403s even with valid credentials [Source](https://ai.google.dev/gemma/docs/setup) | Varies by model's declared framework tag — TensorFlow2, PyTorch, JAX/Flax, Transformers, GGUF, ONNX, and others | Google-published model families (Gemma, BERT) plus Kaggle's own competition/notebook ecosystem |
 | Plain `git` + Git LFS | Git, various repo hosts | None beyond Git's own commit/blob hashing; LFS stores pointer files, no cross-repo blob sharing | Per-remote (SSH key or HTTP token against GitHub, a self-hosted server, or the Hub's own git-remote interface) | Arbitrary — whatever the repo contains | Fallback path for any repository exposing a git remote, including Hugging Face repos themselves |
 
 [Source](https://github.com/modelscope/modelscope_hub)
@@ -2153,6 +2154,8 @@ This chapter draws on and extends topics covered across the book:
 - [huggingface_hub Cache Management Guide](https://raw.githubusercontent.com/huggingface/huggingface_hub/main/docs/source/en/guides/manage-cache.md)
 - [huggingface_hub Environment Variables Reference](https://raw.githubusercontent.com/huggingface/huggingface_hub/main/docs/source/en/package_reference/environment_variables.md)
 - [modelscope_hub GitHub repository](https://github.com/modelscope/modelscope_hub)
+- [Kaggle/kagglehub GitHub repository](https://github.com/Kaggle/kagglehub)
+- [Google AI for Developers: Legacy Gemma setup (Kaggle license consent)](https://ai.google.dev/gemma/docs/setup)
 - [Unsloth GitHub repository](https://github.com/unslothai/unsloth)
 - [Unsloth Documentation](https://unsloth.ai/docs)
 - [Unsloth AMD GPU Support](https://unsloth.ai/docs/basics/amd)
