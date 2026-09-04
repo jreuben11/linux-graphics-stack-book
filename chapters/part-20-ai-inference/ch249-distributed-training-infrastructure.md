@@ -183,6 +183,31 @@ scale-out InfiniBand clusters (noted in Chapter 48's roadmap); its production ma
 independently verified for this chapter. *Note: needs verification against current ROCm
 release notes before citing Optiq as shipping.*
 
+Set against §4's NVSHMEM and nccl-extensions coverage, RCCL is closer to parity with NCCL on
+GPU-initiated, device-API-driven communication than the "NVIDIA ships it, AMD doesn't" framing
+of §4 might suggest — the gap is narrower there than it is for §2.4's SHARP. RCCL's own source
+tree carries a `src/gin/` subsystem implementing **GIN (GPU-Initiated Networking)** — RCCL's
+name for the same class of capability §4.2 describes for NCCL's Device API: collective
+operations issued directly from GPU kernels, bypassing the host-side proxy thread. It ships two
+backends selected via `NCCL_GIN_TYPE` — a GDA (GPU Direct Async) backend that posts InfiniBand
+QueuePair work requests from device code, built on **rocSHMEM**, and an "Anvil SDMA" backend
+that drives AMD's SDMA engine directly from the GPU — plus a rocSHMEM-linked `alltoall_wg`
+offload path in RCCL itself, which is functionally the same MoE-token-dispatch shape `nccl_ep`
+(§4.2) targets. The organizational difference is that AMD folded this into RCCL's core rather
+than shipping a separate extensions repository the way NVIDIA does; no AMD equivalent of
+`nccl_m2n`'s disjoint trainer/inference mesh-to-mesh rollout was found.
+[Source: ROCm/rccl, `src/gin/README.md`](https://github.com/ROCm/rocm-systems/blob/develop/projects/rccl/src/gin/README.md)
+
+On the NVSHMEM side (§4.1), AMD's direct analogue is **rocSHMEM**, an OpenSHMEM-like,
+GPU-centric one-sided communication library with the same symmetric-heap model, offering three
+backends: IPC (load/store), Reverse Offload (host-forwarded to a CPU-side MPI/OpenSHMEM
+implementation), and GDA (the same device-to-NIC-direct path RCCL's GIN GDA backend builds on).
+*Note: needs verification — rocSHMEM's own documentation describes the RO and GDA backends as
+"provided as-is with limited support from AMD or AMD Research," which reads as less
+production-hardened than NVSHMEM's status inside NVIDIA's stack; treat rocSHMEM as functional
+parity in design, not yet confirmed parity in maturity.*
+[Source: ROCm/rocSHMEM README](https://github.com/ROCm/rocm-systems/blob/develop/projects/rocshmem/README.md)
+
 ### 2.4 SHARP: In-Network Reduction Acceleration
 
 §2.1's double binary tree and §2.2's topology-aware channel construction both optimize *where*
@@ -263,6 +288,22 @@ for (tensor parallelism's per-layer boundary, §3.2). *Note: needs verification 
 come from NVIDIA marketing/blog material rather than an independently reproduced benchmark; treat
 as directional rather than a guaranteed multiplier for any specific cluster and workload.*
 [Source: NVIDIA, "In-Network Computing With NVIDIA SHARP"](https://resources.nvidia.com/en-us-accelerated-networking-resource-library/network-computing-nvidia-sharp)
+
+Unlike §2.3's GIN/rocSHMEM comparison, this is the one place where RCCL trails NCCL for a
+structural, not merely maturity, reason. RCCL's own codebase still carries the CollNet plugin
+interface and NVLS/SHARP documentation it inherited from its NCCL fork lineage — down to doc
+text describing "third-generation NVSwitch systems... Hopper and later GPU architectures,"
+which is stale NVIDIA-specific boilerplate rather than anything functional on AMD hardware. That
+inherited plugin *interface* means a switch vendor could in principle write a CollNet plugin for
+RCCL, but no such plugin was found to exist. The underlying reason this gap persists is that
+SHARP is switch-ASIC silicon NVIDIA acquired with Mellanox and controls end to end — it is not
+something AMD can add by writing more RCCL code, only by a switch vendor choosing to build and
+ship a CollNet implementation against RCCL's inherited plugin surface. AMD's own intra-node
+fabric (Infinity Fabric/XGMI, §2.3) likewise has no published NVLS-equivalent multicast-reduction
+capability. *Note: needs verification — absence of a public CollNet/SHARP plugin for RCCL is
+based on not finding one, not on a vendor statement that none exists; worth rechecking against
+current ROCm and Mellanox/NVIDIA-switch-ecosystem documentation before treating this as a
+permanent gap.*
 
 ## 3. Parallelism Strategies
 
