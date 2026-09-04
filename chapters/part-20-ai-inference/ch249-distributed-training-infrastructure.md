@@ -42,6 +42,7 @@ topology and the parallelism strategies built on top of NCCL's primitives.
    - [6.2 Kubernetes GPU Scheduling for Training Jobs](#62-kubernetes-gpu-scheduling-for-training-jobs)
    - [6.3 Elastic and Fault-Tolerant Restart](#63-elastic-and-fault-tolerant-restart)
    - [6.4 Checkpointing at Scale](#64-checkpointing-at-scale)
+   - [6.5 Experiment Tracking and Data Versioning: Weights & Biases and DVC](#65-experiment-tracking-and-data-versioning-weights--biases-and-dvc)
 7. [Integrations](#7-integrations)
 8. [Roadmap](#8-roadmap)
 
@@ -1054,6 +1055,112 @@ differently-sized cluster tractable rather than requiring a full-precision, full
 checkpoint as an intermediate step. JAX's equivalent, Orbax (introduced in Chapter 245 §8),
 provides the analogous sharded-checkpoint and cross-mesh-reshaping capability for
 GSPMD/`shard_map`-partitioned JAX training state, and is not re-described here.
+
+### 6.5 Experiment Tracking and Data Versioning: Weights & Biases and DVC
+
+Checkpointing (§6.4) preserves the training *state* needed to resume a run; it says nothing
+about which hyperparameters produced that state, how the metrics evolved over the run, or which
+version of the training data and code produced a given checkpoint in the first place. At the
+cluster scale this chapter assumes — many concurrent jobs, elastic restarts that change node
+count mid-run (§6.3), and datasets and model weights that are themselves large, versioned
+artifacts — that bookkeeping stops being optional. Two tools cover largely non-overlapping halves
+of it: **Weights & Biases (W&B)**, a hosted (or self-hosted) experiment-tracking and
+dashboarding service, and **DVC (Data Version Control)**, a Git-native tool for versioning data,
+pipelines, and lightweight experiments without ever putting large files in Git itself.
+
+W&B's core primitive is the **Run**: a call to `wandb.init()` opens one, `run.log()` streams
+scalar and rich-media metrics to it over the course of training, and `run.config` records the
+hyperparameters used to produce it, so that every logged metric is queryable against the exact
+configuration that generated it. [Source: W&B, "Track experiments"](https://docs.wandb.ai/guides/track/)
+
+```python
+import wandb
+
+with wandb.init(entity="<my-team>", project="my-project-name") as run:
+    run.config.learning_rate = 0.01
+
+    for epoch in range(num_epochs):
+        # training step
+        run.log({"loss": loss})
+
+    run.log_artifact(model)
+```
+[Source: W&B, "Track experiments"](https://docs.wandb.ai/guides/track/)
+
+In a multi-node job, W&B documents three logging patterns rather than prescribing one: log only
+from the rank-0/coordinator process (the common case for a single aggregate view of loss and
+validation metrics), initialize one Run per process and group them in the UI via
+`wandb.init(group=...)`, or — since SDK v0.19.9 — have every worker log into the *same* Run by
+sharing a `WANDB_RUN_ID` and passing `mode="shared"`, with W&B aggregating metrics from all
+participating processes server-side. [Source: W&B, "Log distributed training experiments"](https://docs.wandb.ai/guides/track/log/distributed-training/)
+Dataset and model versioning is a separate primitive, **Artifacts**: a `wandb.Artifact` is
+constructed with a name and a type (`"dataset"`, `"model"`, or a free-form string), populated via
+`artifact.add_file()`/`add_dir()`, and persisted with `run.log_artifact()`; a downstream run that
+consumes it calls `run.use_artifact()`, and W&B builds a lineage graph connecting artifact
+versions to the specific runs that produced and consumed them. [Source: W&B, "Artifacts"](https://docs.wandb.ai/guides/artifacts/)
+*Note: needs verification* — the exact scope of automatic deduplication (content-hash-based, akin
+to DVC's cache below) versus per-version full copies was not confirmed against current docs.
+Since 2024, the SDK's internal service process (handling uploads, metric batching, and the local
+gRPC server every `wandb.init()` talks to) has been rewritten from Python to Go and shipped as
+`wandb-core`, communicating with the Python-facing API over Protocol Buffers; this is reported as
+a substantial throughput improvement for high-frequency logging rather than a change to any
+user-facing API. [Source: wandb-core on PyPI](https://pypi.org/project/wandb-core/)
+
+DVC takes a different architectural position: rather than a service that receives logged data, it
+is a Git extension that versions data and pipelines *as* Git-tracked pointer files. `dvc add`
+computes a content hash for a file or directory, moves the content into a local cache, and writes
+a small YAML `.dvc` file that Git actually tracks:
+
+```yaml
+outs:
+  - md5: a304afb96060aad90176268345e10355
+    path: data.xml
+    desc: Cats and dogs dataset
+```
+[Source: DVC, "DVC Files"](https://doc.dvc.org/user-guide/project-structure/dvc-files)
+
+`dvc push`/`dvc pull` synchronize that cache against a configured remote (S3, GCS, Azure Blob,
+SSH, HDFS, or a plain local/network path); the large file itself never enters Git history — only
+the hash pointer does. [Source: DVC documentation](https://doc.dvc.org/) On top of this, `dvc.yaml`
+defines a pipeline as a graph of named stages, each with a `cmd`, its `deps` and `params`, and its
+`outs`/`metrics`:
+
+```yaml
+stages:
+  featurize:
+    cmd: python src/featurization.py data/prepared data/features
+    deps:
+      - src/featurization.py
+      - data/prepared
+    params:
+      - featurize.max_features
+      - featurize.ngrams
+    outs:
+      - data/features
+```
+[Source: DVC, "Data Pipelines"](https://doc.dvc.org/start/data-pipelines/data-pipelines)
+
+`dvc repro` walks that dependency graph and, for each stage, compares the current hashes of its
+declared `deps`/`params` against the hashes recorded the last time it ran — stored in the
+companion `dvc.lock` file — skipping any stage whose inputs are unchanged rather than
+recomputing it, the same incremental-rebuild logic a build system like Make applies to files.
+[Source: DVC, "Data Pipelines"](https://doc.dvc.org/start/data-pipelines/data-pipelines) DVC's own
+lightweight experiment tracking, `dvc exp run`, reuses this pipeline graph: each experiment is
+recorded as a commit on a custom Git ref under `.git/refs/exps` with the current branch tip as its
+parent, rather than as a real commit or branch — so sweeping over parameters does not pollute
+Git history, and an experiment only becomes a normal commit if explicitly promoted with
+`dvc exp apply`/`git checkout`. [Source: DVC, "Experiment Management"](https://doc.dvc.org/user-guide/experiment-management)
+**DVCLive** is the companion metric-logging library — `log_metric()`/`log_param()`/`log_plot()`
+calls from inside a training loop, comparable in shape to `run.log()` above — that writes into
+this same Git-ref/pipeline-metrics structure (or optionally to DVC's hosted Studio dashboard)
+rather than to a separate service. [Source: DVC documentation](https://doc.dvc.org/)
+
+The two tools are frequently used together rather than as alternatives: DVC's git-ref-backed
+experiments and content-addressed data/pipeline versioning give exact, offline-reproducible
+lineage from a specific dataset and code commit to a specific metric, while W&B's hosted
+dashboards, cross-run comparison views, and Sweeps hyperparameter-search orchestration are
+harder to replicate with DVC's file-and-git-native model — a training pipeline can call DVCLive
+for the reproducibility record and `wandb.log()` for the dashboard in the same run.
 
 ## 7. Integrations
 
