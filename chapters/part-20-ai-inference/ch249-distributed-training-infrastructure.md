@@ -225,12 +225,19 @@ of requiring specific switch hardware and firmware rather than running over comm
 fabric.
 [Source: NVIDIA, "In-Network Computing With NVIDIA SHARP"](https://resources.nvidia.com/en-us-accelerated-networking-resource-library/network-computing-nvidia-sharp)
 
-NCCL exposes SHARP through **CollNet**, a collective transport (distinct from NCCL's
-point-to-point Net transport) implemented by the separate **NCCL-RDMA-SHARP plugin**
-(`libnccl-net.so`, shipped as part of NVIDIA's HPC-X/MLNX_OFED stack), which replaces NCCL's
-default inter-node transport with an RDMA-based one offering both ordinary point-to-point and
-SHARP-accelerated collective paths. Enabling it is a communicator-init-time environment
-decision, not a per-call one:
+NCCL exposes SHARP through **CollNet**, and it is worth being precise about what CollNet
+actually is: it is a *plugin interface*, not a piece of hardware or a fixed implementation.
+NCCL's network plugin API (`ncclNet`) covers ordinary point-to-point send/receive; CollNet is a
+separate, optional companion struct a network plugin can *additionally* implement to expose
+in-network collective operations to NCCL. NCCL itself contains no in-network reduction logic —
+it only knows how to call into a CollNet-capable plugin if one is present and one of the
+CollNet-family algorithms (`Collnet`/`CollnetChain`/`CollnetDirect`, selected via `NCCL_ALGO`)
+is selected for a given collective. Whether CollNet actually accelerates anything therefore
+depends entirely on which plugin, if any, is loaded. NVIDIA's own CollNet implementation is the
+**NCCL-RDMA-SHARP plugin** (`libnccl-net.so`, shipped as part of NVIDIA's HPC-X/MLNX_OFED
+stack), which is what actually talks to Quantum InfiniBand switches and drives SHARP's in-switch
+aggregation — CollNet is the socket, the RDMA-SHARP plugin is what plugs into it. Enabling the
+NVIDIA path is a communicator-init-time environment decision, not a per-call one:
 
 ```bash
 # Enable the CollNet transport and let NCCL prefer it for AllReduce/AllGather/ReduceScatter
