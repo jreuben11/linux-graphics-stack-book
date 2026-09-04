@@ -31,6 +31,13 @@ topology and the parallelism strategies built on top of NCCL's primitives.
    - [3.5 JAX's Alternative: GSPMD and shard_map](#35-jaxs-alternative-gspmd-and-shard_map)
    - [3.6 Expert Parallelism: Megatron Core's Parallel Folding for MoE](#36-expert-parallelism-megatron-cores-parallel-folding-for-moe)
    - [3.7 TorchTitan: A PyTorch-Native Training Platform](#37-torchtitan-a-pytorch-native-training-platform)
+   - [3.8 DistributedDataParallel (DDP)](#38-distributeddataparallel-ddp)
+   - [3.9 Fully Sharded Data Parallel (FSDP2)](#39-fully-sharded-data-parallel-fsdp2)
+   - [3.10 Tensor Parallel (TP)](#310-tensor-parallel-tp)
+   - [3.11 Device Mesh](#311-device-mesh)
+   - [3.12 RPC-based Distributed Training](#312-rpc-based-distributed-training)
+   - [3.13 Monarch Framework](#313-monarch-framework)
+   - [3.14 Custom Extensions](#314-custom-extensions)
 4. [GPU-Initiated Communication: NVSHMEM and NCCL Extensions](#4-gpu-initiated-communication-nvshmem-and-nccl-extensions)
    - [4.1 NVSHMEM: One-Sided Communication for Data-Dependent Communication Patterns](#41-nvshmem-one-sided-communication-for-data-dependent-communication-patterns)
    - [4.2 nccl-extensions: nccl_ep and nccl_m2n](#42-nccl-extensions-nccl_ep-and-nccl_m2n)
@@ -703,6 +710,94 @@ Megatron Core's MoE stack optimizes them jointly rather than one at a time.
 results; independent reproduction of its throughput/memory claims was not performed for this
 chapter.*
 
+**A practical user guide.** Megatron Core ships as an installable package rather than requiring
+a full Megatron-LM checkout. The fastest path is `uv pip install "megatron-core[training]"` from
+PyPI, or `uv pip install -e .` against a `git clone` of the source tree for development against
+unreleased flags; either way the package requires Python ≥3.10 and PyTorch ≥2.6.0. For a
+preconfigured environment with the matching CUDA/NCCL/TransformerEngine stack, NVIDIA publishes
+the NGC container `nvcr.io/nvidia/pytorch:26.01-py3`, which bundles Megatron Core alongside the
+rest of the training toolchain.
+[Source: Megatron-LM, `README.md`](https://github.com/NVIDIA/Megatron-LM)
+
+The MoE-specific and Parallel-Folding CLI flags (as exposed by `megatron/training/arguments.py`
+and consumed by `pretrain_gpt.py`-style entry points) include:
+
+| Flag | Purpose |
+| --- | --- |
+| `--num-experts N` | Total number of experts in each MoE layer. |
+| `--moe-router-topk K` | Experts selected per token (default `2`). |
+| `--moe-router-load-balancing-type` | `aux_loss` \| `seq_aux_loss` \| `global_aux_loss` \| `sinkhorn` \| `quantile_balancing` \| `none`. |
+| `--moe-aux-loss-coeff` | Weight of the load-balancing auxiliary loss term. |
+| `--expert-model-parallel-size` | EP degree — how many GPUs each expert set is split across. |
+| `--expert-tensor-parallel-size` | **ETP**, the Parallel-Folding knob: tensor-parallel degree applied *only* to MoE layers, decoupled from the attention-layer `--tensor-model-parallel-size`. |
+| `--moe-grouped-gemm` | Enables the grouped-GEMM kernels from the "compute-efficiency wall" discussion above. |
+| `--moe-token-dispatcher-type` | `allgather` \| `alltoall` \| `flex` — the EP dispatch/combine implementation. |
+| `--moe-permute-fusion` | Fuses token-to-expert gather/scatter into surrounding kernels. |
+| `--moe-router-fusion` | Fused router kernel; requires TransformerEngine ≥2.7.0. |
+| `--moe-shared-expert-intermediate-size` | Size of an always-active "shared expert" FFN run alongside the routed experts (as in DeepSeek-MoE-style architectures). |
+| `--fp8-format` / `--fp8-recipe` | Selects the reduced-precision format/recipe used by the selective-precision path described above. |
+
+[Source: Megatron-LM, `megatron/training/arguments.py`](https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/training/arguments.py)
+
+The following is Megatron Core's own reference launch command for pretraining a Mixtral-8x7B-
+style MoE model across 32 GPUs (4 nodes × 8 GPUs), combining EP, ETP (Parallel Folding), and PP:
+
+```bash
+#!/bin/bash
+# 32-GPU (4-node) Mixtral 8x7B pretraining, adapted from megatron/core/transformer/moe/README.md
+GPUS_PER_NODE=8
+NNODES=4
+MASTER_ADDR=localhost
+MASTER_PORT=6000
+NODE_RANK=0
+WORLD_SIZE=$((GPUS_PER_NODE * NNODES))
+
+DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE --nnodes $NNODES --node_rank $NODE_RANK \
+    --master_addr $MASTER_ADDR --master_port $MASTER_PORT"
+
+MODEL_ARGS=(
+    --num-layers 32
+    --hidden-size 4096
+    --num-attention-heads 32
+    --seq-length 4096
+    --max-position-embeddings 32768
+)
+
+MOE_ARGS=(
+    --num-experts 8
+    --moe-router-topk 2
+    --moe-router-load-balancing-type aux_loss
+    --moe-aux-loss-coeff 1e-2
+    --moe-grouped-gemm
+    --moe-token-dispatcher-type alltoall
+)
+
+PARALLEL_ARGS=(
+    --tensor-model-parallel-size 1        # attention layers: TP=1
+    --expert-tensor-parallel-size 2       # MoE layers: ETP=2 -- Parallel Folding decouples this from TP above
+    --expert-model-parallel-size 8        # MoE layers: EP=8
+    --pipeline-model-parallel-size 4
+)
+
+torchrun $DISTRIBUTED_ARGS pretrain_gpt.py \
+    "${MODEL_ARGS[@]}" "${MOE_ARGS[@]}" "${PARALLEL_ARGS[@]}" \
+    --micro-batch-size 1 \
+    --global-batch-size 256 \
+    --train-iters 500000 \
+    --bf16
+```
+
+[Source: Megatron-LM, `megatron/core/transformer/moe/README.md`](https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/transformer/moe/README.md)
+
+The `--tensor-model-parallel-size 1` / `--expert-tensor-parallel-size 2` split in `PARALLEL_ARGS`
+is Parallel Folding in CLI form: attention runs with no tensor parallelism (TP=1) while the MoE
+FFN layers run at ETP=2, independently of the attention-layer setting — the constraint §3.6's
+prose describes (breaking the EP≤DP coupling by giving MoE layers their own tensor-parallel
+degree) is enforced purely by supplying different values to `--tensor-model-parallel-size` and
+`--expert-tensor-parallel-size` on the same command line.
+*Note: needs verification — exact default values and flag availability should be checked against
+the Megatron Core version actually installed, since MoE CLI flags have changed across releases.*
+
 ### 3.7 TorchTitan: A PyTorch-Native Training Platform
 
 Where §3.4's Megatron-LM and DeepSpeed are separate codebases layered on top of PyTorch — with
@@ -750,6 +845,535 @@ PyTorch distributed features as they land.
 for-feature comparison against Megatron-LM/DeepSpeed; the contrast above is this chapter's own
 synthesis from each project's stated design goals and verified scale, not a claim either
 project makes about the other.*
+
+**A practical user guide.** As of TorchTitan v0.3.0 (2026-09-03), the project's configuration
+system changed materially from earlier releases: TOML configuration files under
+`torchtitan/models/*/train_configs/*.toml` — the primary interface through v0.2.2 — have been
+replaced by a pure **Python dataclass config system** (`Trainer.Config`, populated via the
+`tyro` CLI library), selected with `--module`/`--config` flags rather than a `--job.config_file`
+path. Anyone following an older tutorial that references `.toml` files is looking at the
+legacy, pre-v0.3.0 interface; the Python system is what current TorchTitan actually runs.
+[Source: torchtitan, `run_train.sh`](https://github.com/pytorch/torchtitan/blob/v0.3.0/run_train.sh)
+[Source: torchtitan, `torchtitan/config/README.md`](https://github.com/pytorch/torchtitan/blob/v0.3.0/torchtitan/config/README.md)
+
+*Installation:*
+
+```bash
+# From source (recommended for tracking main)
+git clone https://github.com/pytorch/torchtitan
+cd torchtitan
+pip install -r requirements.txt
+
+# Nightly PyTorch + nightly torchtitan (swap cu130 for your platform, e.g. rocm6.3)
+pip3 install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu130 --force-reinstall
+pip install --pre torchtitan --index-url https://download.pytorch.org/whl/nightly/cu130
+
+# Stable release from PyPI
+pip install torchtitan
+```
+
+[Source: torchtitan, `README.md`](https://github.com/pytorch/torchtitan/blob/v0.3.0/README.md)
+
+*Configuration.* A run is defined by a Python function returning a `Trainer.Config` — e.g.
+`torchtitan/models/llama3/config_registry.py` — rather than a TOML file. The `ParallelismConfig`
+dataclass exposes the composable parallelism dimensions as explicit degree fields:
+`data_parallel_shard_degree` (`-1` consumes all leftover ranks), `data_parallel_replicate_degree`,
+`tensor_parallel_degree`, `pipeline_parallel_degree`, `context_parallel_degree`, and — for MoE
+models — `expert_parallel_degree` (default `1`). These must satisfy the mesh constraint
+`dp_shard * cp * tp == efsdp * ep`, i.e. the attention-layer mesh (data-parallel-shard ×
+context-parallel × tensor-parallel) and the expert-layer mesh (expert-FSDP × expert-parallel)
+must multiply out to the same total device count. Legacy `--section.option`-style CLI flags
+(e.g. `--parallelism.tensor_parallel_degree`) still work for backward compatibility but the
+project's stated direction is to phase them out in favor of `torchtitan_recipes`-style config
+functions.
+[Source: torchtitan, `torchtitan/config/configs.py`](https://github.com/pytorch/torchtitan/blob/v0.3.0/torchtitan/config/configs.py)
+[Source: torchtitan, `torchtitan/models/llama3/config_registry.py`](https://github.com/pytorch/torchtitan/blob/v0.3.0/torchtitan/models/llama3/config_registry.py)
+
+*Launching a run:*
+
+```bash
+# Quickstart: 8 GPUs, llama3_8b config
+MODULE=llama3 CONFIG=llama3_8b ./run_train.sh
+
+# What run_train.sh does under the hood (NGPU/MODULE/CONFIG default to 8/llama3/llama3_debugmodel)
+torchrun --nproc_per_node=${NGPU} --rdzv_backend c10d \
+    -m torchtitan.train --module ${MODULE} --config ${CONFIG}
+
+# Single-GPU dry-run validation without a real distributed backend
+COMM_MODE=fake_backend MODULE=llama3 CONFIG=llama3_debugmodel ./run_train.sh
+
+# Simulated multi-GPU behavior on one physical GPU (v0.3.0+)
+COMM_MODE=local_tensor MODULE=llama3 CONFIG=llama3_debugmodel ./run_train.sh
+
+# A custom recipe combining FSDP2 + context parallelism on 4 GPUs
+NGPU=4 MODULE=torchtitan_recipes.tests.features CONFIG=llama3_debugmodel_fsdp2_cp2 ./run_train.sh
+```
+
+`NGPU` must equal the product of the configured parallelism degrees — TorchTitan does not infer
+world size from the config, it only validates that the launched world size is consistent with it.
+[Source: torchtitan, `run_train.sh`](https://github.com/pytorch/torchtitan/blob/v0.3.0/run_train.sh)
+[Source: torchtitan, `torchtitan/config/README.md`](https://github.com/pytorch/torchtitan/blob/v0.3.0/torchtitan/config/README.md)
+
+*MoE model support.* `expert_parallel_degree` is consumed by several model families shipped in
+the repo: `deepseek_v3`, `deepseek_v4`, `gpt_oss`, `kimi_k2_7`, `kimi_k3`, `qwen3_5`, and
+`qwen3_8`.
+[Source: torchtitan, `torchtitan/models/deepseek_v3/config_registry.py`](https://github.com/pytorch/torchtitan/blob/v0.3.0/torchtitan/models/deepseek_v3/config_registry.py)
+*Note: needs verification — no `llama4` model directory exists under `torchtitan/models/` or
+`torchtitan/experiments/` at v0.3.0; a "Llama 4 MoE" entry should not be assumed present unless
+re-checked against the version in use.*
+
+*Checkpointing.* `BaseCheckpointManager.Config` exposes `enable`, `folder` (default
+`"checkpoint"`), `interval` (default `500` steps), `keep_latest_k` (default `10`), `load_step`
+(default `-1`, i.e. latest), `last_save_model_only`, `last_save_in_hf`, `initial_load_in_hf`, and
+`export_dtype`. The DCP-backed subclass adds `async_mode`, one of `"disabled"`, `"async"`, or
+`"async_with_pinned_mem"`. Checkpoints are written under `<folder>/step-<N>` (e.g.
+`checkpoints/step-100`), reusing PyTorch's Distributed Checkpoint (DCP) format for the
+sharding-topology-agnostic reshard-on-load behavior §6.4 covers generally.
+[Source: torchtitan, `torchtitan/components/checkpointer/dcp.py`](https://github.com/pytorch/torchtitan/blob/v0.3.0/torchtitan/components/checkpointer/dcp.py)
+[Source: torchtitan, `torchtitan/components/checkpointer/base.py`](https://github.com/pytorch/torchtitan/blob/v0.3.0/torchtitan/components/checkpointer/base.py)
+
+*Compile and quantized training.* `CompileConfig` exposes `enable`, `components` (default
+`["model", "loss"]`), `backend` (default `"inductor"`), and `enable_async_tensor_parallel`.
+MXFP8 quantized training additionally requires an NVIDIA B200-class GPU (SM100/SM100a), a
+PyTorch nightly, and TorchAO ≥0.18.0 (with the `nvidia-cutlass-dsl`/`apache-tvm-ffi`
+dependencies); it uses 1×32 block scaling with `torch.float8_e4m3fn` storage, and is invoked by
+selecting a config such as `llama3_debugmodel_mxfp8()`, which supplies an MXFP8 converter in the
+model's `converters` list.
+[Source: torchtitan, `torchtitan/components/quantization/mxfp8/README.md`](https://github.com/pytorch/torchtitan/blob/v0.3.0/torchtitan/components/quantization/mxfp8/README.md)
+*Note: needs verification — the MXFP8 README's dedicated "Usage" code snippet was not
+independently re-verified for this chapter; the `llama3_debugmodel_mxfp8()`-style config-registry
+pattern shown above is a verified substitute, not a direct quote of that snippet.*
+
+### 3.8 DistributedDataParallel (DDP)
+
+`torch.nn.parallel.DistributedDataParallel` (DDP) is PyTorch's original, and still most widely
+deployed, data-parallel wrapper — the mechanism §3.1 refers to when it says "scaling DDP/FSDP
+across nodes." Every rank holds a full replica of the model; DDP registers autograd hooks on
+each parameter so that, as gradients become ready during the backward pass, they are bucketed
+and reduced with an AllReduce, overlapping communication with the remaining backward computation
+rather than waiting for the whole backward pass to finish first.
+
+```python
+import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+dist.init_process_group(backend="nccl")
+rank = dist.get_rank()
+torch.cuda.set_device(rank)
+
+model = MyModel().to(rank)
+ddp_model = DDP(model, device_ids=[rank])
+
+optimizer = torch.optim.AdamW(ddp_model.parameters(), lr=1e-4)
+for inputs, targets in dataloader:
+    optimizer.zero_grad()
+    loss = loss_fn(ddp_model(inputs.to(rank)), targets.to(rank))
+    loss.backward()   # gradient AllReduce happens here, overlapped with backward compute
+    optimizer.step()
+```
+
+[Source: PyTorch, `torch.nn.parallel.DistributedDataParallel` docs](https://docs.pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html)
+[Source: PyTorch, "Getting Started with Distributed Data Parallel"](https://docs.pytorch.org/tutorials/intermediate/ddp_tutorial.html)
+
+For gradient accumulation over several micro-batches before an optimizer step, wrapping the
+non-final micro-batches in `ddp_model.no_sync()` suppresses the per-backward-pass AllReduce so
+that only the last micro-batch in the accumulation window triggers communication:
+
+```python
+for i, (inputs, targets) in enumerate(dataloader):
+    is_last_microbatch = (i + 1) % grad_accum_steps == 0
+    context = ddp_model.no_sync() if not is_last_microbatch else contextlib.nullcontext()
+    with context:
+        loss = loss_fn(ddp_model(inputs), targets) / grad_accum_steps
+        loss.backward()
+    if is_last_microbatch:
+        optimizer.step()
+        optimizer.zero_grad()
+```
+
+[Source: PyTorch, `DistributedDataParallel.no_sync` docs](https://docs.pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html#torch.nn.parallel.DistributedDataParallel.no_sync)
+
+DDP's central limitation is the one §3.4 motivates ZeRO/FSDP around: every rank stores a full
+copy of parameters, gradients, and optimizer state, so per-GPU memory does not shrink as more
+GPUs are added — DDP scales throughput, not per-GPU model capacity. §3.9 covers FSDP2, PyTorch's
+current answer to that limitation.
+
+### 3.9 Fully Sharded Data Parallel (FSDP2)
+
+FSDP2 is PyTorch's per-parameter data-parallel sharding implementation, exposed through the
+`fully_shard` API in `torch.distributed.fsdp`. Where DDP (§3.8) replicates full parameters on
+every rank, FSDP2 shards each parameter's storage across the data-parallel group and
+all-gathers only the shards a given forward/backward step actually needs, then reshards
+afterward — the same ZeRO-3-style memory/communication trade-off §3.4 introduces, but
+implemented as PyTorch-native `DTensor`-backed sharding rather than a separate framework.
+
+`fully_shard` is applied module-by-module, conventionally from the innermost transformer blocks
+outward to the root model, so that each call wraps progressively more of the model in its own
+sharding/communication group:
+
+```python
+from torch.distributed.fsdp import fully_shard, MixedPrecisionPolicy, CPUOffloadPolicy
+
+mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
+
+for layer in model.layers:               # shard each transformer block first
+    fully_shard(layer, mp_policy=mp_policy)
+fully_shard(model, mp_policy=mp_policy)   # then the root model
+
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+for inputs, targets in dataloader:
+    optimizer.zero_grad()
+    loss = loss_fn(model(inputs), targets)
+    loss.backward()
+    optimizer.step()
+```
+
+[Source: PyTorch, "Getting Started with Fully Sharded Data Parallel (FSDP2)"](https://docs.pytorch.org/tutorials/intermediate/FSDP1_tutorial.html)
+[Source: PyTorch, `torch.distributed.fsdp.fully_shard` docs](https://docs.pytorch.org/docs/stable/distributed.fsdp.fully_shard.html)
+
+Key configuration knobs on `fully_shard`:
+
+- **`reshard_after_forward`** — whether to free the all-gathered full parameters immediately
+  after the forward pass (trading extra all-gather traffic in backward for lower peak memory) or
+  keep them materialized until backward completes (the opposite trade-off); this is the
+  per-module lever for tuning the memory/communication balance FSDP2 exposes.
+- **`MixedPrecisionPolicy`** — controls the dtype used for sharded parameter storage
+  (`param_dtype`) separately from the dtype used for gradient reduction (`reduce_dtype`), so a
+  model can compute in bfloat16 while still reducing gradients in float32 for numerical
+  stability.
+- **`CPUOffloadPolicy`** — offloads sharded parameters to host memory between uses, extending
+  effective GPU memory capacity at the cost of PCIe transfer latency, for models too large to fit
+  even in sharded form across the available GPUs.
+
+[Source: PyTorch, `torch.distributed.fsdp` docs](https://docs.pytorch.org/docs/stable/fsdp.html)
+
+*Note: needs verification — current PyTorch tutorials describe the original FSDP1 wrapper
+(`torch.distributed.fsdp.FullyShardedDataParallel`) as being superseded by FSDP2/`fully_shard`
+for new code; whether FSDP1 carries a formal deprecation warning as of the PyTorch version in use
+should be re-checked rather than assumed, since this varies by release.*
+
+### 3.10 Tensor Parallel (TP)
+
+PyTorch's native Tensor Parallel API — `torch.distributed.tensor.parallel` — implements the same
+intra-layer sharding strategy §3.2 introduces conceptually (splitting individual weight matrices
+across GPUs so that a single large linear layer's GEMM is computed as several smaller, parallel
+GEMMs), but expressed as `DTensor` sharding annotations applied to an existing model rather than
+a rewritten model-parallel layer implementation.
+
+```python
+from torch.distributed.tensor.parallel import (
+    parallelize_module, ColwiseParallel, RowwiseParallel, SequenceParallel,
+)
+from torch.distributed.device_mesh import init_device_mesh
+
+tp_mesh = init_device_mesh("cuda", (8,))
+
+parallelize_module(
+    model,
+    tp_mesh,
+    {
+        "attention.wq": ColwiseParallel(),
+        "attention.wk": ColwiseParallel(),
+        "attention.wv": ColwiseParallel(),
+        "attention.wo": RowwiseParallel(),
+        "feed_forward.w1": ColwiseParallel(),
+        "feed_forward.w2": RowwiseParallel(),
+        "norm": SequenceParallel(),
+    },
+)
+```
+
+[Source: PyTorch, "Large Scale Transformer model training with Tensor Parallel"](https://docs.pytorch.org/tutorials/intermediate/TP_tutorial.html)
+[Source: PyTorch, `torch.distributed.tensor.parallel` docs](https://docs.pytorch.org/docs/stable/distributed.tensor.parallel.html)
+
+`ColwiseParallel` shards a linear layer's output dimension (each rank computes a column-slice of
+the output, requiring no communication until the result is consumed), `RowwiseParallel` shards
+the input/contraction dimension (requiring an AllReduce to sum partial results across ranks —
+the mechanism §3.2 describes for TP's per-layer communication cost), and `SequenceParallel`
+extends sharding to the sequence dimension for the norm/dropout layers that sit between
+column-wise and row-wise sharded blocks, avoiding replicating those activations on every rank.
+`loss_parallel()` is a context manager that computes the loss directly against a still-sharded
+final-layer output, avoiding an unnecessary all-gather of the full vocabulary-sized logits
+tensor purely to compute a scalar loss.
+
+*Note: needs verification / explicitly flagged by upstream — as of PyTorch 2.13 and 2.14, the
+official documentation states plainly: "Tensor Parallelism APIs are experimental and subject to
+change." Code built against `torch.distributed.tensor.parallel` should be pinned to a tested
+PyTorch version and re-validated on upgrade, unlike DDP (§3.8) or FSDP2 (§3.9), which are
+stable APIs.*
+
+TP is rarely used alone — it is usually composed with FSDP2 across two dimensions of a
+`DeviceMesh` (§3.11), tensor-parallel within a node (where TP's AllReduce can use fast NVLink)
+and FSDP-sharded across nodes:
+
+```python
+# 2D composition: TP within a node, FSDP2 across nodes -- adapted from
+# github.com/pytorch/examples/blob/main/distributed/tensor_parallelism/fsdp_tp_example.py
+mesh_2d = init_device_mesh("cuda", (dp_size, tp_size), mesh_dim_names=("dp", "tp"))
+tp_mesh = mesh_2d["tp"]
+dp_mesh = mesh_2d["dp"]
+
+parallelize_module(model, tp_mesh, {"attention.wq": ColwiseParallel(), ...})
+fully_shard(model, mesh=dp_mesh)
+```
+
+[Source: PyTorch examples, `distributed/tensor_parallelism/fsdp_tp_example.py`](https://github.com/pytorch/examples/blob/main/distributed/tensor_parallelism/fsdp_tp_example.py)
+*Note: this replaces an earlier reference to `torchtitan/models/llama3/parallelize.py`, which no
+longer exists at that path after a torchtitan refactor (current equivalents live in
+`torchtitan/distributed/tensor_parallel.py` and per-model `sharding.py` files, §3.7); the
+`pytorch/examples` file above is the current, stable citation for this composition pattern.*
+
+### 3.11 Device Mesh
+
+`torch.distributed.device_mesh.init_device_mesh` is the shared abstraction underneath §3.8–§3.10
+and TorchTitan's `ParallelismConfig` (§3.7): a `DeviceMesh` is an N-dimensional array of ranks,
+where each dimension corresponds to one parallelism strategy (data-parallel, tensor-parallel,
+pipeline stage, context-parallel, and so on), and PyTorch's parallelism APIs consume mesh
+objects — or named sub-meshes sliced out of a larger mesh — rather than raw process groups.
+
+```python
+from torch.distributed.device_mesh import init_device_mesh
+
+# 32 GPUs arranged as an 8 (data-parallel) x 4 (tensor-parallel) 2D mesh
+mesh_2d = init_device_mesh("cuda", (8, 4), mesh_dim_names=("dp", "tp"))
+
+dp_mesh = mesh_2d["dp"]   # sub-mesh: the data-parallel dimension only
+tp_mesh = mesh_2d["tp"]   # sub-mesh: the tensor-parallel dimension only
+
+fully_shard(model, mesh=dp_mesh)
+parallelize_module(model, tp_mesh, {...})
+```
+
+[Source: PyTorch, `torch.distributed.device_mesh.init_device_mesh` docs](https://docs.pytorch.org/docs/stable/distributed.html#torch.distributed.device_mesh.init_device_mesh)
+
+Slicing a mesh by dimension name (`mesh_2d["dp"]`, `mesh_2d["tp"]`) is what lets a single
+`init_device_mesh` call at the top of a training script feed every downstream parallelism API —
+FSDP2's `fully_shard(mesh=...)`, TP's `parallelize_module(mesh, ...)`, and pipeline-parallel
+stage assignment — with a consistent, non-overlapping view of which ranks belong to which
+strategy, rather than each API independently constructing and tracking its own process groups
+the way pre-`DeviceMesh` PyTorch code had to.
+
+### 3.12 RPC-based Distributed Training
+
+`torch.distributed.rpc` predates DDP/FSDP2's data-parallel model and implements a general
+remote-procedure-call primitive: a rank can invoke a function on another rank's process
+(`rpc_sync`/`rpc_async`) or construct a live handle to an object living on a remote rank
+(`remote`, returning an `RRef`), rather than every rank executing identical code in lockstep. Its
+main current use is parameter-server-style architectures, where worker ranks hold data/model
+shards but a small number of dedicated server ranks own optimizer state.
+
+```python
+import torch.distributed.rpc as rpc
+
+rpc.init_rpc(name=f"worker{rank}", rank=rank, world_size=world_size)
+
+if rank == 0:
+    # Invoke a function on rank 1's process and block for the result
+    result = rpc.rpc_sync("worker1", some_function, args=(x, y))
+
+    # Construct a remote reference to a parameter-server object living on rank 1
+    ps_rref = rpc.remote("worker1", ParameterServer, args=(model_config,))
+    fut = ps_rref.rpc_async().update(gradients)
+    fut.wait()
+
+rpc.shutdown()
+```
+
+[Source: PyTorch, `torch.distributed.rpc` docs](https://docs.pytorch.org/docs/stable/rpc.html)
+[Source: PyTorch, "Implementing a Parameter Server Using Distributed RPC Framework"](https://docs.pytorch.org/tutorials/intermediate/rpc_param_server_tutorial.html)
+
+Per current official documentation, RPC is **"stable and in maintenance mode"** — actively
+supported, but not receiving new feature development, as PyTorch's distributed-training
+investment has shifted toward the DTensor/FSDP2/TP stack (§3.9–§3.10). This is distinct from
+"deprecated": some community discussion (e.g. GitHub issue #149393) characterizes RPC as
+deprecated or scheduled for removal, but that reading is not corroborated by the official docs
+as of this writing and should be treated as unconfirmed rather than repeated as fact.
+[Source: PyTorch, `torch.distributed.rpc` docs](https://docs.pytorch.org/docs/stable/rpc.html)
+*Note: needs verification — RPC's maintenance-mode status and the community claims to the
+contrary should be re-checked against the PyTorch release actually targeted, since this is an
+area of active discussion upstream.*
+
+One RPC-based API is confirmed fully removed rather than merely deprecated: the old
+`torch.distributed.pipeline.sync.Pipe` pipeline-parallelism implementation (built on RPC) is gone
+as of roughly PyTorch 2.4, replaced by `torch.distributed.pipelining` — a non-RPC pipeline-
+parallel implementation migrated from the standalone PiPPy project — which is what §3.3's and
+§3.7's pipeline-parallelism coverage refers to for current PyTorch code.
+[Source: PyTorch, `torch.distributed.pipelining` docs](https://docs.pytorch.org/docs/stable/distributed.pipelining.html)
+
+### 3.13 Monarch Framework
+
+**Monarch** (`github.com/meta-pytorch/monarch`, PyPI package `torchmonarch`) is an actor-based,
+single-controller distributed programming framework for PyTorch, built by Meta's PyTorch team.
+Where DDP/FSDP2/TP (§3.8–§3.10) are *data-parallel/model-parallel execution mechanisms* — every
+rank runs the same training step, and the framework's job is to shard tensors and insert
+collectives — Monarch is an *orchestration layer* sitting above those mechanisms: a Python
+frontend drives a mesh of remote actor processes (backed by a Rust runtime, `hyperactor` and
+`hyperactor_mesh`) from a single controller script, closer in spirit to Ray or a distributed
+actor system than to DDP's SPMD model. Monarch does not replace DDP/FSDP2/TP — a Monarch actor
+can itself run a standard FSDP2 training step internally; Monarch's contribution is coordinating,
+scheduling, and fault-handling across many such actors/processes from one script.
+[Source: Meta, `meta-pytorch/monarch` GitHub repository](https://github.com/meta-pytorch/monarch)
+
+```python
+import monarch
+from monarch.actor import Actor, endpoint
+
+class TrainerActor(Actor):
+    @endpoint
+    def train_step(self, batch):
+        ...
+        return loss.item()
+
+# Spawn a mesh of actor processes across a process mesh
+proc_mesh = monarch.proc_mesh(gpus=8)
+trainers = proc_mesh.spawn("trainers", TrainerActor)
+
+# Call an endpoint across every actor in the mesh
+losses = trainers.train_step.call(batch).get()
+```
+
+[Source: Meta, `meta-pytorch/monarch` GitHub repository](https://github.com/meta-pytorch/monarch)
+
+Install with `pip install torchmonarch`. Monarch was announced 2025-10-22/23 and was at v0.6.0
+at the time of this writing — it is **explicitly experimental and not production-stable**, and
+its API surface should be expected to change across releases. It is the foundation for
+`torchforge`, a reinforcement-learning post-training library, and integrates with `TorchFT` for
+fault-tolerant training, extending fault handling to the actor-mesh level rather than requiring
+each individual training script to implement its own retry/restart logic.
+[Source: Meta, `meta-pytorch/monarch` GitHub repository](https://github.com/meta-pytorch/monarch)
+*Note: needs verification — Monarch's API is under active, rapid development; code samples above
+should be re-checked against the installed `torchmonarch` version before being treated as stable
+usage guidance.*
+
+### 3.14 Custom Extensions
+
+Every parallelism strategy in §3.8–§3.13 eventually bottoms out in PyTorch operators; writing a
+new fused kernel — a custom collective, a fused MoE dispatch kernel, or simply a faster attention
+variant — requires registering it as a PyTorch custom operator rather than hand-editing PyTorch
+internals. `torch.utils.cpp_extension` provides the build path, and `torch.library` provides the
+registration/autograd/`torch.compile` integration path.
+
+*Build path.* Two routes exist: ahead-of-time compilation via a `setup.py` using
+`CppExtension`/`CUDAExtension` + `BuildExtension`, or just-in-time compilation via
+`torch.utils.cpp_extension.load()`/`load_inline()` for iterating without a separate build step.
+A real, buildable `setup.py` from PyTorch's own reference extension repository:
+
+```python
+from setuptools import setup
+from torch.utils.cpp_extension import CppExtension, CUDAExtension, BuildExtension, CUDA_HOME
+import torch
+
+use_cuda = torch.cuda.is_available() and CUDA_HOME is not None
+extension = CUDAExtension if use_cuda else CppExtension
+sources = ["extension_cpp/csrc/muladd.cpp"] + (
+    ["extension_cpp/csrc/cuda/muladd_kernel.cu"] if use_cuda else []
+)
+
+setup(
+    name="extension_cpp",
+    ext_modules=[extension(
+        "extension_cpp._C", sources,
+        extra_compile_args={"cxx": ["-O3", "-DPy_LIMITED_API=0x03090000"], "nvcc": ["-O3"]},
+        py_limited_api=True,   # requires torch >= 2.6.0
+    )],
+    cmdclass={"build_ext": BuildExtension},
+    options={"bdist_wheel": {"py_limited_api": "cp39"}},
+)
+```
+
+[Source: PyTorch, `pytorch/extension-cpp`, `extension_cpp/setup.py`](https://github.com/pytorch/extension-cpp/blob/main/extension_cpp/setup.py)
+[Source: PyTorch, `torch.utils.cpp_extension` docs](https://docs.pytorch.org/docs/stable/cpp_extension.html)
+
+*Operator registration.* Current PyTorch documentation presents two C++ registration paths: the
+traditional non-ABI-stable `at::Tensor`/`TORCH_LIBRARY`/`TORCH_LIBRARY_IMPL` macros, and a newer
+**ABI-stable** path (`torch::stable::Tensor`, `STABLE_TORCH_LIBRARY`/`STABLE_TORCH_LIBRARY_IMPL`,
+`TORCH_BOX()` boxing), recommended starting with PyTorch 2.10 because a single compiled `.so`
+built against the stable ABI can run across multiple LibTorch versions without recompilation.
+Plain `TORCH_LIBRARY` remains the fallback for pre-2.10 PyTorch or for APIs not yet exposed on
+the stable surface.
+
+```cpp
+// ABI-stable registration path (PyTorch >= 2.10)
+STABLE_TORCH_LIBRARY(extension_cpp, m) {
+  m.def("mymuladd(Tensor a, Tensor b, float c) -> Tensor");
+}
+STABLE_TORCH_LIBRARY_IMPL(extension_cpp, CUDA, m) {
+  m.impl("mymuladd", TORCH_BOX(&mymuladd_cuda));
+}
+```
+
+[Source: PyTorch, "Custom C++ and CUDA Operators"](https://docs.pytorch.org/tutorials/advanced/cpp_custom_ops.html)
+*Note: the classic `pytorch.org/tutorials/advanced/cpp_extension.html` ("LLTM") tutorial this
+material used to live under has been retired; `cpp_custom_ops.html` is the current, correct
+citation for C++/CUDA custom-operator registration.*
+
+Every custom operator also needs a `register_fake` meta kernel — shape/dtype-only, touching no
+real data — so that `torch.compile`/`torch.export` can trace through it without executing the
+real (C++/CUDA/Triton) implementation:
+
+```python
+@torch.library.register_fake("extension_cpp::mymuladd")
+def _(a, b, c):
+    return torch.empty_like(a)
+```
+
+[Source: PyTorch, "Custom C++ and CUDA Operators"](https://docs.pytorch.org/tutorials/advanced/cpp_custom_ops.html)
+
+*Python-only path.* For operators that don't need C++/CUDA at all (e.g. wrapping an existing
+NumPy/SciPy call, or a pure-Python fallback), `torch.library.custom_op` registers a Python
+function directly as a PyTorch operator:
+
+```python
+import torch
+from torch import Tensor
+
+@torch.library.custom_op("mylib::numpy_sin", mutates_args=())
+def numpy_sin(x: Tensor) -> Tensor:
+    x_np = x.numpy()
+    return torch.from_numpy(np.sin(x_np))
+
+@numpy_sin.register_fake
+def _(x):
+    return torch.empty_like(x)
+```
+
+[Source: PyTorch, "Python Custom Operators"](https://docs.pytorch.org/tutorials/advanced/python_custom_ops.html)
+
+*Triton kernels.* For Triton kernels specifically, `torch.library.triton_op` combined with
+`wrap_triton` is preferred over a plain `custom_op` wrapper when `torch.compile` compatibility
+matters: `torch.compile` traces *into* a `triton_op`-registered kernel to apply its own
+optimizations, whereas `custom_op` treats the operator as an opaque, un-traceable callable.
+Per PyTorch's own compatibility table, plain Triton kernels and `triton_op` support AOTInductor
+export and subsystems like `FlopCounterMode` and CPU fallback, while `custom_op` does not support
+AOTInductor but does guarantee `fullgraph=True` compilation in all cases — the choice between
+them is a trade-off, not a strict upgrade in either direction.
+
+```python
+from torch.library import triton_op, wrap_triton
+
+@triton_op("mylib::mysin", mutates_args={})
+def mysin(x: torch.Tensor) -> torch.Tensor:
+    out = torch.empty_like(x)
+    wrap_triton(sin_kernel)[(x.numel(),)](x, out, x.numel(), BLOCK_SIZE=4)
+    return out
+```
+
+[Source: PyTorch, "Using User-Defined Triton Kernels with `torch.compile`"](https://docs.pytorch.org/tutorials/recipes/torch_compile_user_defined_triton_kernel_tutorial.html)
+
+*Autograd.* For operators that need to participate in training, `torch.library.register_autograd`
+is the explicitly recommended way to add a backward pass — preferred over directly subclassing
+`torch.autograd.Function`, per the tutorial's own stated warning: some compositions of
+`autograd.Function` with PyTorch's operator-registration APIs have led to silent numerical
+incorrectness when combined with `torch.compile`. Mechanically, `op.register_autograd(backward,
+setup_context=setup_context)` registers a backward function that must itself be composed only of
+operators PyTorch already understands (a Triton call used inside a backward must itself be
+wrapped in its own `triton_op`).
+[Source: PyTorch, "Python Custom Operators"](https://docs.pytorch.org/tutorials/advanced/python_custom_ops.html)
+*Note: needs verification — the exact PyTorch version where `register_autograd` became the
+documented default recommendation over `torch.autograd.Function` should be checked against the
+version actually targeted; this is presented here as current guidance, not a historical claim
+about when it changed.*
 
 ## 4. GPU-Initiated Communication: NVSHMEM and NCCL Extensions
 
