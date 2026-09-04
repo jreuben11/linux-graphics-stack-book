@@ -108,6 +108,7 @@ This chapter examines the full software path from a **GGUF** file on disk to gen
   - **OrtOpenVINOProviderOptions** and its V2 key-value configuration
   - the **Level Zero** backend routing **Intel Arc** compute through the **Intel Graphics Compiler** (**IGC**)
   - heterogeneous execution via **HETERO:NPU,GPU,CPU** across Intel **NPU**, **iGPU**, and CPU
+  - a comparison of embeddable inference runtimes and compilers — **ONNX Runtime**, raw **NVIDIA TensorRT**, standalone **OpenVINO**, and PyTorch's **torch.compile**/AOTInductor — by model formats ingested, hardware backends, deployment style, and audience
 - **Section 8 — ROCm MIOpen and HIP**
   - the **HIP** programming model and runtime (**hipMalloc**, **hipMemcpy**, **hipLaunchKernelGGL**)
   - GEMM via **rocBLAS** (**rocblas_gemm_ex**) and **hipBLASLt** with **TunableOp** auto-selection
@@ -165,6 +166,7 @@ This chapter examines the full software path from a **GGUF** file on disk to gen
   - a concrete local NIM deployment via `docker run --runtime=nvidia`
   - the free developer-program tier versus the licensed NVIDIA AI Enterprise production path
   - GPU rental (RunPod, Lambda, Vast.ai, CoreWeave) as a hardware-only alternative to NGC/NIM's software stack
+  - the local-to-managed deployment spectrum, from self-hosted runners through self-built engines, curated containers, and GPU rental, to the fully managed platforms of §28–§30
 - **Section 18 — Docker Model Runner**
   - Docker Model Runner's architecture: a vendored `llama-server` binary running natively on the host rather than inside a container
   - native Linux support via `docker-model-plugin` and the `docker model` CLI verb group
@@ -179,6 +181,7 @@ This chapter examines the full software path from a **GGUF** file on disk to gen
   - `hf download` with `--include`/`--exclude` glob filtering for pulling a single GGUF quantisation out of a multi-file repo
   - the `~/.cache/huggingface/hub` blob/snapshot/refs cache layout and its deduplication behaviour
   - the **Xet**-based transfer-acceleration backend that replaced `hf_transfer`
+  - a comparison of model weight distribution mechanisms — HF Hub, the **Ollama registry**, **OCI artifacts** (Docker Model Runner), **ModelScope**, and plain `git`+LFS — by content-addressing/dedup scheme, auth model, native format, and ecosystem
 - **Section 21 — Fine-Tuning Acceleration with Unsloth**
   - **Unsloth**'s hand-written Triton kernels and manually-derived backward pass for faster, lower-VRAM LoRA/QLoRA fine-tuning
   - its NVIDIA CUDA-primary support alongside newer AMD ROCm and Intel/CPU paths
@@ -209,6 +212,7 @@ This chapter examines the full software path from a **GGUF** file on disk to gen
   - routing built on the Kubernetes SIG Gateway API Inference Extension
   - cluster-scale prefill/decode disaggregation and prefix-cache-aware request routing, contrasted with §14's single-process connectors
   - **Ray Serve** and **KubeRay** as a general-purpose, Ray-based alternative path to distributed vLLM serving on Kubernetes, with **Anyscale** as its managed offering
+  - a technical-capability comparison of llm-d, Ray Serve/KubeRay, and **NVIDIA Dynamo** by governance, Kubernetes integration mechanism, disaggregation approach, and autoscaling
 - **Section 28 — Managed Inference Platforms: AWS Bedrock and Bedrock AgentCore**
   - Bedrock's fully managed FM API, its Trainium2/Inferentia2 Neuron-SDK compute substrate, and On-Demand/Provisioned-Throughput/Batch billing
   - Guardrails' content/PII filters and contextual grounding checks, and Knowledge Bases' managed RAG pipeline
@@ -863,6 +867,21 @@ For LLM inference where some attention operations are not yet supported on Intel
 
 On Intel Arc A770 (512 EU, ~8 TFLOPS FP16), llama.cpp with Vulkan reaches approximately 1,074 tokens/s prompt processing and 53 tokens/s generation on Llama-3-8B Q4\_0 (see §3.5 benchmarks). ORT+OpenVINO on the same GPU with an FP16 ONNX model shows competitive generation speed for smaller models, with advantage in batch throughput scenarios due to OpenVINO's graph-level optimisations. Note: direct ORT-vs-llama.cpp numbers are architecture-dependent; verify against your model and driver version.
 
+### 7.5 Comparison: Embeddable Inference Runtimes and Compilers
+
+ONNX Runtime (§6–§7) is one of several ways to embed inference directly into an application process rather than calling out to a standalone server — a different problem from §5.7's single-format local runners (which ship their own CLI/GUI and model-management layer) and from §13/§22/§26's cluster-scale serving engines (which exist specifically to be a server). NVIDIA TensorRT, Intel OpenVINO used as a standalone toolkit rather than through ORT's OpenVINO EP (§7.1–§7.4), and PyTorch's `torch.compile`/AOTInductor compiler stack occupy the same "library, not a service" category, each trading ONNX Runtime's cross-vendor portability for deeper optimisation on one specific hardware vendor or framework:
+
+| **Runtime/compiler** | **License** | **Primary use case** | **Model formats ingested** | **Hardware backends** | **Deployment style** | **Typical audience** |
+|---|---|---|---|---|---|---|
+| ONNX Runtime (§6–§7) | MIT | Cross-vendor inference via pluggable Execution Providers | ONNX natively; PyTorch/TensorFlow via export to ONNX | CUDA, TensorRT, ROCm, OpenVINO (Intel), DirectML, CoreML, CPU | Embedded library, no bundled server | App developers targeting multiple GPU vendors from one API |
+| NVIDIA TensorRT (raw engine, distinct from TensorRT-LLM, §22) | Proprietary core SDK; Apache 2.0 for the parsers/plugins/samples in the `NVIDIA/TensorRT` repo | Maximum-throughput, ahead-of-time-compiled inference on NVIDIA hardware | ONNX via TensorRT's native parser; PyTorch via Torch-TensorRT; Hugging Face models via Optimum-NVIDIA | NVIDIA CUDA GPUs only, including Jetson edge devices | Embedded library — builds a serialized "engine" file, not a server itself | NVIDIA-exclusive deployments optimising for lowest latency/highest throughput |
+| OpenVINO (standalone Runtime API, vs. its role as an ORT EP in §7.1–§7.4) | Apache 2.0 | Intel-hardware inference, edge- and client-focused | Direct ingestion of PyTorch, TensorFlow, ONNX, Keras, PaddlePaddle, and JAX/Flax, plus Hugging Face models via Optimum Intel — in addition to its own IR format | Intel CPU (x86/ARM), integrated/discrete GPU, NPU | Embeddable Runtime API (Python/C++/C/Node.js), or via ORT's OpenVINO EP | Intel-platform application and edge developers |
+| PyTorch `torch.compile` / AOTInductor | BSD-3 (PyTorch core) | In-framework JIT or ahead-of-time compilation of PyTorch models, no separate model-format conversion step | Native PyTorch `nn.Module` graphs, captured via TorchDynamo (`torch.compile`) or `torch.export` (AOTInductor) | CUDA, ROCm, CPU — TorchInductor emits Triton kernels on GPU, C++/OpenMP on CPU | In-process JIT (`torch.compile`), or an ahead-of-time-compiled `.pt2` artifact for non-Python deployment (AOTInductor) | PyTorch-native teams who want compiled-graph speed without leaving the framework |
+
+[Source](https://github.com/NVIDIA/TensorRT) [Source](https://github.com/NVIDIA/TensorRT/blob/main/LICENSE) [Source](https://github.com/openvinotoolkit/openvino) [Source](https://docs.pytorch.org/docs/main/user_guide/torch_compiler/torch.compiler_aot_inductor.html)
+
+Two of these four converge toward ONNX Runtime's cross-vendor goal from different directions — OpenVINO now ingests PyTorch/TensorFlow/ONNX directly rather than requiring IR conversion, narrowing the practical difference between "use OpenVINO standalone" and "use ORT with the OpenVINO EP" to whether the surrounding application already speaks ORT's API — while TensorRT and `torch.compile` stay deliberately single-vendor/single-framework in exchange for optimisation depth ORT's EP abstraction layer cannot reach.
+
 ---
 
 ## 8. ROCm MIOpen and HIP for LLM Inference
@@ -1482,6 +1501,20 @@ Downloadable NIM containers are free to pull and run under an NVIDIA Developer P
 
 Where NIM and NGC package a specific software stack, several vendors instead sell the underlying hardware itself as an alternative to buying a workstation GPU or committing to a hyperscaler's own compute (Bedrock's Trainium/Inferentia in §28.1, Workers AI's GPU fleet in §30.1). **RunPod** offers both a "Community Cloud" of third-party-hosted, cheaper GPU capacity and a "Secure Cloud" of RunPod-operated capacity at a premium, alongside per-second-billed Serverless GPU endpoints aimed specifically at inference workloads. [Source](https://www.runpod.io/pricing) **Lambda** runs on-demand and reserved GPU instances with per-minute billing and no egress fees, on top of its own pre-configured CUDA/PyTorch "Lambda Stack" image; reserved-instance discounts are reported in the 19–42% range for one-year commitments. [Source](https://lambda.ai/service/gpu-cloud) **Vast.ai** sits at the lowest-friction end of the spectrum: a peer-to-peer marketplace where individual hosts set GPU prices directly with no platform markup added by Vast.ai, spanning On-Demand, Interruptible (bid-based, cheaper, preemptible), and Reserved tiers across dozens of GPU types. [Source](https://vast.ai/pricing) **CoreWeave** sits at the opposite, enterprise end of the spectrum: a Kubernetes-native GPU cloud (its own managed control plane, Fleet and Node LifeCycle Controllers) built specifically around NVIDIA's newest hardware generations (GB300/GB200 NVL72, HGX B300/B200) at cluster scale, with committed-usage discounts reported up to 60% — positioned for sustained, large-scale training and inference clusters rather than the opportunistic capacity a marketplace like Vast.ai is built to offer. [Source](https://www.coreweave.com/pricing) All four sell GPU-hours, not managed inference: running vLLM, Ollama, or any other engine from earlier in this chapter on the rented hardware remains the operator's own responsibility, unlike the fully managed platforms in §28–§30.
 
+### 17.5 The Local-to-Managed Deployment Spectrum
+
+§5.7's local runners, §13/§16/§22/§26's self-built serving engines, NIM's curated containers, §17.4's GPU rental, and §28–§30's fully managed platforms are not independent choices so much as points along a single spectrum trading operational control for reduced operational burden:
+
+| **Tier** | **Example** | **Control over stack** | **Ops burden** | **Cost model** | **Vendor lock-in** |
+|---|---|---|---|---|---|
+| Self-hosted local runner | llama.cpp, Ollama, LM Studio (§5.7) | Full — every layer from GPU driver to weights is the operator's | Highest — driver install, model management, no built-in scaling | Owned-hardware capex + electricity | None — GGUF/safetensors and OpenAI-compatible APIs are portable |
+| Self-built serving engine | vLLM, SGLang, TensorRT-LLM (§13, §22, §26) | Full over the software stack; hardware still owned or rented separately | High — engine tuning, batching config, own scaling/observability | Owned-hardware capex, or rented GPU-hours below | Low — mostly open formats, though TensorRT engines are hardware-pinned |
+| Curated container | NIM (§17), Docker Model Runner (§18) | Software stack pre-chosen by the vendor; hardware still self-managed | Medium — pull-and-run, but tied to the vendor's supported model/GPU matrix | NIM: free dev tier, licensed for production; DMR: free (Apache 2.0) | Medium — NIM couples to NVIDIA AI Enterprise licensing and its supported-hardware matrix |
+| GPU rental | RunPod, Lambda, Vast.ai, CoreWeave (§17.4) | Full over software; hardware is rented, not owned | Medium — no hardware procurement, but the inference stack is still self-operated | Per-second/per-minute GPU-hour billing, no capex | Low — same portable software stack as the rows above, on someone else's GPU |
+| Fully managed platform | AWS Bedrock, Vercel AI, Cloudflare Workers AI (§28–§30) | None below the API call — provider owns hardware, drivers, and engine | Lowest — no infrastructure to operate at all | Per-token/per-request API pricing | Highest — provider-specific APIs, model catalog, and often provider-specific guardrails/tooling |
+
+Movement down this table trades away exactly what movement up it buys back: a reader choosing between rows is really choosing how much of §1–§27's material they want to own and operate themselves versus pay a provider to abstract away.
+
 ---
 
 ## 18. Docker Model Runner
@@ -1547,6 +1580,20 @@ hf download Qwen/Qwen2-0.5B-Instruct-GGUF --include "*q5_k_m.gguf" --local-dir .
 **Transfer acceleration.** The historical `hf_transfer` Rust accelerator (enabled via `HF_HUB_ENABLE_HF_TRANSFER=1`) is now deprecated: current `huggingface_hub` routes all Hub transfers through the newer **Xet** storage backend instead, and the equivalent tuning knob is `HF_XET_HIGH_PERFORMANCE=1`. [Source](https://raw.githubusercontent.com/huggingface/huggingface_hub/main/docs/source/en/package_reference/environment_variables.md)
 
 Programmatically, the same operations are `hf_hub_download(repo_id, filename, ...)` for a single file and `snapshot_download(repo_id, allow_patterns=..., ignore_patterns=..., ...)` for a filtered full-repo pull — the Python equivalents of `hf download`'s single-file form and its `--include`/`--exclude` flags, useful when a download needs to be triggered from inside a provisioning script rather than a shell one-liner. [Source](https://raw.githubusercontent.com/huggingface/huggingface_hub/main/docs/source/en/guides/download.md)
+
+### Model Weight Distribution Mechanisms at a Glance
+
+`hf download` is one of several distinct mechanisms this chapter's tools use to move weight files from a remote store onto a Linux GPU box, each with its own take on deduplication, authentication, and native packaging:
+
+| **Mechanism** | **License/ecosystem** | **Content-addressing / dedup** | **Auth model** | **Native format** | **Primary ecosystem** |
+|---|---|---|---|---|---|
+| Hugging Face Hub (`hf download`, this section) | `huggingface_hub` client, Apache 2.0 | Blob-level content addressing; snapshots symlink into a shared `blobs/` store, deduplicating unchanged files across revisions | Public repos unauthenticated; `hf auth login`/token for private or gated repos | safetensors, GGUF, or arbitrary repo files | Largest general-purpose open-model ecosystem |
+| Ollama registry (`ollama pull`, §5.3) | Ollama, MIT | OCI-layer-style content-addressed blobs under `~/.ollama/models/blobs/`; models sharing a base checkpoint share blobs on disk | Public library unauthenticated; custom/private registries via Ollama's own auth | GGUF | Ollama's curated model library plus user-authored Modelfiles |
+| OCI artifacts (Docker Model Runner, §18) | Docker, Apache 2.0 (DMR itself) | Standard OCI registry layer content-addressing — inherited from whichever OCI-compliant registry hosts the artifact (Docker Hub, GHCR, etc.) | Registry-standard auth (`docker login`); public images pullable unauthenticated | GGUF packaged as an OCI artifact | General container-registry infrastructure, reused rather than purpose-built |
+| ModelScope (`ms-hub download` / `modelscope download`) | Alibaba/DAMO, Apache 2.0 client | Per-file SHA256 integrity checks against a hierarchical `~/.cache/modelscope/hub/` cache — not full blob-level dedup across revisions like HF Hub's | Public downloads unauthenticated; `ms-hub login --token $MODELSCOPE_API_TOKEN` for write/private operations | safetensors, GGUF, or arbitrary repo files | China-centric open-model ecosystem, mirroring many HF-hosted models |
+| Plain `git` + Git LFS | Git, various repo hosts | None beyond Git's own commit/blob hashing; LFS stores pointer files, no cross-repo blob sharing | Per-remote (SSH key or HTTP token against GitHub, a self-hosted server, or the Hub's own git-remote interface) | Arbitrary — whatever the repo contains | Fallback path for any repository exposing a git remote, including Hugging Face repos themselves |
+
+[Source](https://github.com/modelscope/modelscope_hub)
 
 ---
 
@@ -1794,6 +1841,18 @@ This chapter introduces several projects that sit *above* the serving engines ra
 | llm-d (§27) | Kubernetes-native model-serving orchestration | Scheduling and routing for vLLM/SGLang pods across a cluster (P/D disaggregation, prefix-cache-aware routing) | Not an agent framework (unlike kagent), and not itself an inference engine |
 | Ray Serve / KubeRay (§27) | General-purpose distributed-serving library, deployable on Kubernetes | Multi-node vLLM deployments, autoscaling, and multi-model pipelines via Ray's actor model | Not inference-traffic-specific like llm-d's Gateway API Inference Extension — a general distributed-compute framework that happens to wrap vLLM |
 
+### Kubernetes-Native Serving Orchestration Compared
+
+The table above sorts projects by *layer*; the three Kubernetes-native options for distributed vLLM/SGLang serving — llm-d, Ray Serve/KubeRay, and NVIDIA Dynamo (§14) — sit at the same layer but differ in governance and orchestration mechanics:
+
+| **Project** | **Governance** | **Kubernetes integration mechanism** | **Disaggregation approach** | **Autoscaling** | **Engine support** |
+|---|---|---|---|---|---|
+| llm-d | CNCF Sandbox (2026-03-24); Red Hat, Google Cloud, IBM, CoreWeave, NVIDIA, and others as contributors | Kubernetes SIG Gateway API Inference Extension (`InferencePool`/`InferenceModel` CRDs via Envoy ext-proc) [Source](https://github.com/kubernetes-sigs/gateway-api-inference-extension) | Own P/D scheduling built on the Gateway API Inference Extension routing layer | Not itself an autoscaler — relies on the Kubernetes-native primitives its routing layer exposes | vLLM, SGLang |
+| Ray Serve / KubeRay | Governed within the Ray project (`ray-project` org); not a CNCF project [Source](https://github.com/ray-project/kuberay) | KubeRay operator's `RayCluster`/`RayJob`/`RayService` CRDs | None built in — general-purpose serving; P/D disaggregation would be composed manually if needed | Ray Autoscaler (sidecar process) scales worker pods by logical Ray resource demand, optionally driving the Kubernetes Cluster Autoscaler for node-level scaling [Source](https://docs.ray.io/en/latest/cluster/kubernetes/user-guides/configuring-autoscaling.html) | vLLM (via `ray[llm]`), plus any model served through Ray Serve's general deployment API |
+| NVIDIA Dynamo (§14) | NVIDIA-governed open-source project; no CNCF or other foundation affiliation | Exposes Kubernetes scale subresources; composable with HPA/KEDA rather than shipping its own Gateway API extension [Source](https://docs.nvidia.com/dynamo/latest/kubernetes/autoscaling.html) | Purpose-built P/D disaggregation via its NIXL transfer layer (§14) | Own **Planner** component: an SLA-driven autoscaler using TTFT/ITL/KV-cache-utilisation metrics, not just raw resource utilisation | SGLang, TensorRT-LLM, vLLM |
+
+Governance is the sharpest dividing line: llm-d is the only one of the three under multi-vendor CNCF stewardship, while Ray Serve/KubeRay and Dynamo each remain governed by a single project or vendor (Ray project and NVIDIA, respectively) even though both are open-source and widely adopted. On autoscaling specifically, Dynamo's Planner and Ray's Autoscaler both scale on workload-aware signals rather than raw CPU/GPU utilisation, while llm-d leans on its Gateway API Inference Extension routing layer instead of shipping a dedicated autoscaler component of its own.
+
 ---
 
 ## 28. Managed Inference Platforms: AWS Bedrock and Bedrock AgentCore
@@ -1985,6 +2044,10 @@ This chapter draws on and extends topics covered across the book:
 - [vLLM Hybrid KV Cache Manager](https://docs.vllm.ai/en/latest/design/hybrid_kv_cache_manager/)
 - [ONNX Runtime CUDA Execution Provider](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html)
 - [ONNX Runtime OpenVINO Execution Provider](https://onnxruntime.ai/docs/execution-providers/OpenVINO-ExecutionProvider.html)
+- [NVIDIA/TensorRT GitHub repository (OSS parsers, plugins, samples)](https://github.com/NVIDIA/TensorRT)
+- [NVIDIA/TensorRT LICENSE](https://github.com/NVIDIA/TensorRT/blob/main/LICENSE)
+- [OpenVINO GitHub repository](https://github.com/openvinotoolkit/openvino)
+- [PyTorch AOTInductor Documentation](https://docs.pytorch.org/docs/main/user_guide/torch_compiler/torch.compiler_aot_inductor.html)
 - [OrtCUDAProviderOptions API Reference](https://onnxruntime.ai/docs/api/c/struct_ort_c_u_d_a_provider_options.html)
 - [OpenVINO Intel GPU Configuration](https://docs.openvino.ai/2025/get-started/install-openvino/configurations/configurations-intel-gpu.html)
 - [AMD ROCm MIOpen](https://github.com/ROCm/MIOpen)
@@ -2073,6 +2136,7 @@ This chapter draws on and extends topics covered across the book:
 - [huggingface_hub Download Guide](https://raw.githubusercontent.com/huggingface/huggingface_hub/main/docs/source/en/guides/download.md)
 - [huggingface_hub Cache Management Guide](https://raw.githubusercontent.com/huggingface/huggingface_hub/main/docs/source/en/guides/manage-cache.md)
 - [huggingface_hub Environment Variables Reference](https://raw.githubusercontent.com/huggingface/huggingface_hub/main/docs/source/en/package_reference/environment_variables.md)
+- [modelscope_hub GitHub repository](https://github.com/modelscope/modelscope_hub)
 - [Unsloth GitHub repository](https://github.com/unslothai/unsloth)
 - [Unsloth Documentation](https://unsloth.ai/docs)
 - [Unsloth AMD GPU Support](https://unsloth.ai/docs/basics/amd)
@@ -2115,6 +2179,10 @@ This chapter draws on and extends topics covered across the book:
 - [IBM Research: Donating llm-d to the CNCF](https://research.ibm.com/blog/donating-llm-d-to-the-cloud-native-computing-foundation)
 - [llm-d project site](https://llm-d.ai/)
 - [llm-d Quickstart Docs](https://llm-d.ai/docs/getting-started/quickstart)
+- [Kubernetes SIG Gateway API Inference Extension GitHub repository](https://github.com/kubernetes-sigs/gateway-api-inference-extension)
+- [KubeRay GitHub repository](https://github.com/ray-project/kuberay)
+- [Ray on Kubernetes: Configuring Autoscaling](https://docs.ray.io/en/latest/cluster/kubernetes/user-guides/configuring-autoscaling.html)
+- [NVIDIA Dynamo: Kubernetes Autoscaling (Planner)](https://docs.nvidia.com/dynamo/latest/kubernetes/autoscaling.html)
 - [llama.cpp RPC Backend README](https://raw.githubusercontent.com/ggml-org/llama.cpp/master/tools/rpc/README.md)
 - [safetensors GitHub repository](https://github.com/huggingface/safetensors)
 - [Hugging Face Hub: Pickle Scanning and Security](https://huggingface.co/docs/hub/en/security-pickle)
