@@ -1103,6 +1103,52 @@ For production ML frameworks, SYCL-based Intel Extension for PyTorch (IPEX) prov
 
 The fundamental architectural difference between ROCm and oneAPI is toolchain maturity and ecosystem depth: ROCm ships pre-tuned library kernels (Tensile) for specific AMD microarchitectures, whereas Intel's IGC compiles SPIR-V JIT at runtime. Both approaches trade off compilation latency (oneAPI) vs binary portability (ROCm fat binaries).
 
+### The Broader oneAPI Component Catalog
+
+The subsections above are deliberately scoped to the GPU compute driver stack — Level Zero,
+`intel-compute-runtime`, and SYCL/DPC++ compilation — the direct parallel to ROCm's KFD/HSA/HIP
+layers, rather than the full oneAPI product. Intel's oneAPI umbrella is considerably larger: it
+bundles analyzers/debuggers, compilers, a Python distribution, an AI/ML tooling layer, a
+performance-library suite, and a ray-tracing/rendering library suite, most of which this book
+covers elsewhere rather than under this chapter's compute-driver scope. This subsection is an
+index rather than new coverage — a map from each catalog entry to where it actually appears in
+the book, for a reader arriving here looking for it under "Intel oneAPI."
+[Source: Intel oneAPI Toolkits documentation](https://www.intel.com/content/www/us/en/developer/tools/oneapi/toolkits.html)
+
+- **Analyzers/debuggers** — Intel Advisor, VTune Profiler, SoC Watch, and the GDB/System Debugger
+  ports are development tools rather than runtime library dependencies and are not covered
+  elsewhere in this book; they are noted here for completeness only.
+- **Compilers** — the Fortran and C++/DPC++ compilers, and ISPC (Intel SPMD Program Compiler),
+  are development toolchain components; ISPC's SPMD compilation model is referenced in this
+  book's CPU-rasterizer and software-renderer coverage rather than under oneAPI specifically.
+- **AI/ML tooling** — PyTorch/TensorFlow Optimizations and the AI Reference Models overlap with
+  this chapter's own ROCm-vs-oneAPI ML framework treatment above (§ML Frameworks on ROCm);
+  Neural Compressor, the Extension for Scikit-learn, XGBoost Optimization, and Modin are
+  general-purpose data-science acceleration libraries outside this book's graphics/GPU-systems
+  scope and are not covered.
+- **Performance libraries with rendering relevance** — **Embree** (CPU ray-tracing kernels),
+  **Open Image Denoise (OIDN)**, **Open PGL** (path guiding), **Open VKL** (volume kernels), and
+  **OSPRay** / **OSPRay for Hydra** / **OSPRay Studio** are all covered in this book's production-
+  rendering and offline-renderer chapters, alongside CUDA/OptiX equivalents — see ch67
+  (OptiX and hardware ray tracing), ch212 (neural rendering primitives), and the part-30
+  production-rendering chapters for USD/Hydra pipeline integration.
+- **Math/compute performance libraries** — **oneMKL**, **oneDNN**, **oneTBB**, **oneDPL**,
+  **oneCCL**, **oneDAL**, and **oneSHMEM** are AMD-library equivalents to rocBLAS/MIOpen/RCCL
+  (this chapter's §Math Library Ecosystem); their appearances elsewhere in this book are scattered
+  across the SYCL/DPC++ coverage in ch62, GPU compute chapters ch65/ch114/ch124/ch135/ch136,
+  and denoising coverage in ch233, rather than consolidated in one place — this is a known gap
+  the book does not currently close with a single dedicated oneAPI-libraries chapter.
+- **Media/codec** — the GStreamer VA-API plugins and Intel VPL (Video Processing Library)
+  overlap with this book's video/codec chapters covering VA-API hardware decode paths.
+- **Cryptography and IPP** — Intel IPP (Integrated Performance Primitives) and the Cryptography
+  Primitives Library are general-purpose CPU libraries outside this book's GPU-graphics scope
+  and are not covered.
+
+*Note: needs verification — the oneAPI product catalog changes between Intel releases; the
+component list above reflects the toolkit documentation as fetched during this chapter's
+research and should be rechecked against current Intel oneAPI documentation if a reader needs
+an authoritative, versioned component list.*
+
 ---
 
 ## ROCm Containers and Cloud
