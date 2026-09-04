@@ -87,6 +87,37 @@ frequent, latency-sensitive collectives that tensor parallelism (§3.2) issues i
 transformer layer, as distinct from the large, infrequent, bandwidth-bound AllReduce a
 data-parallel gradient sync issues once per step.
 
+The complementary-tree construction, concretely, for 8 ranks: every rank is a leaf in exactly
+one tree and an interior node in the other, so every rank does both kinds of work across the
+two trees combined.
+
+```mermaid
+graph TD
+    subgraph "Tree A — root 0"
+        A0((0)) --> A1((1))
+        A0 --> A2((2))
+        A1 --> A3((3))
+        A1 --> A4((4))
+        A2 --> A5((5))
+        A2 --> A6((6))
+        A3 --> A7((7))
+    end
+    subgraph "Tree B — root 4 (complementary)"
+        B4((4)) --> B5((5))
+        B4 --> B6((6))
+        B5 --> B7((7))
+        B5 --> B0((0))
+        B6 --> B1((1))
+        B6 --> B2((2))
+        B7 --> B3((3))
+    end
+```
+
+Ranks `{4,5,6,7}` are leaves of Tree A and interior nodes of Tree B; ranks `{0,1,2,3}` are
+interior nodes of Tree A and leaves of Tree B — the exact swap the prose above describes, run
+simultaneously with half of each rank's chunk on each tree.
+[Source: NCCL 2.4 double binary tree design](https://github.com/NVIDIA/nccl/issues/272)
+
 ### 2.2 Topology-Aware Selection: NCCL_TOPO_FILE and Multi-Node Rings
 
 Chapter 66 §18.4 covers NCCL's per-communicator transport probing (NVLink, PCIe, InfiniBand)
@@ -103,6 +134,16 @@ loading a system-provided topology file at `/var/run/nvidia-topologyd/virtualTop
 one is present, and **`NCCL_TOPO_DUMP_FILE`** writes NCCL's own detected topology back out to
 XML, which is the standard way to capture a known-good topology description for later reuse
 via `NCCL_TOPO_FILE`.
+[Source: NCCL environment variables reference](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html)
+
+```bash
+# Pin a known-good topology, capture the live-detected one for later reuse,
+# and keep every ring/tree channel on its assigned NIC (rail).
+NCCL_TOPO_FILE=/etc/nccl/cluster-topology.xml \
+NCCL_TOPO_DUMP_FILE=/var/log/nccl/detected-topology.xml \
+NCCL_CROSS_NIC=0 \
+torchrun --nnodes=4 --nproc-per-node=8 --rdzv-backend=c10d train.py
+```
 [Source: NCCL environment variables reference](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html)
 
 This topology graph is what NCCL's channel-search algorithm consumes to build its rings and
@@ -185,6 +226,40 @@ conventionally confined to GPUs connected by the highest-bandwidth, lowest-laten
 available (NVLink/NVSwitch within a node) rather than spanning nodes over InfiniBand.
 [Source: Megatron-LM, "Efficient Large-Scale Language Model Training on GPU Clusters"](https://arxiv.org/pdf/2104.04473)
 
+Megatron-LM's implementation makes the column/row split concrete as two module types. The
+first linear layer of an MLP block is a `ColumnParallelLinear`, whose docstring states the
+partitioning directly:
+
+```python
+# megatron/core/tensor_parallel/layers.py (NVIDIA/Megatron-LM)
+class ColumnParallelLinear(torch.nn.Module):
+    """Linear layer with column parallelism.
+
+    The linear layer is defined as Y = XA + b. A is parallelized along
+    its second dimension as A = [A_1, ..., A_p].
+    ...
+    gather_output:
+        If true, call all-gather on output and make Y available to all
+        GPUs, otherwise, every GPU will have its output which is Y_i = XA_i
+    """
+```
+
+No AllReduce is needed here because every GPU already holds the full input activations
+(`copy_to_tensor_model_parallel_region` in `forward()` replicates the input rather than
+partitioning it). The second linear layer, `RowParallelLinear`, is where the AllReduce this
+section describes actually appears, at the tail of `forward()`:
+
+```python
+# megatron/core/tensor_parallel/layers.py — RowParallelLinear.forward() (abridged)
+output_parallel = self._forward_impl(input=input_parallel, weight=self.weight, ...)
+if self.sequence_parallel:
+    output_ = reduce_scatter_to_sequence_parallel_region(output_parallel, group=self.tp_group)
+else:
+    # Sum the partial matmul results computed on each GPU's row-slice of A.
+    output_ = reduce_from_tensor_model_parallel_region(output_parallel, group=self.tp_group)
+```
+[Source: NVIDIA/Megatron-LM, `megatron/core/tensor_parallel/layers.py`](https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/tensor_parallel/layers.py)
+
 ### 3.3 Pipeline Parallelism: Inter-Layer Sharding and the Bubble
 
 Pipeline parallelism instead partitions the model *sequentially*: each GPU (or group of GPUs)
@@ -200,6 +275,45 @@ with `p` pipeline stages and `m` micro-batches per batch, the bubble time fracti
 batch amortizes the fixed fill/drain cost, at the expense of more activation memory held
 simultaneously (one set per in-flight micro-batch).
 [Source: Megatron-LM, "Efficient Large-Scale Language Model Training on GPU Clusters"](https://arxiv.org/pdf/2104.04473)
+
+The naive fill-drain schedule below (`p=3` stages, `m=3` micro-batches) makes the bubble
+visible directly: Stage 2 sits idle before its first forward arrives, and Stage 0 sits idle
+after its last forward while it waits for the backward pass to propagate back through Stages 2
+and 1.
+
+```mermaid
+gantt
+    dateFormat  YYYY-MM-DD
+    axisFormat  t=%d
+    title Naive GPipe-style fill-drain schedule (3 stages x 3 micro-batches)
+    section Stage 0
+    F(mb0) : s0f0, 2024-01-01, 1d
+    F(mb1) : s0f1, 2024-01-02, 1d
+    F(mb2) : s0f2, 2024-01-03, 1d
+    B(mb2) : s0b2, 2024-01-08, 1d
+    B(mb1) : s0b1, 2024-01-09, 1d
+    B(mb0) : s0b0, 2024-01-10, 1d
+    section Stage 1
+    F(mb0) : s1f0, 2024-01-02, 1d
+    F(mb1) : s1f1, 2024-01-03, 1d
+    F(mb2) : s1f2, 2024-01-04, 1d
+    B(mb2) : s1b2, 2024-01-07, 1d
+    B(mb1) : s1b1, 2024-01-08, 1d
+    B(mb0) : s1b0, 2024-01-09, 1d
+    section Stage 2
+    F(mb0) : s2f0, 2024-01-03, 1d
+    F(mb1) : s2f1, 2024-01-04, 1d
+    F(mb2) : s2f2, 2024-01-05, 1d
+    B(mb2) : s2b2, 2024-01-06, 1d
+    B(mb1) : s2b1, 2024-01-07, 1d
+    B(mb0) : s2b0, 2024-01-08, 1d
+```
+
+1F1B interleaves each stage's own forward and backward passes into this same diagonal shape
+instead of waiting for every stage's forwards to finish first, which is what bounds in-flight
+activation sets to pipeline depth rather than micro-batch count; the bubble area at the
+corners — proportional to `(p-1)/m` — is unchanged by that reordering, only the peak memory is.
+
 Megatron-LM's default schedule, **1F1B** ("one-forward-one-backward"), interleaves forward and
 backward micro-batch execution per stage rather than running all forwards before any backward,
 which bounds the number of in-flight activation sets to the pipeline depth rather than the
@@ -247,6 +361,43 @@ bringing total per-rank model-state memory down to `16Φ/N` (mixed-precision Ada
 all-gather/reduce-scatter decomposition Chapter 246 §6.2 describes for PyTorch FSDP, since
 FSDP was built following the same partitioning strategy ZeRO-3 introduced.
 [Source: DeepSpeed, "Zero Redundancy Optimizer" tutorial](https://www.deepspeed.ai/tutorials/zero/)
+
+```json
+// deepspeed_config.json -- a ZeRO-3 configuration, offloading both
+// optimizer states and parameters to host memory between uses (ZeRO-Infinity)
+{
+  "zero_optimization": {
+    "stage": 3,
+    "offload_optimizer": { "device": "cpu", "pin_memory": true },
+    "offload_param": { "device": "cpu", "pin_memory": true },
+    "overlap_comm": true,
+    "contiguous_gradients": true,
+    "stage3_max_live_parameters": 1e9,
+    "stage3_prefetch_bucket_size": 5e8
+  }
+}
+```
+[Source: DeepSpeed, "DeepSpeed Configuration JSON"](https://www.deepspeed.ai/docs/config-json/)
+
+```mermaid
+graph TD
+    subgraph "ZeRO-1 -- optimizer states partitioned: 12phi per rank to 12phi/N"
+        Z1P["Parameters -- replicated on every rank"]
+        Z1G["Gradients -- replicated on every rank"]
+        Z1O["Optimizer states -- sharded 1/N per rank"]
+    end
+    subgraph "ZeRO-2 -- plus gradients partitioned: 2phi per rank to 2phi/N"
+        Z2P["Parameters -- replicated on every rank"]
+        Z2G["Gradients -- sharded 1/N per rank (reduce-scatter)"]
+        Z2O["Optimizer states -- sharded 1/N per rank"]
+    end
+    subgraph "ZeRO-3 -- plus parameters partitioned: 16phi/N total"
+        Z3P["Parameters -- sharded 1/N, all-gathered on demand per layer"]
+        Z3G["Gradients -- sharded 1/N per rank"]
+        Z3O["Optimizer states -- sharded 1/N per rank"]
+    end
+```
+
 **ZeRO-Offload** and its successor **ZeRO-Infinity** extend ZeRO-3 by moving the partitioned
 optimizer state and, for ZeRO-Infinity, parameters as well, out to CPU memory or even NVMe
 storage between uses, trading additional PCIe/NVMe transfer latency for the ability to train
@@ -281,6 +432,50 @@ JAX's collectives inserted by the compiler as a consequence of sharding-constrai
 strategy; this chapter's parallelism *taxonomy* is the same across both frameworks, only the
 mechanism generating the resulting NCCL calls differs.
 
+`shard_map` makes this concrete: the same primitive expresses whichever strategy the chosen
+`PartitionSpec` describes. Sharding only the contraction dimension (`'y'` below) with a
+`psum` to combine partial results is structurally the same AllReduce §3.2 places at a
+tensor-parallel layer boundary; sharding only a leading batch dimension instead (`P('x', None)`)
+would express data parallelism over the same API with no `psum` needed inside the function body.
+
+```python
+from jax.sharding import Mesh, PartitionSpec as P
+import jax.numpy as jnp
+import jax
+
+mesh = jax.make_mesh((4, 2), ('x', 'y'))
+jax.set_mesh(mesh)
+
+a = jax.device_put(jnp.arange(8 * 16.).reshape(8, 16), P('x', 'y'))
+b = jax.device_put(jnp.arange(16 * 4.).reshape(16, 4), P('y', None))
+
+@jax.shard_map(in_specs=(P('x', 'y'), P('y', None)), out_specs=P('x', None))
+def matmul_tensor_parallel(a_block, b_block):
+    partial = jnp.dot(a_block, b_block)
+    return jax.lax.psum(partial, 'y')  # the AllReduce §3.2 places at a layer boundary
+
+c = matmul_tensor_parallel(a, b)
+```
+[Source: JAX, "SPMD multi-device parallelism with shard_map"](https://docs.jax.dev/en/latest/notebooks/shard_map.html)
+(Older code commonly imports the same primitive as `jax.experimental.shard_map.shard_map`;
+current JAX exposes it directly as `jax.shard_map`.)
+
+```mermaid
+graph TD
+    subgraph DP["Data parallelism -- outer dimension: replicate the TP+PP group, sync gradients across replicas (Section 3.1)"]
+        subgraph Replica0["Replica 0"]
+            subgraph PPStage0["Pipeline stage 0 -- Node 0"]
+                TP00["GPU0: TP rank 0"] --- TP01["GPU1: TP rank 1 (AllReduce over NVLink, Section 3.2)"]
+            end
+            subgraph PPStage1["Pipeline stage 1 -- Node 1"]
+                TP10["GPU2: TP rank 0"] --- TP11["GPU3: TP rank 1"]
+            end
+            PPStage0 -- "point-to-point activations/gradients, inter-node (Section 3.3)" --> PPStage1
+        end
+        Replica1["Replica 1 -- mirrors Replica 0 on a different set of nodes"]
+    end
+```
+
 ## 4. GPU-Accelerated Data Loading
 
 ### 4.1 The CPU Data-Loading Bottleneck
@@ -311,6 +506,27 @@ the remaining resize/crop/normalize augmentation steps as GPU operators, so that
 onward, no data crosses back to host memory before reaching the training step.
 [Source: NVIDIA DALI documentation](https://docs.nvidia.com/deeplearning/dali/user-guide/docs/index.html);
 [Source: "Loading Data Fast with DALI and the New Hardware JPEG Decoder in NVIDIA A100 GPUs"](https://developer.nvidia.com/blog/loading-data-fast-with-dali-and-new-jpeg-decoder-in-a100/)
+
+```python
+from nvidia.dali.pipeline import pipeline_def
+import nvidia.dali.fn as fn
+import nvidia.dali.types as types
+
+@pipeline_def(num_threads=4, device_id=0)
+def get_dali_pipeline():
+    images, labels = fn.readers.file(file_root="/path/to/images", random_shuffle=True)
+    images = fn.decoders.image(images, device="mixed", output_type=types.RGB)  # nvJPEG
+    images = fn.resize(images, resize_x=256, resize_y=256)
+    images = fn.crop_mirror_normalize(
+        images, crop_h=224, crop_w=224,
+        mean=[0.485 * 255, 0.456 * 255, 0.406 * 255],
+        std=[0.229 * 255, 0.224 * 255, 0.225 * 255],
+        mirror=fn.random.coin_flip(),
+    )
+    return images, labels
+```
+[Source: NVIDIA DALI documentation, "Getting Started"](https://docs.nvidia.com/deeplearning/dali/user-guide/docs/index.html)
+
 DALI is explicitly framework-portable — the same pipeline definition connects to PyTorch,
 TensorFlow, and JAX via framework-specific iterator classes rather than being reimplemented per
 framework. The PyTorch integration (`DALIGenericIterator`) yields PyTorch tensors directly from
@@ -338,6 +554,21 @@ and `pin_memory=True` allocates the returned batch in page-locked host memory so
 host-to-device copy that follows can use an asynchronous DMA transfer instead of a slower
 pageable-memory copy.
 [Source: PyTorch, "Data Loading Optimization in PyTorch" tutorial](https://docs.pytorch.org/tutorials/intermediate/intermediate_data_loading_tutorial.html)
+
+```python
+from torch.utils.data import DataLoader
+
+loader = DataLoader(
+    dataset,
+    batch_size=256,
+    num_workers=8,             # 8 worker subprocesses, each with its own Dataset copy
+    prefetch_factor=4,         # each worker stages 4 batches ahead
+    persistent_workers=True,   # keep the pool alive across epochs
+    pin_memory=True,           # page-locked host memory -> async H2D DMA
+)
+```
+[Source: PyTorch, "Data Loading Optimization in PyTorch" tutorial](https://docs.pytorch.org/tutorials/intermediate/intermediate_data_loading_tutorial.html)
+
 This design has a structural ceiling DALI's GPU-resident approach does not share: because each
 worker is a separate Python process, batches returned to the main process must be serialized
 and deserialized across the multiprocessing boundary, and that serialization overhead — not
@@ -367,6 +598,21 @@ way DALI's JAX iterator does (§4.2): the input pipeline is responsible for prod
 already-sharded batches (or batches that JAX's own device-put/sharding machinery distributes)
 rather than JAX itself owning any decode or augmentation logic.
 
+```mermaid
+graph LR
+    subgraph "NVIDIA DALI -- GPU-resident pipeline (Section 4.2)"
+        D1["CPU: raw compressed bytes\n(fn.readers.file)"] --> D2["Mixed backend: nvJPEG decode\n(device=mixed)"]
+        D2 --> D3["GPU: resize / crop / normalize"]
+        D3 --> D4["GPU-resident batch fed\ndirectly to the training step"]
+    end
+    subgraph "PyTorch DataLoader -- CPU worker-process pipeline (Section 4.3)"
+        L1["Worker subprocesses 1..N\n(decode + augment on CPU)"] --> L2["Batch serialized across the\nmultiprocessing boundary"]
+        L2 --> L3["Main process: deserialize"]
+        L3 --> L4["pin_memory=True:\nasync H2D DMA copy"]
+        L4 --> L5["GPU-resident batch fed\nto the training step"]
+    end
+```
+
 ## 5. Cluster Topology and Scheduling
 
 ### 5.1 InfiniBand and RoCE Fabric Considerations
@@ -394,6 +640,25 @@ down (oversubscribed rails, heterogeneous node wiring) is where allowing NCCL to
 becomes a meaningful lever.
 [Source: "GPU Cluster Network Topology Design"](https://introl.com/blog/gpu-cluster-network-topology-fat-tree-dragonfly-rail-optimized-2025)
 
+```mermaid
+graph TD
+    subgraph "Node 0"
+        N0G0["GPU0"] --> N0R0["NIC, rail 0"]
+        N0G1["GPU1"] --> N0R1["NIC, rail 1"]
+    end
+    subgraph "Node 1"
+        N1G0["GPU0"] --> N1R0["NIC, rail 0"]
+        N1G1["GPU1"] --> N1R1["NIC, rail 1"]
+    end
+    N0R0 --> LS0["Leaf switch, rail 0"]
+    N1R0 --> LS0
+    N0R1 --> LS1["Leaf switch, rail 1"]
+    N1R1 --> LS1
+    LS0 --> Spine["Spine switch layer"]
+    LS1 --> Spine
+```
+[Source: "GPU Cluster Network Topology Design"](https://introl.com/blog/gpu-cluster-network-topology-fat-tree-dragonfly-rail-optimized-2025)
+
 ### 5.2 Kubernetes GPU Scheduling for Training Jobs
 
 Chapter 240 §7.1 documents the standard Kubernetes GPU-scheduling stack — the NVIDIA device
@@ -415,6 +680,26 @@ a tensor-parallel group's pods on NVLink-connected GPUs specifically rather than
 free capacity.
 [Source: "How to Configure Kubernetes Topology-Aware GPU Scheduling"](https://oneuptime.com/blog/post/2026-02-09-topology-aware-gpu-scheduling-nvlink/view)
 
+```yaml
+# Pod spec fragment: request 8 GPUs, constrain placement to a known NVLink-connected SKU
+resources:
+  limits:
+    nvidia.com/gpu: 8
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: nvidia.com/gpu.product
+              operator: In
+              values: ["H100-SXM5-80GB"]
+```
+[Source: "How to Configure Kubernetes Topology-Aware GPU Scheduling"](https://oneuptime.com/blog/post/2026-02-09-topology-aware-gpu-scheduling-nvlink/view)
+(`nvidia.com/gpu.product` and its sibling GFD-produced labels are set by GPU Feature Discovery,
+Chapter 240 §7.1; requesting the full `nvidia.com/gpu` count on one node, combined with a
+label match, is the coarse-grained way of keeping a tensor-parallel group intra-node before
+Topology Manager or DRA are configured to do so automatically.)
+
 ### 5.3 Elastic and Fault-Tolerant Restart
 
 At the scale multi-node training runs at, some fraction of nodes failing mid-job — a GPU Xid
@@ -433,6 +718,35 @@ respawns the affected processes, re-running rendezvous with the new membership a
 resuming training from the most recent checkpoint (§5.4) rather than restarting the whole job
 from scratch.
 [Source: PyTorch, "Fault-tolerant Distributed Training with torchrun"](https://docs.pytorch.org/tutorials/beginner/ddp_series_fault_tolerance.html)
+
+```bash
+torchrun \
+    --nnodes=1:4 \
+    --nproc-per-node=$NUM_TRAINERS \
+    --max-restarts=3 \
+    --rdzv-id=$JOB_ID \
+    --rdzv-backend=c10d \
+    --rdzv-endpoint=$HOST_NODE_ADDR \
+    train.py
+```
+[Source: PyTorch, "torchrun (Elastic Launch)"](https://docs.pytorch.org/docs/stable/elastic/run.html)
+(`--nnodes=1:4` sets an elastic min:max range rather than a fixed node count; a membership
+change anywhere in that range triggers the re-rendezvous sequence below rather than aborting.)
+
+```mermaid
+sequenceDiagram
+    participant A0 as Elastic agent (node 0)
+    participant A1 as Elastic agent (node 1)
+    participant Rdzv as Rendezvous backend (c10d)
+    Note over A0,A1: Steady-state training, AllReduce across all ranks
+    A1--xA1: Node 1 fails (Xid error / NIC flap / host unreachable)
+    A0->>Rdzv: Missing heartbeat detected, request re-rendezvous
+    Rdzv-->>A0: New membership (survivors only)
+    A0->>A0: torchrun terminates and respawns local ranks
+    A0->>A0: Resume from most recent checkpoint (Section 5.4)
+```
+[Source: PyTorch, "Fault-tolerant Distributed Training with torchrun"](https://docs.pytorch.org/tutorials/beginner/ddp_series_fault_tolerance.html)
+
 A newer PyTorch-native mechanism, **TorchFT**, aims at a stronger property than checkpoint-based
 restart — recovering from a failed rank without necessarily reloading a checkpoint at all,
 integrated with the TorchTitan training framework for large-scale runs; its production maturity
@@ -455,6 +769,21 @@ into pinned host memory (a fast, blocking copy) and the actual, slower write to 
 storage then proceeds on a background thread while training continues on the GPU, so the
 training loop's stall is bounded by the staging copy rather than by total storage I/O time.
 [Source: PyTorch, "Asynchronous Saving with Distributed Checkpoint (DCP)"](https://docs.pytorch.org/tutorials/recipes/distributed_async_checkpoint_recipe.html)
+
+```python
+import torch.distributed.checkpoint as dcp
+from torch.distributed.checkpoint.stateful import Stateful
+
+class AppState(Stateful):
+    def state_dict(self):
+        model_sd, optim_sd = get_state_dict(self.model, self.optimizer)
+        return {"model": model_sd, "optim": optim_sd}  # each rank's local shard only
+
+# Non-blocking: stages to pinned host memory, then writes on a background thread
+future = dcp.async_save(app_state.state_dict(), checkpoint_id=f"{CKPT_DIR}/step{step}")
+```
+[Source: PyTorch, "Asynchronous Saving with Distributed Checkpoint (DCP)"](https://docs.pytorch.org/tutorials/recipes/distributed_async_checkpoint_recipe.html)
+
 A further wrinkle specific to elastic restart is **reshard-on-load**: a job that checkpointed
 under one parallelism configuration (a given tensor-parallel/pipeline-parallel/data-parallel
 degree, tied to how many nodes were available at checkpoint time) may need to resume under a
