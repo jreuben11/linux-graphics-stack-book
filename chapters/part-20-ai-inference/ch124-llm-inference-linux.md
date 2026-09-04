@@ -211,10 +211,11 @@ This chapter examines the full software path from a **GGUF** file on disk to gen
   - the CUDA-only scope of both engines and **TabbyAPI** as their OpenAI-compatible serving frontend
 - **Section 27 — llm-d: Kubernetes-Native Distributed Inference**
   - **llm-d**, a CNCF Sandbox project, as a Kubernetes-native orchestration layer sitting directly above vLLM/SGLang pods
-  - routing built on the Kubernetes SIG Gateway API Inference Extension
+  - routing built on the Kubernetes SIG Gateway API Inference Extension, its `InferencePool` CRD, and the EPP/BBR/latency-predictor migration to llm-d at GAIE v1.6.0
   - cluster-scale prefill/decode disaggregation and prefix-cache-aware request routing, contrasted with §14's single-process connectors
   - **Ray Serve** and **KubeRay** as a general-purpose, Ray-based alternative path to distributed vLLM serving on Kubernetes, with **Anyscale** as its managed offering
   - a technical-capability comparison of llm-d, Ray Serve/KubeRay, **NVIDIA Dynamo**, **KServe**, **AIBrix**, **llmaz**, **KubeAI**, and **Kaito** by governance, Kubernetes integration mechanism, disaggregation approach, and autoscaling
+  - full CRD YAML examples and field-level explanations for `InferencePool`/`HTTPRoute` (GAIE), `LLMInferenceService` (KServe), `PodAutoscaler` (AIBrix), `OpenModel`/`Playground` (llmaz), `Model` (KubeAI), and `Workspace` (Kaito)
 - **Section 28 — Managed Inference Platforms: AWS Bedrock and Bedrock AgentCore**
   - Bedrock's fully managed FM API, its Trainium2/Inferentia2 Neuron-SDK compute substrate, and On-Demand/Provisioned-Throughput/Batch billing
   - Guardrails' content/PII filters and contextual grounding checks, and Knowledge Bases' managed RAG pipeline
@@ -1836,7 +1837,7 @@ llm-d was launched in 2025 by Red Hat, Google Cloud, IBM Research, CoreWeave, an
 
 llm-d is explicitly engine-agnostic rather than vLLM-specific: its own site describes it as running "vLLM, SGLang, and more across your cluster, turning single-node engines into production-grade serving," and its README frames the boundary precisely — "model servers like vLLM and SGLang handle efficiently running large language models on accelerators... llm-d provides state-of-the-art orchestration and optimizations above model servers." [Source](https://llm-d.ai/) In practice, the reference quickstart deploys vLLM pods via a Kustomize overlay, making §13.1's `vllm serve` invocation the unit llm-d schedules and routes traffic to at cluster scale, rather than something it replaces.
 
-The orchestration itself builds on the **Kubernetes SIG Gateway API Inference Extension** — a set of CRDs and a gateway layer purpose-built for LLM traffic routing — installed as an explicit prerequisite before the router and model-server Helm charts:
+The orchestration itself builds on the **Kubernetes SIG Gateway API Inference Extension** (GAIE, `github.com/kubernetes-sigs/gateway-api-inference-extension`) — an official Kubernetes project, governed jointly by **WG Serving** and **SIG Network**, that standardises LLM-aware traffic routing on top of the existing Gateway API rather than inventing a parallel ingress model. It is installed as an explicit prerequisite before the router and model-server Helm charts:
 
 ```bash
 kubectl apply -f https://github.com/kubernetes-sigs/gateway-api-inference-extension/releases/download/${GAIE_VERSION}/v1-manifests.yaml
@@ -1849,6 +1850,46 @@ kubectl apply -n "$NAMESPACE" -k guides/optimized-baseline/modelserver/gpu/vllm/
 ```
 
 [Source](https://llm-d.ai/docs/getting-started/quickstart)
+
+GAIE's core (and, as of v1.6.0, only) CRD is **`InferencePool`** (group `inference.networking.k8s.io`, version `v1`), which groups the model-server Pods behind a routing decision and points at the component that makes it:
+
+```yaml
+apiVersion: inference.networking.k8s.io/v1
+kind: InferencePool
+metadata:
+  name: vllm-qwen3-32b
+spec:
+  selector:
+    matchLabels:
+      app: vllm-qwen3-32b        # must exactly match labels on the vLLM/SGLang Pods
+  targetPorts:
+    - number: 8000                # port the Inference Gateway routes to on each Pod
+  endpointPickerRef:
+    name: vllm-qwen3-32b-epp      # Service fronting the Endpoint Picker (EPP)
+    port:
+      number: 9002
+    failureMode: FailOpen         # FailOpen: forward to a gateway-chosen endpoint if EPP is down; FailClose (default) rejects the request instead
+```
+[Source](https://github.com/kubernetes-sigs/gateway-api-inference-extension/blob/main/config/crd/bases/inference.networking.k8s.io_inferencepools.yaml)
+
+`selector` is deliberately a plain label selector rather than anything vLLM-specific — it is designed to be translatable to a Kubernetes Service selector by any implementation — and `endpointPickerRef` is what turns a generic Gateway API `HTTPRoute` into an inference-aware one: the referenced **Endpoint Picker (EPP)** service is called via Envoy's external-processing (ext-proc) protocol on every request and returns which specific Pod behind the pool should handle it, based on live metrics (queue depth, KV-cache utilisation, and LoRA adapter residency) rather than the gateway's default round-robin or least-connections balancing. An `HTTPRoute` then attaches an `InferencePool` as its backend the same way it would attach a `Service`:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: vllm-qwen3-32b-route
+spec:
+  parentRefs:
+    - name: inference-gateway
+  rules:
+    - backendRefs:
+        - name: vllm-qwen3-32b
+          kind: InferencePool
+          group: inference.networking.k8s.io
+```
+
+GAIE's own scope narrowed sharply at **v1.6.0** (2026): the full-featured EPP reference implementation, Body-Based Routing, and the latency-predictor component were all migrated out of this repository into the **llm-d** GitHub organisation, where they continue development as part of llm-d's own routing stack, while GAIE itself retreated to "core Kubernetes Gateway API inference specifications, CRDs, and conformance definitions" plus a minimal `lwepp` (lightweight EPP) reference used only for conformance testing. That release also **removed** the experimental `InferenceObjective`, `InferenceModelRewrite`, and `EndpointPickerConfig` alpha APIs (all under the `inference.networking.x-k8s.io/v1alpha2` group) rather than graduating them — an still-earlier `InferenceModel` CRD that once carried per-model criticality and traffic-splitting configuration had already been through one rename/redesign cycle before that removal. [Source](https://github.com/kubernetes-sigs/gateway-api-inference-extension/releases/tag/v1.6.0) In practice this means `InferencePool` is the one CRD a reader should expect to find stable across GAIE releases; anything describing per-model routing policy is presently implemented inside llm-d's own EPP rather than as a separate upstream Kubernetes CRD, and is worth re-checking against the current release before relying on a specific field name.
 
 On top of that routing layer, llm-d implements its own prefill/decode disaggregation and prefix-cache-aware request routing — the same architectural problem §14 covers via vLLM's experimental connector, NVIDIA Dynamo, and Mooncake, but orchestrated here as a Kubernetes-native scheduling concern across many pods rather than a single-process connector config. llm-d's own README reports up to 70% higher tokens/sec with prefill/decode disaggregation versus standard vLLM, and 3× higher output throughput with 2× faster time-to-first-token from prefix-cache-aware routing versus round-robin load balancing — self-reported project figures, following the same non-independently-audited caveat already noted for Dynamo and Mooncake in §14. No primary source directly documents how llm-d relates to Dynamo or to kagent; the overlap with Dynamo (both orchestrate P/D disaggregation over vLLM/SGLang, via different vendor-backed implementations) and the layering relative to kagent (which could, in principle, target an llm-d-fronted endpoint as a `ModelConfig` backend, per §19) are architectural observations from reading both projects' scope, not claims either project states explicitly.
 
@@ -1874,7 +1915,7 @@ The table above sorts projects by *layer*; the eight Kubernetes-native options f
 
 | **Project** | **Governance** | **Kubernetes integration mechanism** | **Disaggregation approach** | **Autoscaling** | **Engine support** |
 |---|---|---|---|---|---|
-| llm-d | CNCF Sandbox (2026-03-24); Red Hat, Google Cloud, IBM, CoreWeave, NVIDIA, and others as contributors | Kubernetes SIG Gateway API Inference Extension (`InferencePool`/`InferenceModel` CRDs via Envoy ext-proc) [Source](https://github.com/kubernetes-sigs/gateway-api-inference-extension) | Own P/D scheduling built on the Gateway API Inference Extension routing layer | Not itself an autoscaler — relies on the Kubernetes-native primitives its routing layer exposes | vLLM, SGLang |
+| llm-d | CNCF Sandbox (2026-03-24); Red Hat, Google Cloud, IBM, CoreWeave, NVIDIA, and others as contributors | Kubernetes SIG Gateway API Inference Extension's `InferencePool` CRD via Envoy ext-proc; llm-d itself now hosts the EPP/Body-Based-Routing/latency-predictor implementation since GAIE v1.6.0 [Source](https://github.com/kubernetes-sigs/gateway-api-inference-extension) | Own P/D scheduling built on the Gateway API Inference Extension routing layer | Not itself an autoscaler — relies on the Kubernetes-native primitives its routing layer exposes | vLLM, SGLang |
 | Ray Serve / KubeRay | Governed within the Ray project (`ray-project` org); not a CNCF project [Source](https://github.com/ray-project/kuberay) | KubeRay operator's `RayCluster`/`RayJob`/`RayService` CRDs | None built in — general-purpose serving; P/D disaggregation would be composed manually if needed | Ray Autoscaler (sidecar process) scales worker pods by logical Ray resource demand, optionally driving the Kubernetes Cluster Autoscaler for node-level scaling [Source](https://docs.ray.io/en/latest/cluster/kubernetes/user-guides/configuring-autoscaling.html) | vLLM (via `ray[llm]`), plus any model served through Ray Serve's general deployment API |
 | NVIDIA Dynamo (§14) | NVIDIA-governed open-source project; no CNCF or other foundation affiliation | Exposes Kubernetes scale subresources; composable with HPA/KEDA rather than shipping its own Gateway API extension [Source](https://docs.nvidia.com/dynamo/latest/kubernetes/autoscaling.html) | Purpose-built P/D disaggregation via its NIXL transfer layer (§14) | Own **Planner** component: an SLA-driven autoscaler using TTFT/ITL/KV-cache-utilisation metrics, not just raw resource utilisation | SGLang, TensorRT-LLM, vLLM |
 | KServe | CNCF Incubating (accepted 2025-09-29) [Source](https://www.cncf.io/blog/2025/11/11/kserve-becomes-a-cncf-incubating-project/) | New `LLMInferenceService` CRD (v0.16), purpose-built for LLM workloads and distinct from KServe's older general-ML `InferenceService`, routed via Gateway API [Source](https://kserve.github.io/website/blog/cloud-native-ai-inference-kserve-llm-d) | None of its own — explicitly composes with **llm-d** as the P/D-disaggregation and scheduling layer rather than reimplementing it | Relies on Kubernetes-native HPA/Gateway API primitives, the same pattern as llm-d itself; no dedicated autoscaler component | vLLM, Hugging Face TGI |
@@ -1884,6 +1925,141 @@ The table above sorts projects by *layer*; the eight Kubernetes-native options f
 | Kaito | CNCF Sandbox (accepted 2024-10-17); originated at and still maintained by Microsoft/Azure [Source](https://www.cncf.io/projects/kaito/) | `Workspace` CRD — takes just a GPU instance type and a Hugging Face model ID; integrates with the Gateway API Inference Extension for KV-cache-aware routing | None | No workload autoscaler of its own; its distinctive feature is **GPU node auto-provisioning** via Karpenter — estimating VRAM needs and provisioning matching nodes automatically, which none of the other projects here do | vLLM only |
 
 Governance now spans a full spectrum rather than a binary CNCF/vendor split: llm-d, KServe, and Kaito are each under CNCF stewardship (Sandbox, Incubating, and Sandbox respectively), KubeAI has a Sandbox application under board review, while Ray Serve/KubeRay, Dynamo, AIBrix, and llmaz remain governed by a single project or vendor. Each project's headline differentiator sits outside the governance axis, though: Kaito is the only one that provisions GPU nodes for you via Karpenter rather than assuming they already exist; llmaz carries the broadest engine support of the group (vLLM, SGLang, TensorRT-LLM, TGI, and llama.cpp all at once); KubeAI is the only one built with zero external dependencies for its scale-to-zero autoscaling; AIBrix is the most narrowly vLLM-specific, trading breadth for deep KV-cache-aware autoscaling; and KServe is the only one that explicitly composes with another project in this same table (llm-d) for disaggregation rather than implementing its own — a reminder that this layer is still consolidating rather than settled, with newer entrants often building on top of the incumbents instead of replacing them outright.
+
+### CRD Configuration Examples
+
+The table above names each project's CRDs; concrete YAML makes the design differences between them more legible than another prose paragraph would. llm-d itself defines no CRD beyond the GAIE `InferencePool`/`HTTPRoute` pairing shown in §27's opening subsection — everything below is what the *other* five Kubernetes-native projects ask an operator to write instead.
+
+**KServe's `LLMInferenceService`** is deliberately close to a standard Kubernetes Deployment spec, since it is meant to feel familiar to operators already running KServe's older, general-purpose `InferenceService`:
+
+```yaml
+apiVersion: serving.kserve.io/v1alpha1
+kind: LLMInferenceService
+metadata:
+  name: llama-3-8b
+  namespace: default
+spec:
+  model:
+    uri: hf://meta-llama/Llama-3.1-8B-Instruct   # also supports s3:// and pvc://
+    name: meta-llama/Llama-3.1-8B-Instruct        # model name clients request
+  replicas: 3
+  template:
+    containers:
+      - name: main
+        image: vllm/vllm-openai:latest
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+            cpu: "8"
+            memory: 32Gi
+  router:
+    gateway: {}     # empty struct = accept KServe's default Gateway API wiring
+    route: {}
+    scheduler: {}   # delegates to llm-d/GAIE-style scheduling when composed with llm-d
+```
+[Source](https://kserve.github.io/website/docs/model-serving/generative-inference/llmisvc/llmisvc-overview)
+
+`model.uri`'s scheme prefix (`hf://`, `s3://`, `pvc://`) is the field doing the work §20's model-distribution mechanisms discuss in the abstract — it is KServe's equivalent of choosing between the Hugging Face Hub, an S3-compatible object store, or a pre-populated PersistentVolumeClaim as the weight source. The empty `router.gateway`/`router.route`/`router.scheduler` structs are what let `spec.router.scheduler` be pointed at an external llm-d deployment instead, matching the "composes with llm-d rather than reimplementing it" behavior noted in the table above.
+
+**AIBrix's `PodAutoscaler`** is the CRD behind its "LLM App-Tailored Autoscaler" table entry — it targets a plain Kubernetes `Deployment` but scales on inference-specific metrics scraped directly from the vLLM process rather than CPU/memory:
+
+```yaml
+apiVersion: autoscaling.aibrix.ai/v1alpha1
+kind: PodAutoscaler
+metadata:
+  name: deepseek-r1-distill-llama-8b-hpa
+  namespace: default
+spec:
+  scalingStrategy: HPA        # or KPA for AIBrix's own optimizer-based autoscaler
+  minReplicas: 1
+  maxReplicas: 10
+  metricsSources:
+    - metricSourceType: pod
+      protocolType: http
+      port: '8000'
+      path: /metrics           # vLLM's own Prometheus endpoint
+      targetMetric: gpu_cache_usage_perc   # scale on KV-cache pressure, not CPU%
+      targetValue: '50'
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: deepseek-r1-distill-llama-8b
+```
+[Source](https://aibrix.readthedocs.io/latest/features/autoscaling/metric-based-autoscaling.html)
+
+Swapping `scalingStrategy: HPA` for `KPA` and pointing `metricsSources` at AIBrix's own `aibrix-gpu-optimizer` Service (`metricSourceType: domain`, `targetMetric: vllm:deployment_replicas`) switches from a standard Kubernetes HPA-style controller to AIBrix's own request-pattern-forecasting autoscaler — the "optimizer-based" mode referenced nowhere else in this table because no other project in it offers a comparable forecasting mode. [Source](https://aibrix.readthedocs.io/latest/features/autoscaling/optimizer-based-autoscaling.html)
+
+**llmaz splits model identity from deployment** into two CRDs rather than one, reflecting the same separation of concerns as §20's model-weight discussion (where the model *is* vs. where it *runs*):
+
+```yaml
+apiVersion: llmaz.io/v1alpha1
+kind: OpenModel
+metadata:
+  name: opt-125m
+spec:
+  familyName: opt
+  source:
+    modelHub:
+      modelID: facebook/opt-125m   # pulled from Hugging Face Hub by default
+  inferenceConfig:
+    flavors:
+      - name: default
+        limits:
+          nvidia.com/gpu: 1
+---
+apiVersion: inference.llmaz.io/v1alpha1
+kind: Playground
+metadata:
+  name: opt-125m
+spec:
+  replicas: 1
+  modelClaim:
+    modelName: opt-125m            # references the OpenModel above by name
+```
+[Source](https://github.com/InftyAI/llmaz)
+
+The `OpenModel`/`Playground` split means a single `OpenModel` can be referenced by several `Playground`s at different replica counts or GPU flavors without redeclaring the model source each time — the same model-identity-vs-deployment separation KServe collapses into one `LLMInferenceService.spec.model` block.
+
+**KubeAI's single `Model` CRD** is the most compact of the five, matching its "deliberately zero external dependencies" design point from the table above — one resource covers model source, serving engine, and hardware profile:
+
+```yaml
+apiVersion: kubeai.org/v1
+kind: Model
+metadata:
+  name: llama-3.1-8b-instruct-fp8-l4
+spec:
+  features: [TextGeneration]
+  owner: neuralmagic
+  url: hf://neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8
+  engine: VLLM                     # or OLlama, FasterWhisper, Infinity
+  args:
+    - --max-model-len=16384
+    - --gpu-memory-utilization=0.9
+  resourceProfile: nvidia-gpu-l4:1  # KubeAI's own GPU-type:count shorthand
+```
+[Source](https://www.kubeai.org/how-to/install-models/)
+
+`features` and `engine` are what let a single CRD span KubeAI's broader-than-text-generation scope from the table above — the same `Model` kind, with `engine: FasterWhisper` and `features: [SpeechToText]`, deploys a speech-to-text model instead of an LLM, with no separate CRD needed.
+
+**Kaito's `Workspace`** is the CRD behind its GPU-node-auto-provisioning table entry — `resource.instanceType` is not a request against existing capacity, it is an instruction for Kaito to provision a matching Karpenter-managed node if one does not already exist:
+
+```yaml
+apiVersion: kaito.sh/v1alpha1
+kind: Workspace
+metadata:
+  name: workspace-falcon-7b-instruct
+resource:
+  instanceType: "Standard_NC12s_v3"   # Kaito provisions this VM size via Karpenter if needed
+  labelSelector:
+    matchLabels:
+      apps: falcon-7b-instruct
+inference:
+  preset:
+    name: "falcon-7b-instruct"        # curated preset: pulls weights and picks serving flags automatically
+```
+[Source](https://learn.microsoft.com/en-us/azure/aks/ai-toolchain-operator-fine-tune)
+
+The same CRD kind, with a `tuning` block instead of `inference`, drives Kaito's fine-tuning path (QLoRA and full fine-tuning presets), and an `inference.adapters` list attaches LoRA adapters produced by an earlier tuning `Workspace` onto a base-model inference `Workspace` — the one project in this table whose CRD spans provisioning, fine-tuning, and serving in a single resource kind rather than splitting them.
 
 ---
 
@@ -2230,6 +2406,15 @@ This chapter draws on and extends topics covered across the book:
 - [KubeAI (kubeai.org)](https://www.kubeai.org/)
 - [CNCF Sandbox Application: KubeAI (GitHub Issue)](https://github.com/cncf/sandbox/issues/377)
 - [CNCF: Kaito Project Page](https://www.cncf.io/projects/kaito/)
+- [Gateway API Inference Extension: InferencePool CRD source (config/crd/bases)](https://github.com/kubernetes-sigs/gateway-api-inference-extension/blob/main/config/crd/bases/inference.networking.k8s.io_inferencepools.yaml)
+- [Gateway API Inference Extension v1.6.0 Release Notes](https://github.com/kubernetes-sigs/gateway-api-inference-extension/releases/tag/v1.6.0)
+- [Gateway API Inference Extension: InferenceModel API Evolution proposal (KEP #1199)](https://github.com/kubernetes-sigs/gateway-api-inference-extension/blob/main/docs/proposals/1199-inferencemodel-api-evolution/README.md)
+- [KServe: Understanding LLMInferenceService](https://kserve.github.io/website/docs/model-serving/generative-inference/llmisvc/llmisvc-overview)
+- [AIBrix: Metric-based Autoscaling](https://aibrix.readthedocs.io/latest/features/autoscaling/metric-based-autoscaling.html)
+- [AIBrix: Optimizer-based Autoscaler](https://aibrix.readthedocs.io/latest/features/autoscaling/optimizer-based-autoscaling.html)
+- [llmaz GitHub repository (OpenModel/Playground examples)](https://github.com/InftyAI/llmaz)
+- [KubeAI: Install Models How-To](https://www.kubeai.org/how-to/install-models/)
+- [Microsoft Learn: Fine-tune and deploy an AI model on AKS with Kaito](https://learn.microsoft.com/en-us/azure/aks/ai-toolchain-operator-fine-tune)
 - [llama.cpp RPC Backend README](https://raw.githubusercontent.com/ggml-org/llama.cpp/master/tools/rpc/README.md)
 - [safetensors GitHub repository](https://github.com/huggingface/safetensors)
 - [Hugging Face Hub: Pickle Scanning and Security](https://huggingface.co/docs/hub/en/security-pickle)
