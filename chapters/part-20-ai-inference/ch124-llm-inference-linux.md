@@ -21,24 +21,39 @@
 10. [Performance Tuning and Benchmarking](#10-performance-tuning-and-benchmarking)
 11. [VRAM Capacity Planning: Will This Model Fit?](#11-vram-capacity-planning-will-this-model-fit)
 12. [MacBook vs. Gaming Laptop for Local Inference](#12-macbook-vs-gaming-laptop-for-local-inference)
-14. [Production Serving Engines: vLLM and SGLang](#14-production-serving-engines-vllm-and-sglang)
-    - [14.1 vLLM: PagedAttention as a Serving Engine](#141-vllm-pagedattention-as-a-serving-engine)
-    - [14.2 SGLang: RadixAttention and Structured Generation](#142-sglang-radixattention-and-structured-generation)
-15. [Disaggregated Prefill-Decode Serving](#15-disaggregated-prefill-decode-serving)
-16. [Speculative Decoding](#16-speculative-decoding)
-17. [Quantization for Serving Engines: GPTQ, AWQ, bitsandbytes, and FP8](#17-quantization-for-serving-engines-gptq-awq-bitsandbytes-and-fp8)
-18. [NVIDIA NGC Catalog and NIM Microservices](#18-nvidia-ngc-catalog-and-nim-microservices)
-19. [Docker Model Runner](#19-docker-model-runner)
-20. [Kubernetes-Native Agent Orchestration: kagent](#20-kubernetes-native-agent-orchestration-kagent)
-21. [Running Hugging Face Models Locally via the CLI](#21-running-hugging-face-models-locally-via-the-cli)
-22. [Fine-Tuning Acceleration with Unsloth](#22-fine-tuning-acceleration-with-unsloth)
-23. [Compiled-Engine Serving: TensorRT-LLM and LMDeploy](#23-compiled-engine-serving-tensorrt-llm-and-lmdeploy)
-24. [Model-Swapping Proxies: llama-swap and LiteLLM](#24-model-swapping-proxies-llama-swap-and-litellm)
-25. [Structured Output, Grammars, and Function Calling](#25-structured-output-grammars-and-function-calling)
-26. [Multi-LoRA Serving](#26-multi-lora-serving)
-27. [ExLlamaV2 and ExLlamaV3](#27-exllamav2-and-exllamav3)
-28. [llm-d: Kubernetes-Native Distributed Inference](#28-llm-d-kubernetes-native-distributed-inference)
-29. [Integrations](#29-integrations)
+13. [Production Serving Engines: vLLM and SGLang](#13-production-serving-engines-vllm-and-sglang)
+    - [13.1 vLLM: PagedAttention as a Serving Engine](#131-vllm-pagedattention-as-a-serving-engine)
+    - [13.2 SGLang: RadixAttention and Structured Generation](#132-sglang-radixattention-and-structured-generation)
+    - [13.3 A Third Option, Now in Maintenance Mode: Hugging Face TGI](#133-a-third-option-now-in-maintenance-mode-hugging-face-tgi)
+    - [13.4 Observability: Prometheus Metrics and Grafana Dashboards](#134-observability-prometheus-metrics-and-grafana-dashboards)
+14. [Disaggregated Prefill-Decode Serving](#14-disaggregated-prefill-decode-serving)
+15. [Speculative Decoding](#15-speculative-decoding)
+16. [Quantization for Serving Engines: GPTQ, AWQ, bitsandbytes, and FP8](#16-quantization-for-serving-engines-gptq-awq-bitsandbytes-and-fp8)
+17. [NVIDIA NGC Catalog and NIM Microservices](#17-nvidia-ngc-catalog-and-nim-microservices)
+18. [Docker Model Runner](#18-docker-model-runner)
+19. [Kubernetes-Native Agent Orchestration: kagent](#19-kubernetes-native-agent-orchestration-kagent)
+20. [Running Hugging Face Models Locally via the CLI](#20-running-hugging-face-models-locally-via-the-cli)
+21. [Fine-Tuning Acceleration with Unsloth](#21-fine-tuning-acceleration-with-unsloth)
+22. [Compiled-Engine Serving: TensorRT-LLM and LMDeploy](#22-compiled-engine-serving-tensorrt-llm-and-lmdeploy)
+23. [Model-Swapping Proxies: llama-swap and LiteLLM](#23-model-swapping-proxies-llama-swap-and-litellm)
+24. [Structured Output, Grammars, and Function Calling](#24-structured-output-grammars-and-function-calling)
+25. [Multi-LoRA Serving](#25-multi-lora-serving)
+26. [ExLlamaV2 and ExLlamaV3](#26-exllamav2-and-exllamav3)
+27. [llm-d: Kubernetes-Native Distributed Inference](#27-llm-d-kubernetes-native-distributed-inference)
+28. [Managed Inference Platforms: AWS Bedrock and Bedrock AgentCore](#28-managed-inference-platforms-aws-bedrock-and-bedrock-agentcore)
+    - [28.1 Model Catalog, API Surface, and Underlying Compute](#281-model-catalog-api-surface-and-underlying-compute)
+    - [28.2 Guardrails and Knowledge Bases](#282-guardrails-and-knowledge-bases)
+    - [28.3 Bedrock AgentCore: The Agentic Runtime Layer](#283-bedrock-agentcore-the-agentic-runtime-layer)
+    - [28.4 The Broader Managed-Inference Landscape](#284-the-broader-managed-inference-landscape)
+29. [Vercel's AI Platform](#29-vercels-ai-platform)
+    - [29.1 The AI SDK: A Provider-Agnostic Client Layer](#291-the-ai-sdk-a-provider-agnostic-client-layer)
+    - [29.2 AI Gateway](#292-ai-gateway)
+    - [29.3 Fluid Compute: Isolation Without a MicroVM Per Request](#293-fluid-compute-isolation-without-a-microvm-per-request)
+    - [29.4 v0](#294-v0)
+30. [Cloudflare's AI Platform: Workers AI](#30-cloudflares-ai-platform-workers-ai)
+    - [30.1 Workers AI and Infire, a Homegrown Inference Engine](#301-workers-ai-and-infire-a-homegrown-inference-engine)
+    - [30.2 AI Gateway, Vectorize, and Durable Objects as Agent State](#302-ai-gateway-vectorize-and-durable-objects-as-agent-state)
+31. [Integrations](#31-integrations)
 
 ---
 
@@ -65,12 +80,16 @@ This chapter examines the full software path from a **GGUF** file on disk to gen
   - the **build_llama** compute graph including fused **RoPE** via **ggml_rope_custom** and **Flash Attention** via **ggml_flash_attn_ext** with **coopMatMulAdd** on cooperative-matrix hardware
   - multi-GPU layer splitting with **--n-gpu-layers**, **--split-mode row**, and **--tensor-split**
   - representative **llama-bench** throughput numbers across **CUDA**, **ROCm**, and **Vulkan** backends
+  - distributed multi-machine inference via the **RPC backend** (**rpc-server**, **--rpc**), and its unauthenticated, trusted-network-only security model
 - **Section 4 — Memory-Mapped Weights and DMA-BUF**
   - the **GGUF** binary container format (header, KV metadata, tensor info, and 32-byte-aligned tensor data sections)
   - memory-mapped loading via **mmap(2)** with **MAP_SHARED** and **madvise** prefetch hints
   - host-to-GPU weight transfer through **vkCmdCopyBuffer** and **VK_ACCESS_TRANSFER_WRITE_BIT** pipeline barriers
   - handling models larger than VRAM via split mode and **MADV_WILLNEED** prefetch
   - zero-copy loading on systems with **Resizable BAR** (**AMD SAM**) using the **VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT** memory type
+  - why GGUF and **safetensors** carry no `pickle`-style remote-code-execution risk, unlike PyTorch's legacy `.bin` checkpoint format
+  - CPU-offloaded **MoE expert** inference for huge sparse models via **--cpu-moe**, **--n-cpu-moe**, and **--override-tensor**, plus the **ktransformers** project
+  - **llamafile**'s single-executable, Cosmopolitan-Libc-based distribution of engine and weights together
 - **Section 5 — Ollama**
   - its Go **ollama serve** HTTP server and **ollama_llama_server** runner subprocess
   - GPU detection via **NVML** (**libnvidia-ml.so**), **KFD** sysfs parsing for AMD, and **Level Zero** / **OpenCL** queries for Intel
@@ -78,6 +97,7 @@ This chapter examines the full software path from a **GGUF** file on disk to gen
   - the content-addressed model library under **~/.ollama/models/**
   - the **REST API** endpoints (**/api/generate**, **/api/chat**, **/api/embeddings**)
   - parallel request handling via **OLLAMA_NUM_PARALLEL** and llama.cpp's batched-decode path
+  - **LM Studio** as a GUI-first alternative model manager, also built on llama.cpp on Linux
 - **Section 6 — ONNX Runtime with GPU Execution Providers**
   - **ONNX Runtime** (**ORT**) and its **Execution Provider** (**EP**) plugin architecture
   - the **CUDA EP** using **cuDNN** and **cuBLAS** configured via **OrtCUDAProviderOptionsV2** (including **CUDA Graph** capture to eliminate per-iteration kernel launch overhead, **TF32** on Ampere+, and **TransformerOptimizer** graph fusions such as **SkipLayerNorm** and **FusedMatMul**)
@@ -106,6 +126,101 @@ This chapter examines the full software path from a **GGUF** file on disk to gen
   - GPU utilisation monitoring with **nvtop**, **nvidia-smi dmon**, **radeontop**, **rocm-smi**, and **intel_gpu_top**
   - power and thermal considerations including **TJmax** throttling and **nvidia-smi -pl** / **rocm-smi --setpoweroverdrive** power capping
   - roofline arithmetic-intensity analysis that explains why token generation at batch=1 is deeply memory-bandwidth-bound
+- **Section 11 — VRAM Capacity Planning**
+  - the VRAM sizing equation (`VRAM_weights + VRAM_kv_cache + VRAM_overhead`) worked through numerically for a Llama-3-8B Q4_K_M deployment
+  - **gguf-parser-go** for reading memory/throughput estimates directly out of GGUF header metadata, including the UMA-vs-NONUMA device split
+  - Hugging Face's **accelerate estimate-memory** tool for `safetensors`/PyTorch-format models bound for ONNX Runtime or ROCm/PyTorch
+  - runtime ground truth via **ollama ps**, **ollama show**, **nvidia-smi --query-gpu**, and **rocm-smi --showmeminfo**
+  - context-length extension via **RoPE scaling** (**Position Interpolation**, **NTK-aware scaling**, **YaRN**) and its multiplicative effect on KV cache VRAM, configured via llama.cpp's **--rope-scaling**/**--yarn-\*** flags and vLLM's **--hf-overrides** `rope_parameters`
+- **Section 12 — MacBook vs. Gaming Laptop for Local Inference**
+  - Apple Silicon's unified-memory architecture versus a discrete gaming-laptop GPU's dedicated VRAM pool, and the capacity consequences for large models
+  - the macOS software stack — **Metal**, Apple's **MLX** framework, and llama.cpp's `ggml_backend_metal` — contrasted with this chapter's Vulkan/CUDA/ROCm focus
+  - discrete-GPU gaming laptops running the same CUDA/Vulkan/ROCm stacks as desktop cards, within a fixed VRAM ceiling
+  - the status of **Asahi Linux**'s "Honeykrisp" Vulkan driver as an untested path for running llama.cpp's Vulkan backend on Apple Silicon under Linux
+- **Section 13 — Production Serving Engines: vLLM and SGLang**
+  - **vLLM**'s `LLMEngine`, continuous-batching scheduler, and V1 multi-process architecture, plus CUDA/ROCm installation and `vllm serve` launch flags
+  - vLLM's tensor- and pipeline-parallel multi-GPU/multi-node scaling
+  - **SGLang**'s **RadixAttention** prefix-caching radix tree and its structured-generation DSL (`gen`, `fork`, `choices`)
+  - SGLang installation, launch flags, and AMD Instinct (ROCm) support
+  - Hugging Face **TGI**'s Rust router / Python model-server architecture, and its current maintenance-mode status pointing users toward vLLM and SGLang
+  - production observability via **Prometheus** `/metrics` (vLLM's `vllm:*` series, SGLang's `--enable-metrics`) and official **Grafana** dashboards, plus a scope note on multimodal (vision-language) serving
+- **Section 14 — Disaggregated Prefill-Decode Serving**
+  - why co-locating compute-bound prefill and bandwidth-bound decode on one GPU causes head-of-line blocking, per the DistServe paper
+  - vLLM's experimental `--kv-transfer-config` connector abstraction (**NixlConnector**, **MooncakeConnector**, **LMCacheConnectorV1**, **MoRIIOConnector**)
+  - **NVIDIA Dynamo**'s orchestration layer over vLLM/SGLang/TensorRT-LLM and its **NIXL** transfer library
+  - **Mooncake**'s KV-cache-centric disaggregated architecture and Transfer Engine, as used in production by Moonshot AI's Kimi
+- **Section 15 — Speculative Decoding**
+  - lossless draft-model/target-model rejection sampling as a throughput technique orthogonal to quantisation
+  - **Medusa**'s multi-head tree decoding, **EAGLE**'s feature-space drafting, and **Lookahead decoding**'s Jacobi-iteration approach
+  - configuration surfaces in vLLM (`--speculative-config`), SGLang (`--speculative-algorithm`), and llama.cpp (`-md`/`--model-draft`)
+- **Section 16 — Quantization for Serving Engines**
+  - **GPTQ**'s layer-wise, Hessian-guided one-shot quantisation and its **GPTQModel** successor
+  - **AWQ**'s activation-aware protection of salient weight channels
+  - **bitsandbytes**' `LLM.int8()` outlier-isolation scheme and **NF4** (QLoRA)
+  - hardware-native **FP8** (E4M3/E5M2) on Ada Lovelace/Hopper/Blackwell Tensor Cores, and the `--quantization` flag surface shared across these formats
+- **Section 17 — NVIDIA NGC Catalog and NIM Microservices**
+  - the **NGC** container registry and `nvcr.io` Docker authentication via `$oauthtoken`
+  - **NIM**'s pre-built, per-GPU-optimised OpenAI-compatible containers wrapping TensorRT-LLM or vLLM underneath
+  - a concrete local NIM deployment via `docker run --runtime=nvidia`
+  - the free developer-program tier versus the licensed NVIDIA AI Enterprise production path
+  - GPU rental (RunPod, Lambda, Vast.ai, CoreWeave) as a hardware-only alternative to NGC/NIM's software stack
+- **Section 18 — Docker Model Runner**
+  - Docker Model Runner's architecture: a vendored `llama-server` binary running natively on the host rather than inside a container
+  - native Linux support via `docker-model-plugin` and the `docker model` CLI verb group
+  - model distribution as OCI Artifacts on Docker Hub, plus direct Hugging Face GGUF pulls
+  - the OpenAI-compatible endpoint exposed at `model-runner.docker.internal`
+- **Section 19 — Kubernetes-Native Agent Orchestration: kagent**
+  - why **kagent** is an agent-orchestration layer, not an inference engine — it never hosts model weights itself
+  - its `Agent`, `ModelConfig`, and `ToolServer` custom resources, and how `ModelConfig` points at an already-running Ollama/vLLM/SGLang endpoint
+  - Helm-based cluster installation
+- **Section 20 — Running Hugging Face Models Locally via the CLI**
+  - the **hf** CLI (renamed from `huggingface-cli`) and its `hf <resource> <action>` command grammar
+  - `hf download` with `--include`/`--exclude` glob filtering for pulling a single GGUF quantisation out of a multi-file repo
+  - the `~/.cache/huggingface/hub` blob/snapshot/refs cache layout and its deduplication behaviour
+  - the **Xet**-based transfer-acceleration backend that replaced `hf_transfer`
+- **Section 21 — Fine-Tuning Acceleration with Unsloth**
+  - **Unsloth**'s hand-written Triton kernels and manually-derived backward pass for faster, lower-VRAM LoRA/QLoRA fine-tuning
+  - its NVIDIA CUDA-primary support alongside newer AMD ROCm and Intel/CPU paths
+  - a QLoRA fine-tuning example and export straight to GGUF (§1) or a merged checkpoint for vLLM/SGLang (§13)
+  - **Modal** as a common serverless, per-second-billed deployment target for the fine-tuning run itself
+- **Section 22 — Compiled-Engine Serving: TensorRT-LLM and LMDeploy**
+  - **TensorRT-LLM**'s ahead-of-time `trtllm-build` engine compilation and `trtllm-serve` OpenAI-compatible server — the engine NIM (§17) wraps internally
+  - **LMDeploy**'s compiled **TurboMind** engine versus its PyTorch eager-mode engine, and its AMD ROCm support (unlike TensorRT-LLM)
+- **Section 23 — Model-Swapping Proxies: llama-swap and LiteLLM**
+  - **llama-swap**'s YAML-configured process supervision that loads/unloads backend processes per request, with idle-timeout unloading and concurrent-model "groups"
+  - **LiteLLM**'s unified OpenAI-compatible proxy fronting both local (Ollama, vLLM) and cloud backends, with cost tracking and failover
+  - **OpenRouter** as a hosted, multi-provider routing SaaS — the un-self-hosted counterpart to LiteLLM and Vercel's AI Gateway (§29.2)
+- **Section 24 — Structured Output, Grammars, and Function Calling**
+  - constrained decoding via compiled-grammar token masking, composing transparently with quantisation, speculative decoding, and batching
+  - **Outlines**, **XGrammar**, and llama.cpp's native **GBNF** grammar format
+  - backend-selection flags in vLLM (`--structured-outputs-config.backend`) and SGLang (`--grammar-backend`)
+  - function/tool-calling parser selection (`--tool-call-parser`) matched to a model family's native tool-call format
+- **Section 25 — Multi-LoRA Serving**
+  - the **Punica** batched SGMV kernel and **S-LoRA**'s Unified Paging, which both serving engines build on
+  - vLLM's `--enable-lora`/`--lora-modules` and hot-swap `load_lora_adapter`/`unload_lora_adapter` API
+  - SGLang's `--lora-paths`, `--max-loras-per-batch`, and `csgmv` kernel backend
+- **Section 26 — ExLlamaV2 and ExLlamaV3**
+  - **EXL2**'s variable-bit-depth, per-group GPTQ-style quantisation (now archived in favour of V3)
+  - **EXL3**'s QTIP-derived trellis-coded quantisation format
+  - the CUDA-only scope of both engines and **TabbyAPI** as their OpenAI-compatible serving frontend
+- **Section 27 — llm-d: Kubernetes-Native Distributed Inference**
+  - **llm-d**, a CNCF Sandbox project, as a Kubernetes-native orchestration layer sitting directly above vLLM/SGLang pods
+  - routing built on the Kubernetes SIG Gateway API Inference Extension
+  - cluster-scale prefill/decode disaggregation and prefix-cache-aware request routing, contrasted with §14's single-process connectors
+  - **Ray Serve** and **KubeRay** as a general-purpose, Ray-based alternative path to distributed vLLM serving on Kubernetes, with **Anyscale** as its managed offering
+- **Section 28 — Managed Inference Platforms: AWS Bedrock and Bedrock AgentCore**
+  - Bedrock's fully managed FM API, its Trainium2/Inferentia2 Neuron-SDK compute substrate, and On-Demand/Provisioned-Throughput/Batch billing
+  - Guardrails' content/PII filters and contextual grounding checks, and Knowledge Bases' managed RAG pipeline
+  - **Bedrock AgentCore**'s modular agentic runtime (Gateway, Memory, Identity, Code Interpreter) and its dedicated-microVM-per-session isolation model
+  - the broader managed-inference landscape: Azure AI Foundry and Vertex AI as Bedrock's hyperscaler peers, HF Inference Endpoints/Providers, Together/Fireworks/Groq/Baseten/Replicate, and CoreWeave
+- **Section 29 — Vercel's AI Platform**
+  - the **AI SDK**'s provider-agnostic client layer, including its `createOpenAICompatible` path for wiring in self-hosted vLLM/Ollama endpoints from §5/§13
+  - **AI Gateway** as a standalone multi-protocol routing/failover/BYOK proxy
+  - **Fluid Compute**'s in-function-concurrency isolation model, contrasted with per-request microVMs
+- **Section 30 — Cloudflare's AI Platform: Workers AI**
+  - Workers AI's edge-deployed GPU fleet and Neurons billing
+  - **Infire**, Cloudflare's own Rust inference engine built to replace vLLM in production, as a direct counterpoint to §13
+  - AI Gateway, Vectorize/AI Search managed RAG, and Durable Objects as a persistent-actor alternative to AgentCore's session model
 
 ### 1.1 What is LLM Inference?
 
@@ -373,6 +488,34 @@ The following figures are from community benchmarks using `llama-bench` on Llama
 
 Note: prompt processing speed scales roughly with compute (tensor core TFLOPS); generation speed scales with memory bandwidth. The RTX 4090's 1 TB/s bandwidth advantage drives its generation edge over the RX 7900 XTX (960 GB/s). These numbers represent single-stream inference; multi-user batching changes the picture significantly. Note: verify against your specific build tag and driver version.
 
+### 3.6 Distributed Inference Across Machines: The RPC Backend
+
+`--tensor-split` and `--split-mode row` in §3.4 distribute layers across multiple GPUs *within one machine*. llama.cpp's RPC backend, at `tools/rpc/` in the source tree, extends the same idea across machines: one or more hosts run an `rpc-server` process that exposes a local `ggml` device (a GPU, or the CPU backend) over the network, and a coordinating `llama-cli`/`llama-server` process treats each remote endpoint as just another backend device for layer splitting, alongside any GPUs installed locally. [Source](https://github.com/ggml-org/llama.cpp/tree/master/tools/rpc)
+
+Building requires the `GGML_RPC` CMake option in addition to whatever compute backend the remote machine uses:
+
+```bash
+cmake .. -DGGML_CUDA=ON -DGGML_RPC=ON
+cmake --build . --config Release
+```
+
+On each remote machine, `rpc-server` binds a port and exposes one device (`CUDA_VISIBLE_DEVICES` or an explicit `--device` selects which one, on multi-GPU remote hosts):
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bin/rpc-server -p 50052
+```
+
+The coordinating process then passes a comma-separated list of `host:port` pairs via `--rpc`, exactly as it would pass a `--tensor-split` ratio for local GPUs:
+
+```bash
+llama-server -hf ggml-org/gemma-3-1b-it-GGUF -ngl 99 \
+    --rpc 192.168.88.10:50052,192.168.88.11:50052
+```
+
+[Source](https://raw.githubusercontent.com/ggml-org/llama.cpp/master/tools/rpc/README.md)
+
+Two caveats matter more here than for the local multi-GPU case in §3.4. First, network bandwidth — not PCIe or NVLink — becomes the transfer bottleneck for activations moving between split layers, so RPC scaling helps most for models too large to fit on any single machine's GPUs, not as a general throughput multiplier. Second, and more important operationally: the upstream README is explicit that the protocol carries no authentication or encryption, stating verbatim, *"This example and the RPC backend are currently in a proof-of-concept development stage. As such, the functionality is fragile and insecure. Never run the RPC server on an open network or in a sensitive environment!"* [Source](https://raw.githubusercontent.com/ggml-org/llama.cpp/master/tools/rpc/README.md) As of this writing the backend remains labelled a proof of concept rather than a production-ready feature — treat it as suitable for a trusted LAN of machines under one operator's control, not a multi-tenant or internet-facing deployment.
+
 ---
 
 ## 4. Memory-Mapped Weights and DMA-BUF
@@ -407,6 +550,8 @@ The GGUF (GGML Universal File Format) binary container packs model weights, toke
 ```
 
 The 32-byte alignment guarantee means that the tensor data section can be `mmap`-ped directly into process address space and individual tensor pointers handed to Vulkan or CUDA without any byte-copying for host-side CPU inference.
+
+A structural side-effect of this flat header-plus-bytes layout is worth noting: neither GGUF nor Hugging Face's `safetensors` format requires any deserialization step to load. PyTorch's legacy `.bin` checkpoint format is a Python `pickle` stream, and `pickle.load` can execute arbitrary code embedded in the file — a genuine remote-code-execution vector when loading a checkpoint from an untrusted source. `safetensors` was created explicitly to remove that risk: its own README states the rationale as "the need to remove the need to use `pickle`... which is used by default" for PyTorch checkpoints, replacing it with a JSON header (tensor names, dtypes, shapes, byte offsets) followed by a flat, non-overlapping tensor-data buffer. [Source](https://github.com/huggingface/safetensors) Hugging Face Hub runs an automated pickle scanner against `.bin` repositories and marks flagged ones "Unsafe" in its UI, though this does not block downloading or loading them, and independent research has found bypasses in the scanner itself — the practical takeaway is that GGUF and safetensors both carry a real safety property `.bin`/pickle checkpoints do not, but the Hub's warning label is a signal to check, not a guarantee. [Source](https://huggingface.co/docs/hub/en/security-pickle)
 
 ### 4.2 Memory-Mapped Loading
 
@@ -466,6 +611,23 @@ cat /sys/bus/pci/devices/0000:09:00.0/resource | awk 'NR==2{size=$2-$1; printf "
 # With ReBAR: BAR1: 24576 MB (full VRAM)
 # Without:    BAR1: 256 MB  (legacy 256 MB aperture)
 ```
+
+### 4.6 CPU-Offloaded MoE Expert Inference
+
+§4.4's split mode divides a dense model's *layers* between GPU and CPU. Sparse Mixture-of-Experts models — DeepSeek-V3/R1, Qwen3-235B-A22B, Kimi-K2 — invite a different split, one along the *expert* axis rather than the layer axis, because only a small fraction of each MoE layer's expert weights are read per token (a Q4_K_M DeepSeek-R1, for example, activates roughly 37B of its 671B total parameters per forward pass). Recent llama.cpp builds expose this directly: `-cmoe`/`--cpu-moe` keeps all MoE expert tensors on CPU while everything else (attention, shared/dense layers) runs on GPU; `-ncmoe N`/`--n-cpu-moe N` keeps only the first N MoE layers' experts on CPU, letting an operator tune the GPU/CPU split layer-by-layer against available VRAM; and the more general `-ot`/`--override-tensor <regex>=<buffer>` flag places arbitrary tensors by name pattern, of which expert-tensor CPU pinning (a pattern such as `"\.ffn_.*_exps\.=CPU"` matching the per-layer expert FFN tensors) is one common use. [Source](https://github.com/ggml-org/llama.cpp) Because attention and the always-active dense layers stay on GPU, prefill throughput and the KV cache (§9) remain fast; only the sparse per-token expert lookups pay the CPU-RAM bandwidth cost, so the same roofline argument from §2's pipeline-path comparison applies at the sub-layer level — CPU DDR5 at roughly 50–100 GB/s versus a discrete GPU's multi-TB/s VRAM. This is what makes it practical to run a 671B-parameter model on a single 24 GB consumer GPU at all, at a real but bounded throughput cost, rather than not running it.
+
+The dedicated **ktransformers** project (Apache 2.0, github.com/kvcache-ai/ktransformers) generalizes the same idea with NUMA-aware expert placement and hand-optimized CPU kernels (Intel AMX/AVX-512/AVX2) for quantized expert compute, rather than relying on llama.cpp's more general tensor-placement mechanism. Its own reported figures — e.g. DeepSeek-R1-0528 at FP8 reaching over 220 tok/s aggregate throughput — are measured on a multi-GPU server (8×L20) paired with a server-class Xeon, not a single consumer card, so they characterize the ceiling of the technique rather than a single-GPU baseline. [Source](https://github.com/kvcache-ai/ktransformers) vLLM's `--cpu-offload-gb` flag offers a superficially similar capability but is not MoE-aware — it offloads a fixed byte budget of weights generically and swaps them to GPU on demand — so expert-level offload of the kind described here is, at present, primarily a llama.cpp/ktransformers technique rather than something the production serving engines in §13 support natively.
+
+### 4.7 llamafile: Single-Executable Model Distribution
+
+**llamafile** (github.com/Mozilla-Ocho/llamafile) packages a llama.cpp-derived inference engine and a GGUF model's weights into one self-contained binary, using **Cosmopolitan Libc** to build an "Actually Portable Executable" that runs unmodified on Linux, macOS, Windows, and several BSDs without an install step. [Source](https://github.com/Mozilla-Ocho/llamafile) Running one is as simple as:
+
+```bash
+chmod +x llava-v1.5-7b-q4.llamafile
+./llava-v1.5-7b-q4.llamafile
+```
+
+(Windows requires renaming to a `.exe` extension, and the APE format's 4 GB file-size ceiling on Windows rules out running the largest quantised models there specifically.) llamafile's own code is Apache 2.0 licensed; its llama.cpp and whisper.cpp modifications remain MIT-licensed to stay upstream-compatible. The project continues to see regular releases as of this writing, though it periodically lags plain llama.cpp on the very newest upstream model architectures and kernels, since each release re-syncs against a specific llama.cpp commit rather than tracking it continuously. The practical trade-off versus running llama.cpp directly (§3–§4) is distribution convenience — a single file to download and `chmod +x`, no separate weights file, no build step — at the cost of a larger download (engine binary plus weights bundled together) and being one release behind whatever llama.cpp itself just shipped.
 
 ---
 
@@ -530,6 +692,10 @@ Ollama maintains a model LRU cache: models stay loaded in VRAM for `OLLAMA_KEEP_
 ### 5.5 Parallel Request Handling
 
 Within a single runner, Ollama serialises requests by default. When `OLLAMA_NUM_PARALLEL` is set, the runner uses llama.cpp's batched-decode path: multiple prompts are processed together in a single `llama_decode` call with a padded batch, sharing KV cache VRAM. Context slots are allocated round-robin and swapped to CPU when exhausted. This is the same mechanism as llama.cpp's `--parallel N` flag.
+
+### 5.6 GUI Alternative: LM Studio
+
+Ollama is not the only model manager competing for the "local model, minimal setup" niche. **LM Studio** targets the same audience with a desktop GUI rather than a CLI-first daemon: model discovery, download, and chat happen in a native app window, while a background server exposes an OpenAI- and Anthropic-compatible API on `localhost:1234` for programmatic use. Like Ollama, its default inference backend on Linux is llama.cpp — LM Studio additionally ships an MLX backend, but MLX is Apple-Silicon-only, so on Linux (as on Windows) llama.cpp is the sole engine, and the GGUF/quantization material in §1 applies unchanged. [Source](https://lmstudio.ai/docs/app) LM Studio's own documentation lists x64 Linux PCs as a supported platform alongside Apple Silicon Macs and Windows; Note: needs verification whether Linux feature parity with the macOS build (packaging format, update cadence) still lags as of the current release, since public discussion of this has historically varied by version. Where Ollama's model library and REST API (§5.3–§5.4) suit scripted or server-side deployments, LM Studio's GUI-first design suits interactive, single-user desktop use — the two are complementary defaults for different workflows more than direct substitutes.
 
 ---
 
@@ -1049,6 +1215,26 @@ rocm-smi --showmeminfo vram
 
 These report the same free/used VRAM figures surfaced by the `nvtop`/`radeontop` monitors in §10.3, and are the ground truth against which any of the estimators above should be checked.
 
+### 11.5 Context-Length Extension and Its VRAM Cost
+
+§11.1's KV cache term scales linearly with `n_ctx`, and that arithmetic holds regardless of how the context length was arrived at — but a model cannot simply be *asked* to run at a longer context than it was trained for. RoPE (§3.3) encodes position as a rotation angle θ = pos/base^(2i/d); a model trained at, say, an 8K context never saw the rotation angles that positions beyond 8K produce, and quality degrades sharply past that trained boundary. Three techniques address this, all reusing a model's existing weights rather than requiring a full retrain:
+
+- **Position Interpolation** (Chen et al., 2023) linearly compresses out-of-range position indices back into the trained range, extending LLaMA-family context to 32K with under 1,000 fine-tuning steps. [Source](https://arxiv.org/abs/2306.15595)
+- **NTK-aware scaling**, which originated as a community technique (not a formal paper) rather than uniformly compressing every position like PI, scales RoPE's frequency bands unevenly — preserving high-frequency (short-range) resolution while stretching low-frequency (long-range) components — motivated by an analogy to Neural Tangent Kernel theory. [Source](https://www.reddit.com/r/LocalLLaMA/comments/14lz7j5/ntkaware_scaled_rope_allows_llama_models_to_have/)
+- **YaRN** (Yet another RoPE extensioN method, Peng et al., 2023) combines NTK-by-parts frequency-band interpolation with an attention-temperature adjustment, reporting 128K-context fine-tunes of 7B/13B LLaMA models needing roughly 10× fewer training tokens than prior extension methods; a "Dynamic YaRN" inference-time variant claims over 2× context extension with no fine-tuning at all. [Source](https://arxiv.org/abs/2309.00071)
+
+llama.cpp exposes all three as launch-time flags rather than requiring a special build: `--rope-scaling {none,linear,yarn}` selects the method, `--rope-freq-base`/`--rope-freq-scale` control the NTK-style frequency parameters, and `--yarn-orig-ctx`, `--yarn-ext-factor`, `--yarn-attn-factor`, `--yarn-beta-slow`/`--yarn-beta-fast` tune YaRN specifically. [Source](https://manpages.debian.org/unstable/llama.cpp-tools/llama-cli.1.en.html) vLLM's current mechanism is a `--hf-overrides` JSON blob carrying a `rope_parameters` dict:
+
+```bash
+vllm serve Qwen/Qwen3-0.6B \
+    --hf-overrides '{"rope_parameters": {"rope_type": "yarn", "factor": 4.0, "original_max_position_embeddings": 32768}}' \
+    --max-model-len 131072
+```
+
+**Note: verify against your installed vLLM version** — this configuration surface has moved before (older releases and some model cards still reference a `rope_scaling` key rather than `rope_parameters`), so confirm the current field name against the running release's `--help` output or its `docs.vllm.ai` "Context Extension" page before deploying. [Source](https://docs.vllm.ai/en/stable/features/context_extension/)
+
+None of these techniques change §11.1's sizing arithmetic: a model served at 4× its trained context consumes 4× the KV cache VRAM whether or not RoPE scaling is enabled. What RoPE scaling buys is making that longer context *usable* — the memory cost of getting there is paid regardless.
+
 ## 12. MacBook vs. Gaming Laptop for Local Inference
 
 The GGML Vulkan/CUDA/ROCm/OpenVINO stack covered in this chapter targets Linux GPUs, but the two most common portable hardware choices for running LLMs locally — an Apple Silicon MacBook and an RTX-class gaming laptop — sit on opposite sides of a fundamental memory-architecture divide worth understanding before choosing either.
@@ -1079,11 +1265,11 @@ Because llama.cpp's Vulkan backend (§2.2) targets any Vulkan 1.2+ device, an Ap
 
 ---
 
-## 14. Production Serving Engines: vLLM and SGLang
+## 13. Production Serving Engines: vLLM and SGLang
 
-Everything from §1–§13 covers single-user or small-scale local inference: one process, one or a few GPUs, one request at a time or a small handful. Production serving — many concurrent users, an OpenAI-compatible HTTP API, and throughput measured in aggregate tokens/second rather than single-stream latency — is a different engineering problem, and it is dominated by two open-source engines: **vLLM** and **SGLang**. Both build on the KV cache and PagedAttention concepts already introduced in §9, but add continuous batching schedulers, distributed execution, and quantized-serving support on top.
+Everything from §1–§12 covers single-user or small-scale local inference: one process, one or a few GPUs, one request at a time or a small handful. Production serving — many concurrent users, an OpenAI-compatible HTTP API, and throughput measured in aggregate tokens/second rather than single-stream latency — is a different engineering problem, and it is dominated by two open-source engines: **vLLM** and **SGLang**. Both build on the KV cache and PagedAttention concepts already introduced in §9, but add continuous batching schedulers, distributed execution, and quantized-serving support on top.
 
-### 14.1 vLLM: PagedAttention as a Serving Engine
+### 13.1 vLLM: PagedAttention as a Serving Engine
 
 vLLM originated at UC Berkeley's Sky Computing Lab and is now a community-maintained project (2,000+ contributors) under the Apache 2.0 license. [Source](https://github.com/vllm-project/vllm) Where §9.2 described PagedAttention as a KV cache memory-management technique, vLLM the *engine* wraps that technique in a full serving stack: an `LLMEngine` that tokenizes requests, a **scheduler** that performs iteration-level continuous batching (admitting new requests into a running batch as soon as GPU slots free up, rather than only at batch boundaries), and GPU worker processes that execute the model. In the current V1 architecture, the API server, the engine-core process (scheduler + KV cache manager), and the GPU workers run as separate processes communicating over IPC. [Source](https://docs.vllm.ai/en/latest/design/arch_overview/)
 
@@ -1111,7 +1297,7 @@ vllm serve NousResearch/Meta-Llama-3-8B-Instruct \
     --quantization awq
 ```
 
-`--gpu-memory-utilization` (default 0.9) is the fraction of GPU memory vLLM's executor reserves for weights, activations, and the KV cache pool — the same VRAM-budgeting concern §11.1's sizing equation addresses, but here vLLM manages the allocation internally rather than the operator computing it by hand. `--max-model-len` caps the maximum sequence length (context + generation) the KV cache pool is sized for; `--dtype auto` selects FP16 or BF16 based on the checkpoint; `--quantization` loads a pre-quantized checkpoint format (§17 covers the formats vLLM accepts here in depth). [Source](https://docs.vllm.ai/en/latest/serving/online_serving/) [Source](https://docs.vllm.ai/en/v0.10.2/configuration/engine_args.html)
+`--gpu-memory-utilization` (default 0.9) is the fraction of GPU memory vLLM's executor reserves for weights, activations, and the KV cache pool — the same VRAM-budgeting concern §11.1's sizing equation addresses, but here vLLM manages the allocation internally rather than the operator computing it by hand. `--max-model-len` caps the maximum sequence length (context + generation) the KV cache pool is sized for; `--dtype auto` selects FP16 or BF16 based on the checkpoint; `--quantization` loads a pre-quantized checkpoint format (§16 covers the formats vLLM accepts here in depth). [Source](https://docs.vllm.ai/en/latest/serving/online_serving/) [Source](https://docs.vllm.ai/en/v0.10.2/configuration/engine_args.html)
 
 **Multi-GPU parallelism.** vLLM implements tensor parallelism following Megatron-LM's approach (splitting attention and MLP weight matrices across GPUs) and combines it with pipeline parallelism for multi-node scale-out. A common convention is tensor-parallel size equal to the GPU count within a node, pipeline-parallel size equal to the node count:
 
@@ -1123,7 +1309,7 @@ vllm serve gpt2 --tensor-parallel-size 4 --pipeline-parallel-size 2
 
 As of this writing, the current release is v0.28.0 (2026-08-26). [Source](https://github.com/vllm-project/vllm/releases/tag/v0.28.0)
 
-### 14.2 SGLang: RadixAttention and Structured Generation
+### 13.2 SGLang: RadixAttention and Structured Generation
 
 SGLang ("Structured Generation Language") is a serving engine and Python-embedded DSL from LMSYS Org (the UC Berkeley-affiliated group behind Chatbot Arena), introduced in a January 2024 blog post and formalized in a NeurIPS 2024 paper. [Source](https://arxiv.org/abs/2312.07104) [Source](https://www.lmsys.org/blog/2024-01-17-sglang/) It is Apache 2.0 licensed and, as of this writing, at PyPI version 0.5.18. [Source](https://pypi.org/project/sglang/)
 
@@ -1146,9 +1332,33 @@ python -m sglang.launch_server \
 
 SGLang's own blog posts report throughput advantages over vLLM ranging from roughly 3× (structured generation workloads, Jan 2024) to 3–7× (DeepSeek MLA-optimized models, Sep 2024) — these figures are self-reported by the SGLang project against specific vLLM versions and hardware configurations, not independently audited, and should be read as directional rather than a fixed multiplier. [Source](https://www.lmsys.org/blog/2024-07-25-sglang-llama3/) [Source](https://www.lmsys.org/blog/2024-09-04-sglang-v0-3/)
 
+### 13.3 A Third Option, Now in Maintenance Mode: Hugging Face TGI
+
+Hugging Face's own serving engine, **TGI** (Text Generation Inference, Apache 2.0), predates both vLLM and SGLang's rise to prominence and shares the same three-tier shape: a Rust **router** handling HTTP, request queueing, and continuous batching; a Python **model-server** performing the actual forward passes; and a **launcher** that starts and wires the two together over gRPC. [Source](https://github.com/huggingface/text-generation-inference/blob/main/docs/source/architecture.md) The documented Linux deployment path is a Docker container:
+
+```bash
+docker run --gpus all --shm-size 1g -p 8080:80 -v $PWD/data:/data \
+    ghcr.io/huggingface/text-generation-inference:3.3.5 \
+    --model-id HuggingFaceH4/zephyr-7b-beta
+```
+
+with a `--quantize` flag selecting among bitsandbytes, GPTQ, EETQ, AWQ, Marlin, or FP8, and a ROCm-specific image tag (`:3.3.5-rocm`, launched with `--device /dev/kfd --device /dev/dri` in place of `--gpus all`) supporting AMD Instinct MI210/MI250. [Source](https://raw.githubusercontent.com/huggingface/text-generation-inference/main/README.md)
+
+As of this writing, however, TGI's own README states plainly that the project **is in maintenance mode**: *"Going forward, we will accept pull requests for minor bug fixes, documentation improvements and lightweight maintenance tasks,"* and it directs users toward vLLM, SGLang, or local engines such as llama.cpp instead. [Source](https://github.com/huggingface/text-generation-inference) This chapter covers TGI for completeness and because existing deployments still run it, not as a recommendation over §13.1/§13.2 for new production work.
+
+### 13.4 Observability: Prometheus Metrics and Grafana Dashboards
+
+Both vLLM and SGLang expose serving-engine health as Prometheus metrics, the standard way an operator would monitor either engine in production alongside the GPU-level tools already covered in §10.3.
+
+vLLM serves metrics automatically — no launch flag is required — at `GET /metrics` on the same port as the OpenAI-compatible API. Useful series include the gauges `vllm:num_requests_running` and `vllm:kv_cache_usage_perc` (the PagedAttention block-pool occupancy from §9.2), counters `vllm:prompt_tokens_total`/`vllm:generation_tokens_total`, and latency histograms `vllm:time_to_first_token_seconds`, `vllm:inter_token_latency_seconds`, and `vllm:e2e_request_latency_seconds`. [Source](https://docs.vllm.ai/en/latest/design/v1/metrics.html) vLLM ships example Grafana dashboard JSON in-repo (`examples/observability/dashboards/`) covering latency/throughput and request-volume panels, importable directly into a Grafana instance already pointed at a Prometheus server scraping vLLM's `/metrics` endpoint. [Source](https://docs.vllm.ai/en/latest/examples/observability/dashboards/) Optional OpenTelemetry request tracing is available behind `--otlp-traces-endpoint`, adding per-request forward-pass spans at the cost of tracing overhead — opt-in rather than default. [Source](https://docs.vllm.ai/en/latest/design/v1/metrics.html)
+
+SGLang's metrics are opt-in: `--enable-metrics` on `sglang.launch_server` exposes the same kind of `/metrics` endpoint on the server's port. [Source](https://docs.sglang.ai/references/production_metrics.html) As with any dashboard tied to a fast-moving project's metric names, verify example Grafana panels against the currently installed SGLang release before relying on them — SGLang's issue tracker has recorded at least one case of an example dashboard going stale after a metrics-naming change. [Source](https://github.com/sgl-project/sglang/issues/12618)
+
+**A brief scope note on multimodal serving.** This chapter's examples are text-only throughout, but the same serving engines handle vision-language models (Llama 3.2 Vision, Qwen2.5-VL, LLaVA) through the identical OpenAI-compatible `/v1/chat/completions` endpoint, sending images as `{"type": "image_url", "image_url": {"url": ...}}` content parts alongside text. vLLM requires `--trust-remote-code` for most VLM architectures plus a `--limit-mm-per-prompt` cap on images/video per request (e.g. `--limit-mm-per-prompt image=4`); SGLang documents the same Qwen-VL and Llama 3.2 Vision family support through its own `launch_server` path. [Source](https://docs.vllm.ai/en/stable/features/multimodal_inputs/) [Source](https://docs.sglang.io/docs/supported-models/multimodal_language_models) Ollama likewise ships vision-capable models (LLaVA, Qwen-VL, Gemma 3, Llama 3.2 Vision) runnable through its existing `/api/chat` endpoint from §5. [Source](https://ollama.com/search?q=vision) None of the quantisation, KV cache, or batching material elsewhere in this chapter changes for multimodal models — the vision encoder's output is projected into the same token embedding space the text-only pipeline already consumes — so this chapter does not treat VLM serving as a separate topic beyond this note.
+
 ---
 
-## 15. Disaggregated Prefill-Decode Serving
+## 14. Disaggregated Prefill-Decode Serving
 
 §9.1 characterized prefill as compute-bound (large batched matrix multiplies over the full prompt) and decode as memory-bandwidth-bound (one token at a time, reading the entire KV cache and weight set per step). When both phases run on the same GPU, they interfere: a batch of large prefill jobs delays the small, latency-sensitive decode steps queued behind them — a form of head-of-line blocking that couples two workloads with fundamentally different latency objectives (prefill optimizes Time-To-First-Token; decode optimizes Time-Per-Output-Token). The DistServe paper (OSDI 2024) frames this explicitly and reports that separating the two phases onto independently-scaled GPU pools — with the KV cache computed during prefill transferred over the network to the decode pool — lets a cluster serve up to 7.4× more requests within the same latency SLO. [Source](https://arxiv.org/abs/2401.09670)
 
@@ -1160,11 +1370,20 @@ This pattern, disaggregated (or "P/D-disaggregated") serving, has since been imp
 
 - **Mooncake** (https://github.com/kvcache-ai/Mooncake, Apache 2.0, FAST 2025 Best Paper) is the KV-cache-centric disaggregated architecture backing Moonshot AI's production Kimi service. It separates prefill and decode clusters and pools DRAM/SSD/RDMA resources across the cluster into a shared KV cache store ("Mooncake Store"), moved by a **Transfer Engine** that aggregates multiple NICs and supports RDMA, TCP, and NVMe-oF. The project reports serving 75% more requests under the same SLOs in production, and paper-level results of 59–498% effective capacity increase over non-disaggregated baselines on real traces. [Source](https://arxiv.org/abs/2407.00079) [Source](https://github.com/kvcache-ai/Mooncake)
 
-All three vLLM, Dynamo, and Mooncake connectors are Apache 2.0 licensed. As of this writing, vLLM's own implementation remains explicitly marked experimental in its documentation — disaggregated serving is a technique worth understanding for its architectural implications (it decouples GPU pool sizing for prefill from decode, and pushes the KV cache transfer problem onto the network/RDMA fabric rather than local VRAM), but it is not yet the default deployment path for a single-node local-inference setup of the kind §1–§13 describe.
+All three vLLM, Dynamo, and Mooncake connectors are Apache 2.0 licensed. As of this writing, vLLM's own implementation remains explicitly marked experimental in its documentation — disaggregated serving is a technique worth understanding for its architectural implications (it decouples GPU pool sizing for prefill from decode, and pushes the KV cache transfer problem onto the network/RDMA fabric rather than local VRAM), but it is not yet the default deployment path for a single-node local-inference setup of the kind §1–§12 describe.
+
+| **Project** | **Backing org** | **Transfer library** | **Engines fronted** | **Status** | **Self-reported gain** |
+|---|---|---|---|---|---|
+| vLLM `--kv-transfer-config` | vLLM project | NIXL (`NixlConnector`), Mooncake, LMCache, MoRIIO (ROCm) | vLLM only | Experimental | Latency-goodput only — "does not improve throughput" per vLLM's own docs |
+| NVIDIA Dynamo | NVIDIA | NIXL (UCX / GPUDirect Storage) | SGLang, TensorRT-LLM, vLLM (orchestrates above them) | Active | Up to 7× per-GPU throughput, 2× faster TTFT (DeepSeek-R1 on GB200 NVL72) |
+| Mooncake | Moonshot AI / kvcache-ai | Transfer Engine (RDMA/TCP/NVMe-oF) | Backs Kimi in production; pluggable via a vLLM connector | Production (FAST 2025 Best Paper) | 75% more requests under the same SLO; 59–498% capacity vs. non-disaggregated baselines |
+| llm-d (§27) | CNCF Sandbox (Red Hat, Google Cloud, IBM, CoreWeave, NVIDIA, +) | Gateway API Inference Extension + its own P/D scheduling | vLLM, SGLang | Active, CNCF Sandbox | Up to 70% higher tok/s (P/D disaggregation); 3× throughput / 2× faster TTFT (prefix-cache routing) |
+
+All figures above are self-reported by the respective project, not independently audited — see the prose above for the same caveat applied per project.
 
 ---
 
-## 16. Speculative Decoding
+## 15. Speculative Decoding
 
 Speculative decoding attacks the memory-bandwidth bottleneck described in §10.5 from a different angle than quantization: instead of shrinking the weights read per token, it amortizes each expensive full-model forward pass over *several* output tokens. A small, fast **draft model** proposes several candidate tokens autoregressively; the large **target model** then verifies all of them in a single batched forward pass, and a rejection-sampling step accepts the longest matching prefix (resampling at the first divergence). Because rejection sampling is constructed to reproduce the target model's exact output distribution, this is a lossless speedup, not an approximation — the two foundational papers (Leviathan et al., Google, and Chen et al., DeepMind, both 2023) independently derived the same guarantee and reported 2–3× wall-clock speedups with byte-identical outputs to running the target model alone. [Source](https://arxiv.org/abs/2211.17192) [Source](https://arxiv.org/abs/2302.01318)
 
@@ -1182,9 +1401,17 @@ All three serving engines and llama.cpp expose speculative decoding as a configu
 
 Reported speedups across all of the above (2–3.6×) are acceptance-rate-dependent: workloads with low output entropy (code completion, greedy/low-temperature decoding, repetitive structured output) see the draft model's guesses accepted far more often than open-ended creative generation, so the practical multiplier on any given deployment should be benchmarked against its actual traffic rather than assumed from a paper's number.
 
+| **Method** | **Draft mechanism** | **Extra training required** | **Reported speedup** | **Engine support** |
+|---|---|---|---|---|
+| Vanilla speculative decoding | Separate small draft model, verified by the target model in one batched pass | No — any smaller same-family model works | 2–3× | vLLM (`draft_model`), SGLang (`STANDALONE`), llama.cpp (`-md`) |
+| Medusa | Extra decoding heads bolted onto the target model, tree-verified in one pass | Yes — heads trained (optionally with a base fine-tune) | 2.2× (frozen base) – 3.6× (fine-tuned) | vLLM, SGLang (`medusa`/`MEDUSA`) |
+| EAGLE / EAGLE-2 / EAGLE-3 | Drafts from the target model's own feature space (hidden states), not token space | Yes — a lightweight EAGLE head trained per target model | 2.7–3.5× (EAGLE-1) | vLLM (`eagle`/`eagle3`), SGLang (`EAGLE`/`EAGLE3`) |
+| Lookahead decoding | No draft model — Jacobi-iteration n-gram extraction from the decoding trajectory | No | Reported in the original paper | Reference implementation only; not a first-class flag in vLLM/SGLang as of this writing |
+| N-gram | Statistical n-gram lookup against prompt/output history, no model at all | No | Workload-dependent (best on repetitive/structured output) | vLLM (`ngram`), SGLang (`NGRAM`) |
+
 ---
 
-## 17. Quantization for Serving Engines: GPTQ, AWQ, bitsandbytes, and FP8
+## 16. Quantization for Serving Engines: GPTQ, AWQ, bitsandbytes, and FP8
 
 §1.3 covered GGUF's block-quantized K-quant formats (Q4_K_M and friends) as used by llama.cpp and Ollama. vLLM and SGLang instead center on a different family of post-training quantization methods, developed independently in the Hugging Face `transformers` ecosystem and adopted directly into the serving engines' `--quantization` flag.
 
@@ -1200,7 +1427,7 @@ vLLM's `--quantization` flag accepts, among others: `awq`, `gptq`, `fp8`, `bitsa
 
 ---
 
-## 18. NVIDIA NGC Catalog and NIM Microservices
+## 17. NVIDIA NGC Catalog and NIM Microservices
 
 **NGC** (catalog.ngc.nvidia.com) is NVIDIA's registry of GPU-optimized, security-scanned containers, pretrained models, and Helm charts — the same registry that supplies, for example, the `nvcr.io/nvidia/pytorch` training containers referenced elsewhere in this book. [Source](https://docs.nvidia.com/ngc/gpu-cloud/ngc-catalog-user-guide/index.html) Authenticating against it uses an NGC API key generated from the NGC account portal, presented to Docker as a password with the literal username `$oauthtoken`:
 
@@ -1209,7 +1436,7 @@ echo "$NGC_API_KEY" | docker login nvcr.io --username '$oauthtoken' --password-s
 docker pull nvcr.io/nvidia/pytorch:20.03-py3
 ```
 
-**NIM** (NVIDIA Inference Microservices, build.nvidia.com) is a narrower, LLM-specific layer on top of NGC: pre-built containers that wrap a specific model with an OpenAI-compatible API, chosen and optimized per model/GPU combination using TensorRT-LLM, vLLM, or SGLang as the underlying engine. [Source](https://developer.nvidia.com/nim) NVIDIA's own documentation describes the LLM NIM architecture as "an enterprise orchestration layer for vLLM": on first launch, it inspects the local GPU against a support matrix and, for supported GPU/model pairs, downloads a pre-compiled TensorRT engine and serves via TensorRT-LLM; on unsupported hardware it falls back to running the model through vLLM directly. [Source](https://docs.nvidia.com/nim/large-language-models/latest/about-nim-llm/overview.html) This makes NIM, in effect, a curated and pre-optimized deployment path over the same vLLM engine already covered in §14.1 — the value proposition is skipping the engine-flag tuning and quantization-format selection §14 and §17 walk through by hand, at the cost of using NVIDIA's chosen defaults and a container pull rather than a pip install.
+**NIM** (NVIDIA Inference Microservices, build.nvidia.com) is a narrower, LLM-specific layer on top of NGC: pre-built containers that wrap a specific model with an OpenAI-compatible API, chosen and optimized per model/GPU combination using TensorRT-LLM, vLLM, or SGLang as the underlying engine. [Source](https://developer.nvidia.com/nim) NVIDIA's own documentation describes the LLM NIM architecture as "an enterprise orchestration layer for vLLM": on first launch, it inspects the local GPU against a support matrix and, for supported GPU/model pairs, downloads a pre-compiled TensorRT engine and serves via TensorRT-LLM; on unsupported hardware it falls back to running the model through vLLM directly. [Source](https://docs.nvidia.com/nim/large-language-models/latest/about-nim-llm/overview.html) This makes NIM, in effect, a curated and pre-optimized deployment path over the same vLLM engine already covered in §13.1 — the value proposition is skipping the engine-flag tuning and quantization-format selection §13 and §16 walk through by hand, at the cost of using NVIDIA's chosen defaults and a container pull rather than a pip install.
 
 A concrete local deployment (Llama 3-8B-Instruct, from NVIDIA's own getting-started guide):
 
@@ -1230,9 +1457,13 @@ which exposes `http://0.0.0.0:8000/v1/chat/completions` once the container logs 
 
 Downloadable NIM containers are free to pull and run under an NVIDIA Developer Program account for development, testing, and research, capped at up to two nodes or 16 GPUs; production deployment requires an NVIDIA AI Enterprise license (a 90-day free trial is offered). [Source](https://developer.nvidia.com/blog/access-to-nvidia-nim-now-available-free-to-developer-program-members/) The catalog spans 100+ models at build.nvidia.com, including the Llama 3.x family, NVIDIA's own Nemotron line, Mistral/Mixtral, and entries from DeepSeek, Qwen, and Gemma; verify the exact image tag for a given model on its build.nvidia.com "Deploy" page before pulling, since tags update over time and the example above (`1.2.1`) will not remain current. [Source](https://developer.nvidia.com/nim)
 
+### 17.4 GPU Rental as an Alternative to NGC-Container Self-Hosting
+
+Where NIM and NGC package a specific software stack, several vendors instead sell the underlying hardware itself as an alternative to buying a workstation GPU or committing to a hyperscaler's own compute (Bedrock's Trainium/Inferentia in §28.1, Workers AI's GPU fleet in §30.1). **RunPod** offers both a "Community Cloud" of third-party-hosted, cheaper GPU capacity and a "Secure Cloud" of RunPod-operated capacity at a premium, alongside per-second-billed Serverless GPU endpoints aimed specifically at inference workloads. [Source](https://www.runpod.io/pricing) **Lambda** runs on-demand and reserved GPU instances with per-minute billing and no egress fees, on top of its own pre-configured CUDA/PyTorch "Lambda Stack" image; reserved-instance discounts are reported in the 19–42% range for one-year commitments. [Source](https://lambda.ai/service/gpu-cloud) **Vast.ai** sits at the lowest-friction end of the spectrum: a peer-to-peer marketplace where individual hosts set GPU prices directly with no platform markup added by Vast.ai, spanning On-Demand, Interruptible (bid-based, cheaper, preemptible), and Reserved tiers across dozens of GPU types. [Source](https://vast.ai/pricing) **CoreWeave** sits at the opposite, enterprise end of the spectrum: a Kubernetes-native GPU cloud (its own managed control plane, Fleet and Node LifeCycle Controllers) built specifically around NVIDIA's newest hardware generations (GB300/GB200 NVL72, HGX B300/B200) at cluster scale, with committed-usage discounts reported up to 60% — positioned for sustained, large-scale training and inference clusters rather than the opportunistic capacity a marketplace like Vast.ai is built to offer. [Source](https://www.coreweave.com/pricing) All four sell GPU-hours, not managed inference: running vLLM, Ollama, or any other engine from earlier in this chapter on the rented hardware remains the operator's own responsibility, unlike the fully managed platforms in §28–§30.
+
 ---
 
-## 19. Docker Model Runner
+## 18. Docker Model Runner
 
 Docker's own answer to "run an LLM locally" ships inside Docker Desktop and, since general availability, Docker Engine on Linux: **Docker Model Runner** (DMR), introduced in beta in Docker Desktop 4.40 (April 2025) and reaching general availability on September 18, 2025. [Source](https://www.docker.com/blog/introducing-docker-model-runner/) [Source](https://www.docker.com/blog/announcing-docker-model-runner-ga/)
 
@@ -1262,15 +1493,15 @@ A running model is reachable through an OpenAI-compatible endpoint — `http://m
 
 ---
 
-## 20. Kubernetes-Native Agent Orchestration: kagent
+## 19. Kubernetes-Native Agent Orchestration: kagent
 
 kagent (kagent.dev, github.com/kagent-dev/kagent) is worth a brief mention here for what it is *not*: it is not an inference engine, and it does not belong alongside vLLM, SGLang, or Ollama as a way to run model weights on a GPU. It is a Kubernetes-native framework, originally built at Solo.io and now a CNCF Sandbox project, for declaring AI *agents* — not models — as Kubernetes custom resources (`Agent`, `ModelConfig`, `ToolServer` CRDs under `kagent.dev/v1alpha2`), reconciled by a controller and executed through a runtime built on Google's Agent Development Kit, with tool connectivity via MCP. [Source](https://github.com/kagent-dev/kagent) [Source](https://kagent.dev/docs/kagent/concepts/architecture)
 
-The relevant distinction for this chapter: a kagent `Agent` resource does not host or serve a model itself. Its `ModelConfig` resource points at an *already-running* inference endpoint — kagent's documented provider list includes the major cloud APIs alongside Ollama (via an `ollama.host` field addressing an in-cluster or external Ollama server) and a generic "bring your own OpenAI-compatible model" option, which covers pointing kagent at a self-hosted vLLM or SGLang deployment from §14 even without first-class provider support (a dedicated vLLM `ModelConfig` type was, as of this research, still an open feature request). [Source](https://kagent.dev/docs/kagent/supported-providers) In other words: kagent is the orchestration layer that *calls* the serving engines this chapter covers, deployed via Helm (`helm install kagent-crds oci://ghcr.io/kagent-dev/kagent/helm/kagent-crds`, followed by the main `kagent` chart) onto a cluster that already has an inference backend running somewhere. It is Apache 2.0 licensed and under active development. [Source](https://kagent.dev/docs/kagent/introduction/installation) A reader building a Kubernetes-hosted agent system on top of a self-hosted LLM deployed per this chapter's §14–§19 would reach for kagent at the orchestration layer, one level above everything else discussed here.
+The relevant distinction for this chapter: a kagent `Agent` resource does not host or serve a model itself. Its `ModelConfig` resource points at an *already-running* inference endpoint — kagent's documented provider list includes the major cloud APIs alongside Ollama (via an `ollama.host` field addressing an in-cluster or external Ollama server) and a generic "bring your own OpenAI-compatible model" option, which covers pointing kagent at a self-hosted vLLM or SGLang deployment from §13 even without first-class provider support (a dedicated vLLM `ModelConfig` type was, as of this research, still an open feature request). [Source](https://kagent.dev/docs/kagent/supported-providers) In other words: kagent is the orchestration layer that *calls* the serving engines this chapter covers, deployed via Helm (`helm install kagent-crds oci://ghcr.io/kagent-dev/kagent/helm/kagent-crds`, followed by the main `kagent` chart) onto a cluster that already has an inference backend running somewhere. It is Apache 2.0 licensed and under active development. [Source](https://kagent.dev/docs/kagent/introduction/installation) A reader building a Kubernetes-hosted agent system on top of a self-hosted LLM deployed per this chapter's §13–§18 would reach for kagent at the orchestration layer, one level above everything else discussed here.
 
 ---
 
-## 21. Running Hugging Face Models Locally via the CLI
+## 20. Running Hugging Face Models Locally via the CLI
 
 Every model reference in this chapter — a GGUF file for llama.cpp/Ollama, a `transformers`-format checkpoint for vLLM/SGLang/ONNX Runtime, an AWQ- or GPTQ-quantized repo — most commonly starts life as a Hugging Face Hub repository, and the `huggingface_hub` package's CLI is the standard way to pull one down onto a Linux GPU box outside of a specific inference tool's built-in fetcher.
 
@@ -1298,11 +1529,11 @@ Programmatically, the same operations are `hf_hub_download(repo_id, filename, ..
 
 ---
 
-## 22. Fine-Tuning Acceleration with Unsloth
+## 21. Fine-Tuning Acceleration with Unsloth
 
-Every runtime covered so far in this chapter — llama.cpp, Ollama, ONNX Runtime, vLLM, SGLang — assumes a finished set of weights and optimizes *serving* them. Unsloth (github.com/unslothai/unsloth) sits one step earlier in the pipeline: it accelerates the *fine-tuning* step that produces a custom model in the first place, and it is included here because its output feeds directly back into the formats and runtimes already covered — a QLoRA fine-tune produced by Unsloth is typically exported straight to GGUF for llama.cpp/Ollama (§1–§5) or merged and served through vLLM (§14.1), making Unsloth the practical on-ramp from "fine-tune a model on a local GPU" to "serve it locally" using the tools this chapter already documents.
+Every runtime covered so far in this chapter — llama.cpp, Ollama, ONNX Runtime, vLLM, SGLang — assumes a finished set of weights and optimizes *serving* them. Unsloth (github.com/unslothai/unsloth) sits one step earlier in the pipeline: it accelerates the *fine-tuning* step that produces a custom model in the first place, and it is included here because its output feeds directly back into the formats and runtimes already covered — a QLoRA fine-tune produced by Unsloth is typically exported straight to GGUF for llama.cpp/Ollama (§1–§5) or merged and served through vLLM (§13.1), making Unsloth the practical on-ramp from "fine-tune a model on a local GPU" to "serve it locally" using the tools this chapter already documents.
 
-**What it does.** Unsloth reimplements the LoRA/QLoRA fine-tuning path — attention and MLP kernels, backward-pass gradient computation, and 4-bit `bitsandbytes` quantization handling (the same NF4 scheme covered in §17) — using hand-written Triton kernels and a manually-derived backpropagation graph in place of PyTorch autograd's generic (and more memory-hungry) computation graph, without approximating the math: training is claimed to be lossless relative to standard LoRA. The project reports this yields training roughly 2× faster with about 70% less VRAM, with per-model variation (e.g., its Gemma and gpt-oss support pages cite different multipliers such as 1.5× faster / 50% less memory for some models). These figures are self-reported by the Unsloth project on its own documentation and blog, not independently benchmarked, and should be treated the same way the SGLang-vs-vLLM throughput claims in §14.2 are: directionally credible, not a fixed guarantee for an arbitrary model/hardware pair. [Source](https://github.com/unslothai/unsloth) [Source](https://unsloth.ai/docs)
+**What it does.** Unsloth reimplements the LoRA/QLoRA fine-tuning path — attention and MLP kernels, backward-pass gradient computation, and 4-bit `bitsandbytes` quantization handling (the same NF4 scheme covered in §16) — using hand-written Triton kernels and a manually-derived backpropagation graph in place of PyTorch autograd's generic (and more memory-hungry) computation graph, without approximating the math: training is claimed to be lossless relative to standard LoRA. The project reports this yields training roughly 2× faster with about 70% less VRAM, with per-model variation (e.g., its Gemma and gpt-oss support pages cite different multipliers such as 1.5× faster / 50% less memory for some models). These figures are self-reported by the Unsloth project on its own documentation and blog, not independently benchmarked, and should be treated the same way the SGLang-vs-vLLM throughput claims in §13.2 are: directionally credible, not a fixed guarantee for an arbitrary model/hardware pair. [Source](https://github.com/unslothai/unsloth) [Source](https://unsloth.ai/docs)
 
 **Hardware support.** Unsloth's primary target has always been NVIDIA CUDA GPUs (from Turing to Blackwell, including RTX 50-series). Official AMD ROCm support (ROCm ≥6.0) was added as a dedicated, documented install path, alongside preliminary Intel GPU and CPU/Vulkan-backend support — a meaningfully more recent and less battle-tested addition than the NVIDIA path, worth flagging as such rather than presenting all three as equally mature. [Source](https://unsloth.ai/docs/basics/amd) [Source](https://www.amd.com/en/developer/resources/technical-articles/2026/train-and-run-models-on-amd-gpus-with-unsloth.html)
 
@@ -1345,7 +1576,7 @@ Once trained, Unsloth exports directly to the two deployment paths already docum
 model.save_pretrained_gguf("out_dir", tokenizer, quantization_method = "q4_k_m")
 ```
 
-For vLLM (§14.1) or SGLang (§14.2), the LoRA adapter is merged back into the base weights and saved as a standard 16-bit checkpoint that either engine's `--model` flag can load directly:
+For vLLM (§13.1) or SGLang (§13.2), the LoRA adapter is merged back into the base weights and saved as a standard 16-bit checkpoint that either engine's `--model` flag can load directly:
 
 ```python
 model.save_pretrained_merged("out_dir_merged", tokenizer, save_method = "merged_16bit")
@@ -1355,15 +1586,17 @@ model.save_pretrained_merged("out_dir_merged", tokenizer, save_method = "merged_
 
 As of this writing, the PyPI package is at version 2026.8.22. [Source](https://pypi.org/project/unsloth/)
 
+A common deployment target for the fine-tuning workflow above is **Modal**, a serverless Python platform frequently used (including in Unsloth's own tutorials) to provision GPUs from a `@app.function` decorator and bill per second of actual compute with no idle charges — Modal's pricing page lists per-second rates spanning roughly $0.000164/sec for a T4 up to $0.001972/sec for a B300. [Source](https://modal.com/pricing) The pairing is popular specifically because a short QLoRA run is cheap and bursty, exactly the profile serverless per-second billing suits, versus paying for an idle GPU-hour on a rented instance from §17.4. Modal is not itself an inference engine or a competitor to Unsloth's kernels — it is one of several places (alongside a rented GPU or a personal workstation) the fine-tuning code actually runs.
+
 ---
 
-## 23. Compiled-Engine Serving: TensorRT-LLM and LMDeploy
+## 22. Compiled-Engine Serving: TensorRT-LLM and LMDeploy
 
-vLLM and SGLang (§14) build their execution graph at Python runtime and rely on the framework's scheduler for continuous batching. A second family of serving engines instead compiles a model into a fixed, hardware-specific execution plan ahead of time — trading a slower, more involved build step for a leaner, faster-starting runtime.
+vLLM and SGLang (§13) build their execution graph at Python runtime and rely on the framework's scheduler for continuous batching. A second family of serving engines instead compiles a model into a fixed, hardware-specific execution plan ahead of time — trading a slower, more involved build step for a leaner, faster-starting runtime.
 
-**TensorRT-LLM** (github.com/NVIDIA/TensorRT-LLM, Apache 2.0) is NVIDIA's own entry in this category, and the engine that NIM (§18) uses internally for the supported GPU/model pairs where it doesn't fall back to vLLM. Where NIM wraps a pre-built engine behind a container so the operator never sees the build step, using TensorRT-LLM directly means running that build step: `trtllm-build` compiles a model checkpoint into a TensorRT engine file for the exact target GPU, applying kernel fusion, layer fusion, and (since TensorRT-LLM's Model Optimizer integration) quantization — FP8, FP4 (Blackwell), INT4-AWQ, and INT8 SmoothQuant are all documented calibration/quantization paths applied before or during the build. [Source](https://nvidia.github.io/TensorRT-LLM/quick-start-guide.html) Serving the resulting engine uses `trtllm-serve`, an OpenAI-compatible server entry point (available since TensorRT-LLM 0.9.0), with `--tp_size`/`--pp_size` multi-GPU flags that must match the parallelism degree the engine was built with — unlike vLLM's `--tensor-parallel-size`, which is a pure runtime choice, TensorRT-LLM's parallelism is baked into the compiled engine and cannot be changed without rebuilding. [Source](https://docs.nvidia.com/tensorrt-llm/index.html) TensorRT-LLM is NVIDIA-GPU-only (no ROCm/Vulkan path) and, as of this writing, at PyPI version 1.2.1 (April 2026). [Source](https://pypi.org/project/tensorrt-llm/) The practical tradeoff versus §14.1's vLLM: TensorRT-LLM engines generally start faster and run with less scheduling overhead once built, at the cost of a build step that is per-GPU-model-specific (an engine built for one GPU SKU is not portable to another) and a more involved iteration loop when the model or quantization scheme changes.
+**TensorRT-LLM** (github.com/NVIDIA/TensorRT-LLM, Apache 2.0) is NVIDIA's own entry in this category, and the engine that NIM (§17) uses internally for the supported GPU/model pairs where it doesn't fall back to vLLM. Where NIM wraps a pre-built engine behind a container so the operator never sees the build step, using TensorRT-LLM directly means running that build step: `trtllm-build` compiles a model checkpoint into a TensorRT engine file for the exact target GPU, applying kernel fusion, layer fusion, and (since TensorRT-LLM's Model Optimizer integration) quantization — FP8, FP4 (Blackwell), INT4-AWQ, and INT8 SmoothQuant are all documented calibration/quantization paths applied before or during the build. [Source](https://nvidia.github.io/TensorRT-LLM/quick-start-guide.html) Serving the resulting engine uses `trtllm-serve`, an OpenAI-compatible server entry point (available since TensorRT-LLM 0.9.0), with `--tp_size`/`--pp_size` multi-GPU flags that must match the parallelism degree the engine was built with — unlike vLLM's `--tensor-parallel-size`, which is a pure runtime choice, TensorRT-LLM's parallelism is baked into the compiled engine and cannot be changed without rebuilding. [Source](https://docs.nvidia.com/tensorrt-llm/index.html) TensorRT-LLM is NVIDIA-GPU-only (no ROCm/Vulkan path) and, as of this writing, at PyPI version 1.2.1 (April 2026). [Source](https://pypi.org/project/tensorrt-llm/) The practical tradeoff versus §13.1's vLLM: TensorRT-LLM engines generally start faster and run with less scheduling overhead once built, at the cost of a build step that is per-GPU-model-specific (an engine built for one GPU SKU is not portable to another) and a more involved iteration loop when the model or quantization scheme changes.
 
-**LMDeploy** (github.com/InternLM/lmdeploy, Apache 2.0), from the Shanghai AI Laboratory / InternLM group, occupies similar ground with a different lineage: it ships two inference engines, **TurboMind** (a compiled, CUDA-kernel-optimized C++ engine, analogous in spirit to TensorRT-LLM's ahead-of-time approach) and a pure-Python PyTorch eager-mode engine for broader model/hardware compatibility at lower performance. LMDeploy's own documentation reports up to 2.4× faster inference for AWQ 4-bit-quantized models on the TurboMind engine versus FP16, a self-reported figure that should be read with the same caveat applied to this chapter's other vendor benchmarks. [Source](https://github.com/InternLM/lmdeploy) Its own quantization module implements AWQ specifically (§17), while its TurboMind runtime can additionally load GPTQ-quantized checkpoints produced elsewhere:
+**LMDeploy** (github.com/InternLM/lmdeploy, Apache 2.0), from the Shanghai AI Laboratory / InternLM group, occupies similar ground with a different lineage: it ships two inference engines, **TurboMind** (a compiled, CUDA-kernel-optimized C++ engine, analogous in spirit to TensorRT-LLM's ahead-of-time approach) and a pure-Python PyTorch eager-mode engine for broader model/hardware compatibility at lower performance. LMDeploy's own documentation reports up to 2.4× faster inference for AWQ 4-bit-quantized models on the TurboMind engine versus FP16, a self-reported figure that should be read with the same caveat applied to this chapter's other vendor benchmarks. [Source](https://github.com/InternLM/lmdeploy) Its own quantization module implements AWQ specifically (§16), while its TurboMind runtime can additionally load GPTQ-quantized checkpoints produced elsewhere:
 
 ```bash
 pip install lmdeploy
@@ -1375,19 +1608,21 @@ which exposes an OpenAI-compatible endpoint and a Swagger UI on port 23333 by de
 
 ---
 
-## 24. Model-Swapping Proxies: llama-swap and LiteLLM
+## 23. Model-Swapping Proxies: llama-swap and LiteLLM
 
 Every serving engine in this chapter — llama.cpp's `llama-server`, Ollama's daemon aside, vLLM, SGLang, TensorRT-LLM, LMDeploy — is, at its core, a process that serves *one* loaded model (Ollama is the deliberate exception, already covered in §5, which manages multiple models within a single daemon). A workstation running several different local models for different tasks therefore needs something above the engine layer to route requests to the right model and, in the common case where VRAM can't hold every model simultaneously, to load and unload them on demand.
 
-**llama-swap** (github.com/mostlygeek/llama-swap, MIT license) is a small Go proxy, distributed as a single binary or Docker image, purpose-built for this: it sits in front of any OpenAI/Anthropic-compatible backend — not only `llama-server`, despite the name, but vLLM, Ollama, or any other command-line-launchable server — and inspects the `model` field of each incoming request to decide which backend process should be running. If the currently-running process doesn't match, llama-swap stops it and launches the correct one before forwarding the request. Configuration is a single YAML file mapping model names to arbitrary shell launch commands, with additional features for automatic idle-timeout unloading (TTL), running multiple models concurrently when VRAM allows ("groups"), and request-modifying filters. [Source](https://github.com/mostlygeek/llama-swap) [Source](https://github.com/mostlygeek/llama-swap/blob/main/config.example.yaml) This is a narrower, single-host answer to the same problem §15's disaggregated-serving connectors and §20's kagent solve at cluster scale: all three route a request to the right place, but llama-swap does it with a YAML file and process supervision rather than a distributed KV-cache transfer fabric or Kubernetes CRDs.
+**llama-swap** (github.com/mostlygeek/llama-swap, MIT license) is a small Go proxy, distributed as a single binary or Docker image, purpose-built for this: it sits in front of any OpenAI/Anthropic-compatible backend — not only `llama-server`, despite the name, but vLLM, Ollama, or any other command-line-launchable server — and inspects the `model` field of each incoming request to decide which backend process should be running. If the currently-running process doesn't match, llama-swap stops it and launches the correct one before forwarding the request. Configuration is a single YAML file mapping model names to arbitrary shell launch commands, with additional features for automatic idle-timeout unloading (TTL), running multiple models concurrently when VRAM allows ("groups"), and request-modifying filters. [Source](https://github.com/mostlygeek/llama-swap) [Source](https://github.com/mostlygeek/llama-swap/blob/main/config.example.yaml) This is a narrower, single-host answer to the same problem §14's disaggregated-serving connectors and §19's kagent solve at cluster scale: all three route a request to the right place, but llama-swap does it with a YAML file and process supervision rather than a distributed KV-cache transfer fabric or Kubernetes CRDs.
 
 **LiteLLM** (github.com/BerriAI/litellm, MIT core license with a separate enterprise-licensed `enterprise/` subdirectory) solves an adjacent but distinct problem: rather than swapping which model process is loaded, its proxy server (`litellm --config config.yaml`) presents one OpenAI-compatible endpoint in front of upstream providers that are already running — local backends like Ollama or vLLM via their own `api_base` URLs, alongside cloud APIs (OpenAI, Anthropic, Bedrock, Vertex, and around a hundred others) — adding cost tracking, load balancing across multiple upstream instances, and automatic failover if one backend is unreachable. [Source](https://github.com/BerriAI/litellm) [Source](https://docs.litellm.ai/docs/proxy_server) In a local-inference setup combining, say, a small always-on Ollama model with an occasionally-launched large vLLM deployment, LiteLLM is the layer an application talks to, while llama-swap (or Ollama's own daemon) is what actually manages which weights are resident in VRAM underneath it — the two compose rather than compete.
 
+**OpenRouter** solves a similar-looking problem to LiteLLM from the opposite direction: rather than a proxy an operator self-hosts in front of chosen upstreams, it is itself a hosted routing service — one API key against several hundred models from dozens of providers, with automatic provider-level failover and price-based load balancing (by default, requests are weighted toward cheaper, stable providers, with any provider that has had a recent outage filtered out of consideration entirely). [Source](https://openrouter.ai/docs/guides/routing/provider-selection) It bills by passing through each upstream provider's own per-token rate plus a small fee on top, rather than charging its own flat token price — closer in spirit to a metered proxy than to a model host. Positioned against the rest of this section: OpenRouter and Vercel's AI Gateway (§29.2) occupy nearly the same niche — hosted, multi-provider routing with automatic failover — while LiteLLM is the self-hosted, operator-controlled equivalent of the same idea.
+
 ---
 
-## 25. Structured Output, Grammars, and Function Calling
+## 24. Structured Output, Grammars, and Function Calling
 
-A recurring requirement in production LLM serving — return valid JSON matching a schema, pick from a fixed set of labels, emit a well-formed tool call — can be handled by re-prompting and retrying until the model's free-text output happens to parse, or it can be guaranteed at the decoding level. **Constrained** (or **guided**) **decoding** takes the second approach: a grammar (a JSON Schema, a regular expression, or a context-free EBNF grammar) is compiled into a state machine that tracks, at every generation step, which tokens in the vocabulary are valid continuations; the sampler then masks out (sets to −∞ logit) every invalid token before sampling, so the model is architecturally incapable of producing a token that would violate the schema. Because the constraint is enforced by masking valid vocabulary rather than by modifying weights or prompting, this composes with everything else in this chapter — quantization (§17), speculative decoding (§16), and continuous batching (§14) all operate underneath it unmodified.
+A recurring requirement in production LLM serving — return valid JSON matching a schema, pick from a fixed set of labels, emit a well-formed tool call — can be handled by re-prompting and retrying until the model's free-text output happens to parse, or it can be guaranteed at the decoding level. **Constrained** (or **guided**) **decoding** takes the second approach: a grammar (a JSON Schema, a regular expression, or a context-free EBNF grammar) is compiled into a state machine that tracks, at every generation step, which tokens in the vocabulary are valid continuations; the sampler then masks out (sets to −∞ logit) every invalid token before sampling, so the model is architecturally incapable of producing a token that would violate the schema. Because the constraint is enforced by masking valid vocabulary rather than by modifying weights or prompting, this composes with everything else in this chapter — quantization (§16), speculative decoding (§15), and continuous batching (§13) all operate underneath it unmodified.
 
 Three implementations of the state-machine/grammar-compilation step are relevant here:
 
@@ -1399,11 +1634,19 @@ Three implementations of the state-machine/grammar-compilation step are relevant
 
 **Function/tool calling** — the OpenAI-compatible `tools`/`tool_choice` API surface that lets a model emit a structured call into an application-defined function rather than free text — is a related but distinct feature layered on top of the same masking mechanism: the tool-call JSON itself is grammar-constrained to match the requested function's parameter schema. vLLM requires two flags to enable it: `--enable-auto-tool-choice` (opt-in, since letting a model autonomously decide to call a tool is a behavior change) and `--tool-call-parser <name>`, selecting a parser matched to the model family's native tool-call output format (e.g., `hermes`, `mistral`, `llama3_json`, `internlm`) — mismatching the parser to the model's actual output format is a common source of tool-calling failures in practice, since each model family was fine-tuned to emit tool calls in its own specific token sequence. [Source](https://docs.vllm.ai/en/latest/features/tool_calling/)
 
+| **Library** | **Technique** | **Default backend in** | **Grammar types** |
+|---|---|---|---|
+| Outlines | Regex/JSON-Schema compiled to an FSM ahead of time; per-token masking is a cheap state lookup | Available in vLLM/SGLang; not the default in either | Regex, JSON Schema |
+| XGrammar | Splits vocabulary into context-independent tokens (prechecked once) and context-dependent tokens (checked only when reached) | Default in vLLM (`auto`) and SGLang | JSON Schema, regex, EBNF |
+| GBNF (llama.cpp) | Native context-free grammar format; JSON Schema is converted to GBNF internally | Only option in llama.cpp (`llama-server`/`llama-cli`) | Arbitrary CFG, JSON Schema |
+
+vLLM and SGLang also accept `guidance`/`llguidance` and (vLLM only) `lm-format-enforcer` as alternative `--structured-outputs-config.backend`/`--grammar-backend` selections; this chapter does not cover their internals beyond naming them.
+
 ---
 
-## 26. Multi-LoRA Serving
+## 25. Multi-LoRA Serving
 
-§14's vLLM and SGLang deployments both assume one model checkpoint per server. In practice, teams that fine-tune per-customer, per-task, or per-language LoRA adapters off a shared base model rarely want to run a separate GPU deployment per adapter — merging each adapter into its own full checkpoint (§22's `save_pretrained_merged` workflow, run once per adapter) multiplies both disk footprint and the number of processes to keep warm. The alternative both serving engines from §14 support directly is **multi-LoRA serving**: one base-model deployment, with a batch of adapters kept resident and swapped in per-request at the kernel level rather than per-process.
+§13's vLLM and SGLang deployments both assume one model checkpoint per server. In practice, teams that fine-tune per-customer, per-task, or per-language LoRA adapters off a shared base model rarely want to run a separate GPU deployment per adapter — merging each adapter into its own full checkpoint (§21's `save_pretrained_merged` workflow, run once per adapter) multiplies both disk footprint and the number of processes to keep warm. The alternative both serving engines from §13 support directly is **multi-LoRA serving**: one base-model deployment, with a batch of adapters kept resident and swapped in per-request at the kernel level rather than per-process.
 
 The kernel technique both engines build on traces to two 2023 papers written concurrently: **Punica** (Chen et al., arXiv:2310.18547) contributes the batched CUDA kernel — a "Segmented Gather Matrix-Vector multiplication" (SGMV) op that lets requests targeting *different* LoRA adapters be processed together in one batched GPU call instead of falling back to per-adapter sub-batches — and **S-LoRA** (Sheng et al., arXiv:2311.03285, MLSys 2024) contributes "Unified Paging," a shared memory pool that pages both adapter weights and KV cache blocks (of varying LoRA rank and sequence length) out of the same pool used elsewhere in this chapter for the KV cache itself (§9). S-LoRA's paper reports up to 4× higher throughput than earlier per-adapter-batch approaches when serving thousands of concurrent adapters — a research-lineage number describing the technique in general, not a measured figure for either engine's specific implementation below. [Source](https://arxiv.org/abs/2310.18547) [Source](https://arxiv.org/abs/2311.03285)
 
@@ -1434,19 +1677,19 @@ python3 -m sglang.launch_server \
 
 with a request selecting an adapter via `"model": "meta-llama/Meta-Llama-3.1-8B-Instruct:lora0"`, and the same load/unload pattern exposed as `POST /load_lora_adapter` / `POST /unload_lora_adapter`. [Source](https://docs.sglang.io/docs/advanced_features/lora)
 
-The practical payoff of this scheme is GPU utilization: rather than a GPU sitting idle waiting for adapter-A traffic while adapter-B's dedicated deployment is overloaded, one base-model deployment's batch scheduler (§14.1, §14.2) can mix requests for many adapters into the same iteration, at the modest per-request cost of an extra batched LoRA kernel call. This makes multi-LoRA serving a direct complement to the fine-tune-many-small-adapters workflow §22 (Unsloth) describes — fine-tune per-task or per-tenant adapters cheaply, then serve all of them off one deployment instead of one GPU pool per adapter.
+The practical payoff of this scheme is GPU utilization: rather than a GPU sitting idle waiting for adapter-A traffic while adapter-B's dedicated deployment is overloaded, one base-model deployment's batch scheduler (§13.1, §13.2) can mix requests for many adapters into the same iteration, at the modest per-request cost of an extra batched LoRA kernel call. This makes multi-LoRA serving a direct complement to the fine-tune-many-small-adapters workflow §21 (Unsloth) describes — fine-tune per-task or per-tenant adapters cheaply, then serve all of them off one deployment instead of one GPU pool per adapter.
 
 ---
 
-## 27. ExLlamaV2 and ExLlamaV3
+## 26. ExLlamaV2 and ExLlamaV3
 
-A third local-inference lineage, distinct from both GGUF's K-quants (§1.2) and the GPTQ/AWQ/FP8 family §17 covers, comes from a single-author project by turboderp: **ExLlamaV2** and its successor **ExLlamaV3**, each pairing a CUDA-only inference engine with its own quantization format.
+A third local-inference lineage, distinct from both GGUF's K-quants (§1.2) and the GPTQ/AWQ/FP8 family §16 covers, comes from a single-author project by turboderp: **ExLlamaV2** and its successor **ExLlamaV3**, each pairing a CUDA-only inference engine with its own quantization format.
 
-**ExLlamaV2** (github.com/turboderp-org/exllamav2, MIT license) introduced **EXL2**, a variable-bit-depth format descended from the same GPTQ-style layer-wise error-compensation approach as §17's GPTQ, but relaxing GPTQ's single-bit-width-per-model constraint: EXL2 mixes 2-, 3-, 4-, 5-, 6-, and 8-bit weight groups *within the same layer*, chosen per-group by sensitivity, so a checkpoint's effective compression is described as a non-integer average — "bits per weight" (bpw), e.g. 4.65bpw — rather than a fixed integer bit-width. [Source](https://github.com/turboderp-org/exllamav2/blob/master/README.md) [Source](https://docs.mistral.ai/resources/cookbooks/concept-deep-dive-quantization-methods-exl2) As of this writing, the project's own README states it is **archived, with development continuing on ExLlamaV3** — a maintenance-status distinction worth noting before adopting it for a new deployment. [Source](https://github.com/turboderp-org/exllamav2)
+**ExLlamaV2** (github.com/turboderp-org/exllamav2, MIT license) introduced **EXL2**, a variable-bit-depth format descended from the same GPTQ-style layer-wise error-compensation approach as §16's GPTQ, but relaxing GPTQ's single-bit-width-per-model constraint: EXL2 mixes 2-, 3-, 4-, 5-, 6-, and 8-bit weight groups *within the same layer*, chosen per-group by sensitivity, so a checkpoint's effective compression is described as a non-integer average — "bits per weight" (bpw), e.g. 4.65bpw — rather than a fixed integer bit-width. [Source](https://github.com/turboderp-org/exllamav2/blob/master/README.md) [Source](https://docs.mistral.ai/resources/cookbooks/concept-deep-dive-quantization-methods-exl2) As of this writing, the project's own README states it is **archived, with development continuing on ExLlamaV3** — a maintenance-status distinction worth noting before adopting it for a new deployment. [Source](https://github.com/turboderp-org/exllamav2)
 
 **ExLlamaV3** (github.com/turboderp-org/exllamav3, MIT license, currently in **beta**) introduces **EXL3**, described in the project's own documentation as "a streamlined variant of QTIP" — Quantization with Trellises and Incoherence Processing (Tseng et al., NeurIPS 2024), which uses a trellis-coded quantization scheme rather than GPTQ-style per-group scale/zero-point compensation. [Source](https://arxiv.org/abs/2406.11235) [Source](https://github.com/turboderp-org/exllamav3) EXL3 conversion uses dynamic Hessian computation and a fused Viterbi kernel, completing in minutes for small models and hours for 70B-class models on a single RTX 4090; unlike EXL2, EXL3 checkpoints preserve the original safetensors tensor naming rather than renaming tensors, a deliberate choice the project states is meant to keep the door open to future `transformers`/vLLM compatibility. The project reports Llama-3.1-70B remaining "coherent" quantized to 1.6 bpw, fitting under 16GB of VRAM — a self-reported extreme-compression claim, not an independently audited one.
 
-Both engines are **NVIDIA CUDA-only**; ExLlamaV3's own documentation lists ROCm/AMD support as an unimplemented to-do item, not a supported backend, in contrast to the AMD coverage §8, §14, and §17 describe for ROCm-native tooling elsewhere in this chapter. [Source](https://github.com/turboderp-org/exllamav3)
+Both engines are **NVIDIA CUDA-only**; ExLlamaV3's own documentation lists ROCm/AMD support as an unimplemented to-do item, not a supported backend, in contrast to the AMD coverage §8, §13, and §16 describe for ROCm-native tooling elsewhere in this chapter. [Source](https://github.com/turboderp-org/exllamav3)
 
 ```bash
 pip install exllamav2
@@ -1456,17 +1699,47 @@ pip install https://github.com/turboderp-org/exllamav3/releases/download/v0.0.6/
 
 Neither project ships its own OpenAI-compatible HTTP server as a first-class citizen; the ecosystem-standard frontend is **TabbyAPI** (github.com/theroyallab/tabbyAPI, AGPLv3), a FastAPI wrapper around the ExLlamaV2/V3 Python API that ExLlamaV2's own documentation describes as its "official and recommended backend server," exposing the same `/v1/chat/completions` route this chapter's other engines use. [Source](https://github.com/theroyallab/tabbyAPI)
 
-Pre-quantized checkpoints for both formats are distributed as ordinary Hugging Face safetensors repositories (no custom container format, unlike GGUF) — retrieved the same way as any other model with the `hf download` command from §21 — following a community naming convention that suffixes the repository name with `-exl2`/`-EXL3` and the target bpw, e.g. `Meta-Llama-3-8B-Instruct-4.0-bpw-exl2`. [Source](https://huggingface.co/alokabhishek/Meta-Llama-3-8B-Instruct-4.0-bpw-exl2) ExLlamaV2's README reports throughput gains over its own V1 predecessor (e.g., 257 vs. 217 tok/s for a 7B model at 3.0bpw on an RTX 4090); no independently audited, neutral-party benchmark comparing EXL2/EXL3 against GGUF or GPTQ at matched bit-depths was found during research, so any such comparison should be treated as community- or vendor-sourced rather than authoritative.
+Pre-quantized checkpoints for both formats are distributed as ordinary Hugging Face safetensors repositories (no custom container format, unlike GGUF) — retrieved the same way as any other model with the `hf download` command from §20 — following a community naming convention that suffixes the repository name with `-exl2`/`-EXL3` and the target bpw, e.g. `Meta-Llama-3-8B-Instruct-4.0-bpw-exl2`. [Source](https://huggingface.co/alokabhishek/Meta-Llama-3-8B-Instruct-4.0-bpw-exl2) ExLlamaV2's README reports throughput gains over its own V1 predecessor (e.g., 257 vs. 217 tok/s for a 7B model at 3.0bpw on an RTX 4090); no independently audited, neutral-party benchmark comparing EXL2/EXL3 against GGUF or GPTQ at matched bit-depths was found during research, so any such comparison should be treated as community- or vendor-sourced rather than authoritative.
+
+### Serving Engines at a Glance
+
+The engines and wrappers introduced across §5, §13, §18, §22, and this section, side by side:
+
+| **Engine** | **License** | **Primary hardware** | **Execution model** | **Batching** | **Quant formats accepted** | **Multi-GPU** | **OpenAI-compatible API** |
+|---|---|---|---|---|---|---|---|
+| vLLM (§13.1) | Apache 2.0 | CUDA (primary), ROCm, XPU | Runtime graph (Python), PagedAttention scheduler | Iteration-level continuous batching | AWQ, GPTQ, FP8, bitsandbytes, GGUF, llm-compressor, ModelOpt, Quark | Tensor + pipeline parallel | Yes (`vllm serve`) |
+| SGLang (§13.2) | Apache 2.0 | CUDA (primary), ROCm (MI300X+) | Runtime graph (Python), RadixAttention prefix cache | Continuous batching + automatic prefix reuse | 20+, incl. AWQ, FP8, GPTQ, Marlin, bitsandbytes, GGUF | Tensor parallel (`--tp-size`) | Yes |
+| llama.cpp / `llama-server` (§2–§4) | MIT | CUDA, ROCm, Vulkan, CPU | Runtime graph (C/C++, GGML) | Basic; single-stream-oriented | GGUF K-quants | Layer split across devices | Yes (`llama-server`) |
+| Ollama (§5) | MIT | Wraps llama.cpp backends | Daemon managing multiple resident models | Ollama-managed request queuing | GGUF | Backend-dependent | Yes (own REST + OpenAI-compatible) |
+| TensorRT-LLM (§22) | Apache 2.0 | CUDA only | Ahead-of-time compiled engine (`trtllm-build`) | Compiled into the engine | FP8, FP4 (Blackwell), INT4-AWQ, INT8 SmoothQuant | `--tp_size`/`--pp_size`, fixed at build time | Yes (`trtllm-serve`) |
+| LMDeploy / TurboMind (§22) | Apache 2.0 | CUDA (primary), ROCm | Compiled C++ engine (TurboMind) or PyTorch eager | Continuous batching | AWQ (native), GPTQ (load-only) | Yes | Yes (`lmdeploy serve api_server`) |
+| ExLlamaV2/V3 + TabbyAPI | MIT (engines), AGPLv3 (TabbyAPI) | CUDA only | Runtime graph (Python/C++ extension) | Basic | EXL2, EXL3 | Limited | Via TabbyAPI only |
+| Docker Model Runner (§18) | Apache 2.0 | CUDA, ROCm, Vulkan, CPU (host-native) | Wraps `llama-server` (default), vLLM, or SGLang | Backend-dependent | GGUF (OCI-packaged) | Backend-dependent | Yes (`/engines/v1`) |
+| NIM (§17) | NVIDIA AI Enterprise (free dev tier) | CUDA only | Wraps a pre-built TensorRT-LLM engine, or falls back to vLLM | Backend-dependent | Backend-dependent | Backend-dependent | Yes |
+
+### Quantization Formats at a Glance
+
+The formats introduced across §1.3, §16, and this section:
+
+| **Format** | **Bit depth** | **Calibration** | **Origin** | **Primary engines** | **Hardware floor** |
+|---|---|---|---|---|---|
+| GGUF K-quants (Q4_K_M, etc.) | ~2–8 bits/weight, block-quantized | None (PTQ, block scale/min) | GGML/llama.cpp project | llama.cpp, Ollama, Docker Model Runner | Any (CPU or GPU via GGML backends) |
+| GPTQ | Typically 3–4 bits/weight, fixed per model | Yes — one-shot, Hessian-based calibration | Frantar et al. 2022 | vLLM, SGLang, LMDeploy (load-only), `transformers` | Broad (Turing+); Marlin kernel needs Ampere+ |
+| AWQ | Typically 4 bits/weight | Yes — activation-magnitude calibration, no backprop | Lin et al., MLSys 2024 Best Paper | vLLM, SGLang, LMDeploy (native) | Broad (Turing+) |
+| bitsandbytes (LLM.int8 / NF4) | 8-bit (LLM.int8) or 4-bit (NF4) | None (LLM.int8 outlier isolation); calibration-free fixed encoding (NF4) | Dettmers et al. 2022/2023 | vLLM, SGLang, `transformers`, Unsloth (NF4 for QLoRA) | Any CUDA GPU |
+| FP8 (E4M3/E5M2) | 8-bit, hardware-native | Often none — dynamic per-token activation scaling | Hardware format (NVIDIA Tensor Cores) | vLLM, SGLang, TensorRT-LLM | Ada Lovelace/Hopper/Blackwell only (compute capability ≥8.9) |
+| EXL2 | Variable, mixed 2–8-bit per group (e.g. 4.65 bpw avg) | Yes — GPTQ-style layer-wise calibration | turboderp (archived project) | ExLlamaV2, TabbyAPI | CUDA only |
+| EXL3 | Variable, trellis-coded (down to ~1.6 bpw) | Yes — dynamic Hessian + Viterbi kernel | turboderp (beta), based on QTIP | ExLlamaV3, TabbyAPI | CUDA only |
 
 ---
 
-## 28. llm-d: Kubernetes-Native Distributed Inference
+## 27. llm-d: Kubernetes-Native Distributed Inference
 
-§20 drew a sharp line around kagent: it orchestrates *agents*, not inference — it points a `ModelConfig` at an already-running endpoint and never touches the serving path itself. **llm-d** (github.com/llm-d/llm-d, llm-d.ai) sits on the opposite side of that line: it is a Kubernetes-native orchestration layer for the model-serving pods themselves, sitting directly above vLLM/SGLang deployments rather than above agents that call them.
+§19 drew a sharp line around kagent: it orchestrates *agents*, not inference — it points a `ModelConfig` at an already-running endpoint and never touches the serving path itself. **llm-d** (github.com/llm-d/llm-d, llm-d.ai) sits on the opposite side of that line: it is a Kubernetes-native orchestration layer for the model-serving pods themselves, sitting directly above vLLM/SGLang deployments rather than above agents that call them.
 
 llm-d was launched in 2025 by Red Hat, Google Cloud, IBM Research, CoreWeave, and NVIDIA as founding contributors, later joined by AMD, Cisco, Hugging Face, Intel, Lambda, Mistral AI, and academic partners, and was accepted as a **CNCF Sandbox project on 2026-03-24**. [Source](https://www.cncf.io/blog/2026/03/24/welcome-llm-d-to-the-cncf-evolving-kubernetes-into-sota-ai-infrastructure/) [Source](https://research.ibm.com/blog/donating-llm-d-to-the-cloud-native-computing-foundation) It is Apache 2.0 licensed. As of this writing the project is at v0.9.0 (2026-08-17), with a steady roughly-monthly release cadence since its v0.2.0 debut in mid-2025 — an actively-maintained, fast-iterating project rather than a settled or dormant one.
 
-llm-d is explicitly engine-agnostic rather than vLLM-specific: its own site describes it as running "vLLM, SGLang, and more across your cluster, turning single-node engines into production-grade serving," and its README frames the boundary precisely — "model servers like vLLM and SGLang handle efficiently running large language models on accelerators... llm-d provides state-of-the-art orchestration and optimizations above model servers." [Source](https://llm-d.ai/) In practice, the reference quickstart deploys vLLM pods via a Kustomize overlay, making §14.1's `vllm serve` invocation the unit llm-d schedules and routes traffic to at cluster scale, rather than something it replaces.
+llm-d is explicitly engine-agnostic rather than vLLM-specific: its own site describes it as running "vLLM, SGLang, and more across your cluster, turning single-node engines into production-grade serving," and its README frames the boundary precisely — "model servers like vLLM and SGLang handle efficiently running large language models on accelerators... llm-d provides state-of-the-art orchestration and optimizations above model servers." [Source](https://llm-d.ai/) In practice, the reference quickstart deploys vLLM pods via a Kustomize overlay, making §13.1's `vllm serve` invocation the unit llm-d schedules and routes traffic to at cluster scale, rather than something it replaces.
 
 The orchestration itself builds on the **Kubernetes SIG Gateway API Inference Extension** — a set of CRDs and a gateway layer purpose-built for LLM traffic routing — installed as an explicit prerequisite before the router and model-server Helm charts:
 
@@ -1482,11 +1755,148 @@ kubectl apply -n "$NAMESPACE" -k guides/optimized-baseline/modelserver/gpu/vllm/
 
 [Source](https://llm-d.ai/docs/getting-started/quickstart)
 
-On top of that routing layer, llm-d implements its own prefill/decode disaggregation and prefix-cache-aware request routing — the same architectural problem §15 covers via vLLM's experimental connector, NVIDIA Dynamo, and Mooncake, but orchestrated here as a Kubernetes-native scheduling concern across many pods rather than a single-process connector config. llm-d's own README reports up to 70% higher tokens/sec with prefill/decode disaggregation versus standard vLLM, and 3× higher output throughput with 2× faster time-to-first-token from prefix-cache-aware routing versus round-robin load balancing — self-reported project figures, following the same non-independently-audited caveat already noted for Dynamo and Mooncake in §15. No primary source directly documents how llm-d relates to Dynamo or to kagent; the overlap with Dynamo (both orchestrate P/D disaggregation over vLLM/SGLang, via different vendor-backed implementations) and the layering relative to kagent (which could, in principle, target an llm-d-fronted endpoint as a `ModelConfig` backend, per §20) are architectural observations from reading both projects' scope, not claims either project states explicitly.
+On top of that routing layer, llm-d implements its own prefill/decode disaggregation and prefix-cache-aware request routing — the same architectural problem §14 covers via vLLM's experimental connector, NVIDIA Dynamo, and Mooncake, but orchestrated here as a Kubernetes-native scheduling concern across many pods rather than a single-process connector config. llm-d's own README reports up to 70% higher tokens/sec with prefill/decode disaggregation versus standard vLLM, and 3× higher output throughput with 2× faster time-to-first-token from prefix-cache-aware routing versus round-robin load balancing — self-reported project figures, following the same non-independently-audited caveat already noted for Dynamo and Mooncake in §14. No primary source directly documents how llm-d relates to Dynamo or to kagent; the overlap with Dynamo (both orchestrate P/D disaggregation over vLLM/SGLang, via different vendor-backed implementations) and the layering relative to kagent (which could, in principle, target an llm-d-fronted endpoint as a `ModelConfig` backend, per §19) are architectural observations from reading both projects' scope, not claims either project states explicitly.
+
+**Ray Serve**, part of the open-source Ray distributed-computing framework, occupies adjacent ground to llm-d from a different starting point. Rather than a Kubernetes-native layer purpose-built for inference traffic, Ray Serve is a general model-serving library within Ray that happens to wrap vLLM directly as one of its supported backends — `pip install "ray[llm]"` pulls in vLLM as a dependency, and Ray Serve LLM dispatches to it while adding Ray's own multi-node scheduling, autoscaling, and multi-model composition (chaining an embedding model, a reranker, and an LLM in one deployment graph, for instance). [Source](https://docs.ray.io/en/latest/serve/llm/index.html) Ray Serve deploys onto Kubernetes via **KubeRay**, making it and llm-d two different Kubernetes-native answers to distributed vLLM serving rather than competitors at wholly different layers: llm-d's Gateway API Inference Extension routing is purpose-built for inference traffic specifically, while Ray Serve inherits Ray's general-purpose distributed-actor model and is the natural choice when an LLM deployment is one stage in a larger Ray data/compute pipeline rather than the entire workload. **Anyscale** is the managed, hosted version of Ray, playing a role for Ray Serve roughly analogous to what a managed Kubernetes offering plays for a self-operated llm-d deployment. No primary source directly benchmarks the two against each other; the comparison here is architectural, not a throughput claim.
+
+### Orchestration and Proxy Layers at a Glance
+
+This chapter introduces several projects that sit *above* the serving engines rather than replacing them, each solving a narrower problem than it might first appear to. Laid out by layer:
+
+| **Project** | **Layer** | **What it actually orchestrates** | **Not to be confused with** |
+|---|---|---|---|
+| NIM (§17) | Curated deployment wrapper | A specific model on a specific GPU, via a pre-built TensorRT-LLM engine or a vLLM fallback | Not its own inference engine — a packaged, pre-tuned deployment of TensorRT-LLM/vLLM |
+| kagent (§19) | Agent orchestration (Kubernetes CRDs) | AI *agents* (tool use via MCP), each pointing at an already-running model endpoint | Not an inference engine — it never hosts model weights itself |
+| llama-swap (§23) | Single-host process supervisor | Which backend *process* is currently loaded, stopping/starting it per incoming request | Not a load balancer across already-running backends — it starts and stops them |
+| LiteLLM (§23) | Single-endpoint API proxy | Routing, failover, and cost-tracking across already-running upstream endpoints (local and cloud) | Not a process manager — unlike llama-swap, it never starts or stops a backend |
+| Dynamo / Mooncake (§14) | Cluster-scale KV-transfer fabric | Prefill/decode disaggregation and KV-cache transfer between GPU pools, above vLLM/SGLang/TensorRT-LLM | Not a general-purpose request router — purpose-built for P/D disaggregation specifically |
+| llm-d (§27) | Kubernetes-native model-serving orchestration | Scheduling and routing for vLLM/SGLang pods across a cluster (P/D disaggregation, prefix-cache-aware routing) | Not an agent framework (unlike kagent), and not itself an inference engine |
+| Ray Serve / KubeRay (§27) | General-purpose distributed-serving library, deployable on Kubernetes | Multi-node vLLM deployments, autoscaling, and multi-model pipelines via Ray's actor model | Not inference-traffic-specific like llm-d's Gateway API Inference Extension — a general distributed-compute framework that happens to wrap vLLM |
 
 ---
 
-## 29. Integrations
+## 28. Managed Inference Platforms: AWS Bedrock and Bedrock AgentCore
+
+Everything covered so far in this chapter — llama.cpp, Ollama, vLLM, SGLang, TensorRT-LLM, llm-d, and the rest — is infrastructure the reader installs, configures, and operates on their own Linux GPU. This section and the two that follow (§29, §30) cover the opposite end of the spectrum: fully managed, hosted platforms where the provider owns the Linux hosts, the GPU drivers, and the inference engine, and the reader interacts only through an API. They earn a place in a Linux-inference chapter for two reasons — as the alternative point in the design space a reader will weigh against everything in §1–§27, and because, in one case (§30), the provider's own engineering choices double back onto material this chapter already covers in depth.
+
+**AWS Bedrock** is a fully managed, serverless API service for foundation models — "secure, enterprise-grade access to high-performing foundation models from leading AI companies," in AWS's own framing. There is no infrastructure to provision: a caller sends a request to the `bedrock-runtime` API and receives a response, with model hosting, scaling, and hardware entirely abstracted away. [Source](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html)
+
+### 28.1 Model Catalog, API Surface, and Underlying Compute
+
+Bedrock currently fronts over 100 models from 18+ providers: Amazon's own Nova and Titan families, Anthropic Claude, Meta Llama, Mistral (Large 2, Mixtral), DeepSeek, Moonshot AI's Kimi, MiniMax, xAI's Grok, and — notably, since Bedrock was historically a non-OpenAI-model catalog — OpenAI's GPT-5.6 family and `gpt-oss-120b`. [Source](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html) The API surface has grown to match: Bedrock now exposes an Anthropic-native Messages API, an OpenAI-compatible Responses API, an OpenAI-compatible Chat Completions API, AWS's own model-agnostic Converse API, and the original low-level Invoke API — meaning a single Bedrock endpoint speaks several different providers' wire protocols side by side, not just its own.
+
+What Bedrock actually runs on is documented less directly than the model catalog. AWS has stated, via conference and executive commentary reported by trade press rather than a docs page, that "the majority of token usage in Amazon Bedrock is already running on Trainium, with the majority of context tokens processed and output tokens generated on Bedrock being processed by computations on Trainium2 and sometimes Trainium1 or Inferentia2." [Source](https://www.nextplatform.com/cloud/2025/10/31/aws-bullish-on-homegrown-trainium-ai-accelerators/1642337) That claim — treated here as AWS's own reported statement, not an independently verified figure — points to AWS's custom Trainium/Inferentia silicon and its **Neuron SDK** (a compiler and runtime distinct from CUDA or ROCm) as Bedrock's primary compute substrate, alongside GPU capacity for models or customers that need it. This is the direct counterpart to the CUDA/ROCm/Vulkan backend material in §2 and §8: Bedrock's model providers write against yet a third hardware target, one the reader never touches directly.
+
+Consumption is billed one of three ways: **On-Demand** (pure pay-per-token, no commitment), **Provisioned Throughput** (an hourly reservation billed per "Model Unit" — a fixed, model-specific throughput allocation — under a 1-month or 6-month term, for workloads that need guaranteed capacity), and **Batch inference** (asynchronous, non-real-time job submission at roughly a 50% discount off on-demand pricing). [Source](https://www.cloudzero.com/blog/amazon-bedrock-pricing/) Exact per-model, per-region prices should be checked against AWS's own pricing page rather than assumed static, since they change independently of this chapter.
+
+Bedrock also accepts externally fine-tuned weights via **Custom Model Import**: Llama 2/3, Flan, and Mistral-architecture checkpoints in FP32/FP16/BF16, delivered as **Hugging Face safetensors** files from S3 or a SageMaker model ARN — a direct tie-in to the safetensors-vs-pickle discussion in §4.1. Imported models scale to zero automatically when idle, billed only for the compute actually consumed. [Source](https://docs.aws.amazon.com/bedrock/latest/userguide/import-pre-trained-model.html)
+
+### 28.2 Guardrails and Knowledge Bases
+
+**Guardrails for Amazon Bedrock** apply model-agnostic policy at the API layer, independent of which underlying model is serving a given request: configurable content filters (hate, insults, sexual content, violence, misconduct, and prompt-injection/prompt-attack detection, each with adjustable severity thresholds — AWS states these block "up to 88% of harmful content"), a custom denied-topics list, word filters, and a PII/sensitive-information filter covering 50+ entity types with either a hard block or a mask-and-replace mode (`[NAME-1]`-style tagging). A **contextual grounding check** scores a RAG response against the context it was retrieved from and flags likely hallucination — the natural complement to the Knowledge Bases feature below. [Source](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails-sensitive-filters.html)
+
+**Knowledge Bases for Bedrock** is Bedrock's managed retrieval-augmented-generation pipeline: point it at a data source, and Bedrock owns the parse/chunk/embed/index steps end to end. Supported vector stores include Amazon OpenSearch Serverless (auto-provisioned by default if none is specified), Pinecone, Amazon Aurora PostgreSQL with `pgvector`, Redis Enterprise Cloud, and MongoDB Atlas. [Source](https://aws.amazon.com/blogs/aws/knowledge-bases-for-amazon-bedrock-now-supports-amazon-aurora-postgresql-and-cohere-embedding-models/)
+
+### 28.3 Bedrock AgentCore: The Agentic Runtime Layer
+
+**Bedrock AgentCore**, the current (2025+) generation of Bedrock's agent platform, is explicitly framework- and model-agnostic: AWS's own documentation states it "works... with any open-source framework such as CrewAI, LangGraph, LlamaIndex, and Strands Agents and with any foundation model." [Source](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html) It supersedes the older, narrower "Bedrock Agents" product with a modular set of services: **Harness** (a managed, single-API-call agent loop combining a model, prompt, and tools), **Runtime** (hosting for agent code, detailed below), **Gateway** (turns existing APIs and Lambda functions into MCP-compatible tools, and can also proxy to already-running MCP servers), **Identity** (auth/IdP integration with Cognito, Okta, Entra ID, and Auth0), **Memory** (short-term multi-turn and long-term cross-session memory, shareable across agents), **Code Interpreter** and **Browser** (sandboxed code execution and a managed cloud browser runtime), **Observability** (OpenTelemetry-standard tracing), and a newer **Payments** service for agent-initiated microtransactions. Billing is consumption-based with no upfront commitment. [Source](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html)
+
+The Runtime's isolation model is the one place this platform states something concretely relevant to a Linux-systems reader: "each user session runs in a dedicated microVM with isolated CPU, memory, and filesystem resources... After session completion, the entire microVM is terminated and memory is sanitized." [Source](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agents-tools-runtime.html) Two compute types are available — serverless **microVMs** with instant cold start and pay-per-use billing, capped at an 8-hour session, or customer-managed **Instances** (the caller's own EC2 capacity) supporting sessions up to 14 days and GPU-accelerated workloads. Note: AWS's Runtime documentation describes the isolation primitive only as a "dedicated microVM" without naming the underlying hypervisor. Third-party analyses attribute this to **Firecracker** — the KVM-based Linux microVM technology AWS is independently known to use for Lambda and Fargate — and that attribution is plausible given AWS's established Firecracker usage elsewhere, but it should be read as reported and consistent with prior art rather than a claim AWS's own AgentCore documentation makes directly. AgentCore Runtime speaks MCP, A2A (Agent-to-Agent), and AG-UI as its tool/agent-interop protocols.
+
+### 28.4 The Broader Managed-Inference Landscape
+
+Bedrock is one of three hyperscaler-operated managed model catalogs, not the only one, and the three take genuinely different positions on custom silicon. **Azure AI Foundry** (formerly Azure AI Studio) lists over 11,000 models — spanning OpenAI's GPT family (exclusively, among the three hyperscalers), Anthropic, Meta, Google, xAI, and Hugging Face Hub models — and positions itself less as a pure inference endpoint than as a full "AI app and agent factory," bundling grounding, governance, and observability tooling around the model catalog rather than leaving those to a separate agentic layer the way Bedrock separates AgentCore (§28.3) from Bedrock itself. [Source](https://azure.microsoft.com/en-us/products/ai-foundry) Microsoft's own accelerator, **Maia** (Maia 200, fabricated on TSMC 3nm), is in production as of this writing, but reportedly running Microsoft 365 Copilot and internal OpenAI-model workloads inside Microsoft's own datacenters rather than being offered as a customer-selectable compute backend within Foundry itself — a meaningfully less mature position than Bedrock's Trainium/Inferentia story in §28.1, where Trainium is stated to already carry the majority of Bedrock's own token volume. [Source](https://enterprisedna.co/resources/news/microsoft-maia-300-chip-reveal-september-tsmc-enterprise-2026/) **Google Vertex AI**'s Model Garden spans Google's own Gemini family, partner models including Anthropic's Claude, xAI's Grok, and Meta's Llama, and open models (DeepSeek, Gemma, Qwen) available either as managed pay-as-you-go endpoints or self-deployed on Vertex's own infrastructure — notably, Google's own docs name **vLLM** (§13) explicitly as a supported self-deploy path, the only one of the three hyperscalers whose model-catalog documentation does so. [Source](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/model-garden/explore-models) Vertex AI's managed endpoints run on Google's own **TPU** accelerators, the oldest and most production-proven of the three hyperscalers' custom-silicon programs (predating both Trainium and Maia by years), completing a three-way contrast: AWS pairs Bedrock with Trainium/Inferentia and the Neuron SDK, Google pairs Vertex AI with TPUs as a long-established production backend, and Microsoft's Maia remains, on current public reporting, an internal-workload chip rather than a Foundry-customer-facing one. All three converge on the same consumption menu this chapter has now covered twice (Bedrock in §28.1, Cloudflare's AI Gateway in §30.2): pay-per-token, provisioned/reserved throughput, and batch.
+
+Below the hyperscalers, a separate tier of AI-infrastructure-only companies compete on latency, price, and developer experience rather than on cloud-platform breadth. Hugging Face itself offers two distinct managed products, easy to conflate: **Inference Endpoints**, dedicated per-hour GPU instances running vLLM, TGI (§13.3), or a custom container under HF's management — "you don't need to worry about things like kubernetes, CUDA versions and configuring VPNs," per HF's own docs — and **Inference Providers**, a routing layer (`router.huggingface.co`) to third-party hosting partners (including Together, Fireworks, and Groq themselves) rather than HF-operated hardware, closer in shape to OpenRouter (§23) than to Bedrock. [Source](https://huggingface.co/docs/inference-endpoints/index) [Source](https://huggingface.co/docs/inference-providers/index) **Together AI**, **Fireworks AI**, and **Groq** are the most commonly compared pure-inference players: Together and Fireworks both offer serverless per-token pricing alongside dedicated GPU-hour rentals in the same shape as the RunPod/Lambda/Vast.ai grouping in §17. [Source](https://www.together.ai/pricing) Fireworks AI's marketing references custom inference kernels (sometimes called "FireAttention") in secondary coverage; this claim is not confirmed on Fireworks' own pricing page and should be treated as reported rather than independently verified here.
+
+Groq is the one genuine hardware outlier in this entire landscape — not a GPU vendor at all, but a custom accelerator called the **LPU** (Language/Tensor Streaming Processor). Where every other platform in this chapter runs on NVIDIA GPUs, AMD GPUs, or hyperscaler accelerators that are still fundamentally GPU-shaped (Trainium, TPU), Groq's compiler statically schedules every instruction and data-movement cycle ahead of time — deterministic execution with no speculative execution and no dynamic runtime scheduling — and memory is a large pool of on-chip SRAM rather than off-chip HBM. [Source](https://blog.codingconfessions.com/p/groq-lpu-design) Primary Groq sources do not describe KV-cache handling in vLLM/SGLang terms (§9, §13.1), but the architecture implies why: a PagedAttention-style paging scheme (§9.2) exists specifically to manage dynamic allocation against limited, unpredictable-latency HBM — a problem that looks different, and may not need the same solution, when the compiler is placing all memory ahead of time in fast on-chip SRAM. This is presented as an architectural inference from Groq's public design description, not a claim Groq itself makes. Note: concrete per-token Groq pricing figures circulate widely via third-party aggregators, but Groq's own pricing page did not expose specific dollar figures to direct retrieval at the time of writing — treat any specific numbers as needing verification against Groq's current published rate card.
+
+**Baseten** and **Replicate** round out the tier with a packaging-first pitch: Baseten's open-source **Truss** framework and Replicate's **Cog** format (now a Cloudflare-owned technology following the December 2025 acquisition noted in §30.1, though Replicate continues operating as its own hosting product) both let a developer containerize an arbitrary custom model and get back a hosted, autoscaling endpoint, billed per GPU-second with no separate model markup. [Source](https://www.baseten.co/pricing/) [Source](https://replicate.com/pricing) Baseten in particular publishes a "built our own stack" story worth contrasting with Cloudflare's Infire (§30.1): rather than replacing vLLM/TensorRT-LLM/SGLang outright, Baseten layers its own kernel fusion, custom attention kernels, speculative decoding, and KV-cache offloading on top of those existing engines — an optimize-on-top approach rather than Infire's from-scratch replacement. [Source](https://www.baseten.co/resources/guide/the-baseten-inference-stack/) Outside of Cloudflare and Baseten, none of the platforms surveyed here discloses inference-engine internals with comparable technical depth; as far as this chapter's sources show, that remains the exception rather than the norm across managed-inference vendors.
+
+---
+
+## 29. Vercel's AI Platform
+
+Where §28's Bedrock is a hosted alternative to the model-serving engines this chapter documents, Vercel's AI platform sits one layer up the stack entirely: it is a client-side abstraction and request-routing layer, not a competing inference engine. It does not run its own GPU fleet for open-weight models the way Bedrock or Cloudflare (§30) do — its job is getting a request from a web application to *some* model endpoint, whether that endpoint is a cloud API or one of the self-hosted engines already covered in this chapter.
+
+### 29.1 The AI SDK: A Provider-Agnostic Client Layer
+
+The **Vercel AI SDK** ships three surfaces: **SDK Core**, a unified API (`generateText`, `streamText`, `generateObject`, tool calling) implemented once and dispatched to whichever model provider is configured; **SDK UI**, framework-agnostic hooks (`useChat` and similar, for React, Vue, Svelte, and Angular) that Vercel documents as the recommended production path; and a newer **Harnesses** surface (`HarnessAgent`, `ToolLoopAgent`) for running agent loops through the same uniform interface. [Source](https://ai-sdk.dev/docs/introduction)
+
+The provider abstraction spans first-party integrations for OpenAI, Anthropic, Google, Azure, Amazon Bedrock, Mistral, and xAI, among others — swapping providers in application code is a model-string change, not a rewrite. Critically for this chapter, the SDK also accepts any OpenAI-compatible endpoint as a custom provider, which is exactly the wire protocol vLLM (§13.1), SGLang (§13.2), and llama.cpp's `llama-server`/Ollama (§5) all expose:
+
+```javascript
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
+import { generateText } from 'ai';
+
+const provider = createOpenAICompatible({
+  name: 'localModel',
+  baseURL: 'http://localhost:8000/v1', // vLLM, Ollama, or llama-server
+});
+
+const { text } = await generateText({
+  model: provider('your-model-name'),
+  prompt: 'Your prompt here',
+});
+```
+[Source](https://ai-sdk.dev/providers/openai-compatible-providers)
+
+In other words: a self-hosted vLLM deployment from §13.1 plugs into a Vercel-hosted frontend with zero server-side changes, just a `baseURL`. Streamed responses in SDK UI travel over Server-Sent Events using a structured "UI Message Stream Protocol" carrying text deltas, RAG source citations, and message metadata on one connection; the older React Server Components streaming path (`streamUI`, AI SDK RSC) is explicitly marked experimental — "We recommend using AI SDK UI for production" — with a documented migration path off of it. [Source](https://ai-sdk.dev/docs/ai-sdk-ui/streaming-data)
+
+### 29.2 AI Gateway
+
+**AI Gateway** is now a standalone product, directly callable over HTTP rather than only bundled inside the SDK: "Build AI agents and applications with hundreds of models through one API, with routing, fallbacks, budgets, and usage monitoring." [Source](https://vercel.com/docs/ai-gateway)
+
+```bash
+curl https://ai-gateway.vercel.sh/v1/chat/completions \
+  -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "openai/gpt-5.6-sol", "messages": [{"role": "user", "content": "..."}]}'
+```
+
+The Gateway speaks multiple upstream wire protocols out of the endpoints it exposes — OpenAI's Chat Completions API, OpenAI's Responses API, and Anthropic's Messages API — and adds automatic retry/failover across providers on failure, cross-provider spend visibility, and Bring-Your-Own-Key (BYOK) routing with, per Vercel, no token markup even when using a customer's own provider credentials. [Source](https://vercel.com/docs/ai-gateway/authentication-and-byok/byok) It is framework-agnostic: any HTTP client can call it directly, with or without the AI SDK.
+
+### 29.3 Fluid Compute: Isolation Without a MicroVM Per Request
+
+The one part of Vercel's platform with genuine systems-architecture content — and the part most directly comparable to concerns elsewhere in this chapter — is **Fluid Compute**, Vercel's execution model for serverless functions. Vercel's own documentation states the problem plainly: "because each function uses a microVM for isolation, which can lead to slower start-up times... Fluid compute uses a different approach to isolation. Instead of using a microVM for each function invocation, multiple invocations can share the same physical instance... concurrently." [Source](https://vercel.com/docs/fluid-compute) (As with AgentCore in §28.3, Vercel's docs name the isolation primitive only as "a microVM" without identifying the specific hypervisor — that detail is not published for this platform.)
+
+Traditional serverless holds a whole microVM idle for the duration of a long, I/O-bound LLM request — waiting on a streaming model API, an embeddings call, or a vector-database lookup. Fluid Compute's in-function concurrency instead lets multiple invocations share one running instance/process, prioritizing existing idle capacity over spinning up new instances, and lets other invocations timeshare that instance while one is blocked waiting on tokens. Vercel frames this explicitly as an AI workload optimization. The resulting model is a loose analogue — at the web-request layer rather than the GPU-batching layer — of the continuous-batching schedulers vLLM and SGLang implement in §13 to keep a GPU busy across many concurrent requests instead of serializing them. Error isolation is preserved despite the shared instance: an unhandled exception lets already-in-flight requests on that instance finish before the process recycles.
+
+Function duration defaults to 300 seconds and can extend to 1,800 seconds (30 minutes) in beta; for anything requiring longer-lived, pause-and-resume execution, Vercel points to a separate product, **Vercel Workflows**, for durable execution spanning minutes to months. Fluid Compute has been the default for new projects since 2025-04-23, across Node.js, Python, Edge, Bun, and Rust runtimes.
+
+### 29.4 v0
+
+**v0** is Vercel's prompt-to-app product: it generates full-stack UI and Next.js/React components from a natural-language prompt or wireframe, with one-click deployment back onto Vercel. [Source](https://v0.app/docs) It is included here for completeness rather than depth — it is an application-generation tool, not inference infrastructure, and this chapter takes no position on which underlying model family powers it, since that detail is not reliably documented at a primary source as of this writing. Note: needs verification if a reader wants the specific model backing v0.
+
+---
+
+## 30. Cloudflare's AI Platform: Workers AI
+
+Cloudflare's AI platform sits at the opposite pole from §29's Vercel: it is Cloudflare's own operated GPU fleet, not a routing layer over other providers' compute. Unlike every self-hosted engine in this chapter — llama.cpp, Ollama, vLLM, SGLang, TensorRT-LLM, ExLlama — which the reader installs, drivers and all, on their own Linux box, **Workers AI** is entirely infrastructure the developer never sees: a call to `env.AI.run()` from a Cloudflare Worker returns a model response, with no `nvidia-smi`, ROCm install, DRM device node, or CUDA driver version ever visible to the caller. The Linux/GPU-driver reality this chapter otherwise documents in depth doesn't disappear on this platform — it simply moves to hardware Cloudflare operates, not the reader.
+
+### 30.1 Workers AI and Infire, a Homegrown Inference Engine
+
+Workers AI serves 86+ models: open-weight LLMs (Llama 3.2/3.3/4, Mistral, DeepSeek R1/V4, Qwen, Kimi K2, GLM), embeddings (BGE, EmbeddingGemma), image generation (Stable Diffusion, FLUX, Leonardo.AI), speech-to-text (Whisper, Deepgram Nova-3/Flux), text-to-speech, and vision models (Llama 3.2 Vision, Moondream 3). [Source](https://developers.cloudflare.com/workers-ai/models/) Usage is billed in **Neurons** — "our way of measuring AI outputs across different models, representing the GPU compute needed to perform your request" — at $0.011 per 1,000 neurons with 10,000 free per day; a Llama-3.2-1B request costs roughly 2,457 neurons per million input tokens and 18,252 per million output tokens, while Llama-3.1-70B runs about 10× that. [Source](https://developers.cloudflare.com/workers-ai/platform/pricing/)
+
+The hardware underneath is NVIDIA GPUs — A100s initially, later H100 NVLs — deployed in over 100 of Cloudflare's 300+ edge cities as of this writing (GPUs are not colocated with every PoP; a request routes to the nearest GPU-equipped data center within the same continent, an explicit tradeoff Cloudflare states given that GPUs are "expensive and power-hungry"). [Source](https://blog.cloudflare.com/bringing-ai-to-the-edge/)
+
+The more notable finding for this chapter: Cloudflare built and open-published details of their own inference engine, **Infire**, written in Rust on the `hyper` HTTP crate, specifically to replace vLLM in their production edge deployment. Cloudflare's stated rationale is a direct, citable counterpoint to §13's vLLM/SGLang coverage — a hyperscaler concluding that the leading open-source engines didn't fit their specific multi-tenant constraints: Python-based vLLM required `gVisor` sandboxing to meet their multi-tenant security model, and that sandboxing layer added virtualization overhead Infire avoids by running natively on bare metal. Infire also supports dynamic multi-model deployment on a single GPU without NVIDIA MIG partitioning (the mechanism covered in Chapter 89 and cross-referenced from this chapter's §31), which Cloudflare states vLLM could not do for their use case. Its technique stack — continuous batching with chunked prefill, a paged KV cache, JIT-compiled CUDA kernels tuned per model for the Hopper architecture, and fine-grained CUDA graphs — will read as familiar from §9 and §13's KV-cache and batching material, applied inside a from-scratch engine rather than vLLM's or SGLang's. Cloudflare reports Infire running roughly 7% faster than vLLM 0.10.0 on unloaded H100 NVL hardware, and in one internal comparison reaching 40.91 requests/sec at 25% CPU utilization versus vLLM's 38.38 requests/sec at 140% CPU utilization — self-reported figures, published by Cloudflare in August 2025, that should be read with the same non-independently-audited caveat this chapter applies to other vendors' internal benchmarks. [Source](https://blog.cloudflare.com/cloudflares-most-efficient-ai-inference-engine/)
+
+Separately, and on a different code path entirely, Cloudflare has also used **ONNX Runtime** — a 2023 partnership with Microsoft covered a three-tier cloud/edge/device ONNX Runtime deployment for portable model execution, predating and distinct from Infire's GPU-serving role described above; the two should not be conflated as the same inference path.
+
+Cloudflare's model-hosting footprint also grew by acquisition: on 2025-11-17 Cloudflare announced it was acquiring **Replicate** (the deal closed 2025-12-01), bringing Replicate's 50,000+-model catalog and its own Cog-based hosting product onto Cloudflare's infrastructure. [Source](https://www.cloudflare.com/press/press-releases/2025/cloudflare-to-acquire-replicate-to-build-the-most-seamless-ai-cloud-for-developers/) As of this writing Replicate continues operating as a distinct brand rather than being folded directly into Workers AI branding — worth tracking as the integration matures, since it changes how the Cog reference in §30.2 and the Replicate mention in §28.4 should be read: Replicate is now a Cloudflare-owned product, not an independent third party.
+
+### 30.2 AI Gateway, Vectorize, and Durable Objects as Agent State
+
+Cloudflare's **AI Gateway** is a unified proxy and observability layer in front of Workers AI and third-party providers (OpenAI, Anthropic, Google Gemini, and — now a Cloudflare-owned product itself, per the acquisition noted in §30.1 — Replicate) — edge response caching, rate limiting, usage/cost analytics, and automatic retry/fallback across providers behind one API for 70+ models. [Source](https://developers.cloudflare.com/ai-gateway/) It also buffers streaming responses independently of the calling agent's own lifetime, which matters for long-running agent sessions that would otherwise be cut off by a Worker's execution limit.
+
+**Vectorize** is Cloudflare's globally distributed vector database, accepting embeddings from Workers AI or an external provider and joinable against R2 objects, KV, or D1 at query time; **AI Search** (formerly AutoRAG) layers a managed RAG pipeline on top, auto-indexing a data source into Vectorize and querying it for context-aware generation — the same managed-RAG niche as Bedrock's Knowledge Bases in §28.2, built on Cloudflare's own storage primitives instead of AWS's. [Source](https://developers.cloudflare.com/vectorize/)
+
+The cleanest architectural comparison to §28.3's AgentCore session model is Cloudflare's approach to agent state: the **Agents SDK** models an agent as literally one **Durable Object** instance — a globally-addressable actor with up to 10 GB of embedded SQLite, its own WebSocket connections and scheduler, and strictly serial request processing, so concurrent requests to the same agent instance queue automatically rather than requiring external locking. [Source](https://developers.cloudflare.com/agents/runtime/agents-api/) Where AgentCore backs a session with a dedicated, terminated-after-use microVM (§28.3), Cloudflare backs it with a long-lived, strongly-consistent single-actor object — two different answers to the same "where does an agent's state live between turns" question, one built on ephemeral compute isolation and one on a persistent addressable object. Custom models can be brought onto the platform via **Cloudflare Containers**, using **Cog** (Replicate's model-packaging format, and — following the December 2025 acquisition noted in §30.1 — now itself a Cloudflare-owned technology rather than a third-party dependency) — the one point at which a user-supplied container image, potentially carrying its own CUDA and driver assumptions, enters an otherwise fully-managed platform.
+
+---
+
+## 31. Integrations
 
 This chapter draws on and extends topics covered across the book:
 
@@ -1512,25 +1922,27 @@ This chapter draws on and extends topics covered across the book:
 
 - **Chapter 88 (NPU Integration — Offloading Prefill to NPU)**: The next chapter examines how Intel's NPU (in Meteor Lake/Lunar Lake) and Qualcomm's Hexagon DSP accelerate the prefill phase of LLM inference while the GPU handles generation. The `HETERO:NPU,GPU` OpenVINO execution mode described in §7.4 is the bridge between these chapters.
 
-- **Chapter 108 (ROCm and HIP — AMD's GPU Compute Stack)**: Chapter 108's own outline anticipates this chapter's §14.1 coverage of vLLM on AMD hardware, cross-referencing it explicitly as "Ch124 (Local LLM Inference — ROCm backend for llama.cpp/vllm)." §8 of this chapter (ROCm MIOpen and HIP) and §14.1's ROCm install path both build on the CDNA3/MI300X architecture, XGMI Infinity Fabric multi-GPU topology, and `ROCR_VISIBLE_DEVICES` device-selection mechanism detailed there.
+- **Chapter 108 (ROCm and HIP — AMD's GPU Compute Stack)**: Chapter 108's own outline anticipates this chapter's §13.1 coverage of vLLM on AMD hardware, cross-referencing it explicitly as "Ch124 (Local LLM Inference — ROCm backend for llama.cpp/vllm)." §8 of this chapter (ROCm MIOpen and HIP) and §13.1's ROCm install path both build on the CDNA3/MI300X architecture, XGMI Infinity Fabric multi-GPU topology, and `ROCR_VISIBLE_DEVICES` device-selection mechanism detailed there.
 
-- **Chapters 229 and 232 (GPU Machine Learning Inference Algorithms; GPU Generative AI and LLM Inference on Linux)**: Both chapters independently outline speculative decoding (draft/verify rejection sampling, token trees, Medusa, EAGLE) from an algorithmic-derivation perspective. §16 of this chapter covers the same techniques from a practical, framework-flag perspective — how to turn speculative decoding on in vLLM, SGLang, and llama.cpp — and should be read as a deployment-level complement to their theoretical treatment, not a duplicate.
+- **Chapters 229 and 232 (GPU Machine Learning Inference Algorithms; GPU Generative AI and LLM Inference on Linux)**: Both chapters independently outline speculative decoding (draft/verify rejection sampling, token trees, Medusa, EAGLE) from an algorithmic-derivation perspective. §15 of this chapter covers the same techniques from a practical, framework-flag perspective — how to turn speculative decoding on in vLLM, SGLang, and llama.cpp — and should be read as a deployment-level complement to their theoretical treatment, not a duplicate.
 
-- **Chapters 240 and 248 (NVIDIA Cosmos, OSMO, and Omniverse Farm; Render Farm Infrastructure — Nucleus, OpenCue, and Job Distribution)**: Both chapters use the NGC catalog and NIM microservices in a render-farm/production-pipeline context (container distribution, Helm-chart deployment, multi-node orchestration). §18 of this chapter covers the same NGC/NIM mechanics — `nvcr.io` authentication, the NIM container model, licensing — from the standpoint of a single-node local LLM deployment rather than a farm-scale one.
+- **Chapters 240 and 248 (NVIDIA Cosmos, OSMO, and Omniverse Farm; Render Farm Infrastructure — Nucleus, OpenCue, and Job Distribution)**: Both chapters use the NGC catalog and NIM microservices in a render-farm/production-pipeline context (container distribution, Helm-chart deployment, multi-node orchestration). §17 of this chapter covers the same NGC/NIM mechanics — `nvcr.io` authentication, the NIM container model, licensing — from the standpoint of a single-node local LLM deployment rather than a farm-scale one.
 
-- **Chapter 48 (ROCm Training vs Inference), again**: §22's Unsloth coverage is this chapter's one deliberate excursion into training — Chapter 48's PyTorch-on-ROCm training path and Unsloth's Triton-kernel-accelerated LoRA/QLoRA path are two different answers to the same problem (fitting gradient computation into limited VRAM); §22 is included specifically because Unsloth's output (a GGUF file or a merged 16-bit checkpoint) re-enters this chapter's own serving stack via §1's GGUF format or §14.1's vLLM path, not because this chapter otherwise covers training.
+- **Chapter 48 (ROCm Training vs Inference), again**: §21's Unsloth coverage is this chapter's one deliberate excursion into training — Chapter 48's PyTorch-on-ROCm training path and Unsloth's Triton-kernel-accelerated LoRA/QLoRA path are two different answers to the same problem (fitting gradient computation into limited VRAM); §21 is included specifically because Unsloth's output (a GGUF file or a merged 16-bit checkpoint) re-enters this chapter's own serving stack via §1's GGUF format or §13.1's vLLM path, not because this chapter otherwise covers training.
 
-- **§18 (NVIDIA NGC Catalog and NIM), again**: §23's TensorRT-LLM coverage is the "underneath the hood" complement to §18's NIM discussion — NIM pre-compiles and containerises exactly the `trtllm-build` step §23 walks through manually, so a reader who wants to understand what a NIM container is actually running, or who needs a GPU/model pairing NIM doesn't pre-package, follows §23's direct `trtllm-build`/`trtllm-serve` path instead.
+- **§17 (NVIDIA NGC Catalog and NIM), again**: §22's TensorRT-LLM coverage is the "underneath the hood" complement to §17's NIM discussion — NIM pre-compiles and containerises exactly the `trtllm-build` step §22 walks through manually, so a reader who wants to understand what a NIM container is actually running, or who needs a GPU/model pairing NIM doesn't pre-package, follows §22's direct `trtllm-build`/`trtllm-serve` path instead.
 
-- **§5 (Ollama) and §20 (kagent), again**: §24's llama-swap and LiteLLM sit at the same "route a request to the right backend" layer as Ollama's built-in multi-model daemon (§5) and kagent's Kubernetes CRDs (§20), but at opposite ends of the operational-complexity spectrum from kagent — a single YAML file and process supervision on one host, versus cluster-wide orchestration. All three solve the same underlying problem (which running model should serve this request) at different scales.
+- **§5 (Ollama) and §19 (kagent), again**: §23's llama-swap and LiteLLM sit at the same "route a request to the right backend" layer as Ollama's built-in multi-model daemon (§5) and kagent's Kubernetes CRDs (§19), but at opposite ends of the operational-complexity spectrum from kagent — a single YAML file and process supervision on one host, versus cluster-wide orchestration. All three solve the same underlying problem (which running model should serve this request) at different scales.
 
-- **§14 (Production Serving Engines), again**: §25's structured-output and tool-calling coverage is a feature layered directly on top of §14's vLLM and SGLang serving engines — the `--structured-outputs-config.backend` and `--grammar-backend` flags discussed in §25 are configuration surfaces on the exact server processes `vllm serve` and `python -m sglang.launch_server` start in §14.1 and §14.2.
+- **§13 (Production Serving Engines), again**: §24's structured-output and tool-calling coverage is a feature layered directly on top of §13's vLLM and SGLang serving engines — the `--structured-outputs-config.backend` and `--grammar-backend` flags discussed in §24 are configuration surfaces on the exact server processes `vllm serve` and `python -m sglang.launch_server` start in §13.1 and §13.2.
 
-- **§9 (KV Cache Management Strategies) and §14, again**: §26's multi-LoRA serving builds directly on §9's KV cache concepts and §14's Punica/S-LoRA-derived batching — the "Unified Paging" scheme S-LoRA introduces pages adapter weights out of the same kind of shared memory pool this chapter's KV cache material (§9) already establishes, and §22's Unsloth fine-tuning workflow is the natural upstream source of the adapters §26 serves.
+- **§9 (KV Cache Management Strategies) and §13, again**: §25's multi-LoRA serving builds directly on §9's KV cache concepts and §13's Punica/S-LoRA-derived batching — the "Unified Paging" scheme S-LoRA introduces pages adapter weights out of the same kind of shared memory pool this chapter's KV cache material (§9) already establishes, and §21's Unsloth fine-tuning workflow is the natural upstream source of the adapters §25 serves.
 
-- **§1.3 and §17, again**: §27's EXL2/EXL3 formats are a third quantization lineage alongside §1.3's GGUF K-quants and §17's GPTQ/AWQ/bitsandbytes/FP8 family — all three attack the same VRAM-budgeting problem worked through numerically in §11, with different bit-allocation strategies and different engine ecosystems.
+- **§1.3 and §16, again**: §26's EXL2/EXL3 formats are a third quantization lineage alongside §1.3's GGUF K-quants and §16's GPTQ/AWQ/bitsandbytes/FP8 family — all three attack the same VRAM-budgeting problem worked through numerically in §11, with different bit-allocation strategies and different engine ecosystems.
 
-- **§15 (Disaggregated Prefill-Decode Serving) and §20 (kagent), again**: §28's llm-d sits at the intersection of both — it implements the same prefill/decode disaggregation problem §15 covers via vLLM's connector abstraction, NVIDIA Dynamo, and Mooncake, but orchestrated as a Kubernetes-native scheduling concern across pods rather than a single-process config, and it occupies the model-serving layer that §20's kagent explicitly sits above (kagent orchestrates agents that call an endpoint; llm-d orchestrates the endpoint itself).
+- **§14 (Disaggregated Prefill-Decode Serving) and §19 (kagent), again**: §27's llm-d sits at the intersection of both — it implements the same prefill/decode disaggregation problem §14 covers via vLLM's connector abstraction, NVIDIA Dynamo, and Mooncake, but orchestrated as a Kubernetes-native scheduling concern across pods rather than a single-process config, and it occupies the model-serving layer that §19's kagent explicitly sits above (kagent orchestrates agents that call an endpoint; llm-d orchestrates the endpoint itself).
+
+- **Chapter 89 (GPU Virtualization in Depth)**: NVIDIA MIG and vGPU, and AMD MxGPU SR-IOV, partition a single physical GPU into isolated slices at the driver/hypervisor level — a multi-tenant sharing mechanism orthogonal to and below this chapter's §13 serving engines, which schedule requests *within* whatever GPU (or GPU slice) they are handed. A vLLM or SGLang instance pinned to one `MIG-GPU-...` device via `NVIDIA_VISIBLE_DEVICES` behaves, from this chapter's perspective, exactly as it would on a smaller physical GPU.
 
 ---
 
@@ -1674,6 +2086,67 @@ This chapter draws on and extends topics covered across the book:
 - [IBM Research: Donating llm-d to the CNCF](https://research.ibm.com/blog/donating-llm-d-to-the-cloud-native-computing-foundation)
 - [llm-d project site](https://llm-d.ai/)
 - [llm-d Quickstart Docs](https://llm-d.ai/docs/getting-started/quickstart)
+- [llama.cpp RPC Backend README](https://raw.githubusercontent.com/ggml-org/llama.cpp/master/tools/rpc/README.md)
+- [safetensors GitHub repository](https://github.com/huggingface/safetensors)
+- [Hugging Face Hub: Pickle Scanning and Security](https://huggingface.co/docs/hub/en/security-pickle)
+- [ktransformers GitHub repository](https://github.com/kvcache-ai/ktransformers)
+- [llamafile GitHub repository](https://github.com/Mozilla-Ocho/llamafile)
+- [Position Interpolation: Extending Context Window of Large Language Models via Positional Interpolation (arXiv)](https://arxiv.org/abs/2306.15595)
+- [NTK-Aware Scaled RoPE (r/LocalLLaMA)](https://www.reddit.com/r/LocalLLaMA/comments/14lz7j5/ntkaware_scaled_rope_allows_llama_models_to_have/)
+- [YaRN: Efficient Context Window Extension of Large Language Models (arXiv)](https://arxiv.org/abs/2309.00071)
+- [llama-cli Manual Page (Debian)](https://manpages.debian.org/unstable/llama.cpp-tools/llama-cli.1.en.html)
+- [vLLM Context Extension](https://docs.vllm.ai/en/stable/features/context_extension/)
+- [Hugging Face TGI GitHub repository](https://github.com/huggingface/text-generation-inference)
+- [Hugging Face TGI README](https://raw.githubusercontent.com/huggingface/text-generation-inference/main/README.md)
+- [Hugging Face TGI Architecture Docs](https://github.com/huggingface/text-generation-inference/blob/main/docs/source/architecture.md)
+- [vLLM Metrics Design Doc](https://docs.vllm.ai/en/latest/design/v1/metrics.html)
+- [vLLM Observability Dashboards](https://docs.vllm.ai/en/latest/examples/observability/dashboards/)
+- [SGLang Production Metrics](https://docs.sglang.ai/references/production_metrics.html)
+- [SGLang Grafana Dashboard Staleness Issue #12618](https://github.com/sgl-project/sglang/issues/12618)
+- [vLLM Multimodal Inputs](https://docs.vllm.ai/en/stable/features/multimodal_inputs/)
+- [SGLang Supported Multimodal Language Models](https://docs.sglang.io/docs/supported-models/multimodal_language_models)
+- [Ollama Vision Models Search](https://ollama.com/search?q=vision)
+- [AWS: What Is Amazon Bedrock?](https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html)
+- [The Next Platform: AWS Bullish on Homegrown Trainium AI Accelerators](https://www.nextplatform.com/cloud/2025/10/31/aws-bullish-on-homegrown-trainium-ai-accelerators/1642337)
+- [CloudZero: Amazon Bedrock Pricing](https://www.cloudzero.com/blog/amazon-bedrock-pricing/)
+- [AWS Bedrock: Import a Custom Model](https://docs.aws.amazon.com/bedrock/latest/userguide/import-pre-trained-model.html)
+- [AWS Bedrock: Guardrails Sensitive Information Filters](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails-sensitive-filters.html)
+- [AWS Blog: Knowledge Bases for Amazon Bedrock now supports Aurora PostgreSQL and Cohere Embedding Models](https://aws.amazon.com/blogs/aws/knowledge-bases-for-amazon-bedrock-now-supports-amazon-aurora-postgresql-and-cohere-embedding-models/)
+- [AWS: What Is Amazon Bedrock AgentCore?](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html)
+- [AWS Bedrock AgentCore: Agents Tools Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agents-tools-runtime.html)
+- [Vercel AI SDK: Introduction](https://ai-sdk.dev/docs/introduction)
+- [Vercel AI SDK: OpenAI-Compatible Providers](https://ai-sdk.dev/providers/openai-compatible-providers)
+- [Vercel AI SDK: Streaming Data](https://ai-sdk.dev/docs/ai-sdk-ui/streaming-data)
+- [Vercel Docs: AI Gateway](https://vercel.com/docs/ai-gateway)
+- [Vercel Docs: AI Gateway Authentication and BYOK](https://vercel.com/docs/ai-gateway/authentication-and-byok/byok)
+- [Vercel Docs: Fluid Compute](https://vercel.com/docs/fluid-compute)
+- [v0 Documentation](https://v0.app/docs)
+- [Cloudflare Workers AI: Models](https://developers.cloudflare.com/workers-ai/models/)
+- [Cloudflare Workers AI: Pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/)
+- [Cloudflare Blog: Bringing AI to the Edge](https://blog.cloudflare.com/bringing-ai-to-the-edge/)
+- [Cloudflare Blog: Our Most Efficient AI Inference Engine (Infire)](https://blog.cloudflare.com/cloudflares-most-efficient-ai-inference-engine/)
+- [Cloudflare Docs: AI Gateway](https://developers.cloudflare.com/ai-gateway/)
+- [Cloudflare Docs: Vectorize](https://developers.cloudflare.com/vectorize/)
+- [Cloudflare Docs: Agents Runtime API](https://developers.cloudflare.com/agents/runtime/agents-api/)
+- [LM Studio Docs: Download and Install](https://lmstudio.ai/docs/app)
+- [RunPod: Pricing](https://www.runpod.io/pricing)
+- [Lambda: GPU Cloud](https://lambda.ai/service/gpu-cloud)
+- [Vast.ai: Pricing](https://vast.ai/pricing)
+- [CoreWeave: Pricing](https://www.coreweave.com/pricing)
+- [Modal: Pricing](https://modal.com/pricing)
+- [OpenRouter Docs: Provider Routing](https://openrouter.ai/docs/guides/routing/provider-selection)
+- [Ray Docs: Ray Serve LLM](https://docs.ray.io/en/latest/serve/llm/index.html)
+- [Microsoft Azure: AI Foundry](https://azure.microsoft.com/en-us/products/ai-foundry)
+- [Google Cloud: Vertex AI Model Garden](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/model-garden/explore-models)
+- [Hugging Face Docs: Inference Endpoints](https://huggingface.co/docs/inference-endpoints/index)
+- [Hugging Face Docs: Inference Providers](https://huggingface.co/docs/inference-providers/index)
+- [Together AI: Pricing](https://www.together.ai/pricing)
+- [Baseten: Pricing](https://www.baseten.co/pricing/)
+- [Baseten: The Baseten Inference Stack](https://www.baseten.co/resources/guide/the-baseten-inference-stack/)
+- [Replicate: Pricing](https://replicate.com/pricing)
+- [Cloudflare Press Release: Cloudflare to Acquire Replicate](https://www.cloudflare.com/press/press-releases/2025/cloudflare-to-acquire-replicate-to-build-the-most-seamless-ai-cloud-for-developers/)
+- [Coding Confessions: Groq LPU Design](https://blog.codingconfessions.com/p/groq-lpu-design)
+- [EnterpriseDNA: Microsoft Maia 300 Chip Reveal](https://enterprisedna.co/resources/news/microsoft-maia-300-chip-reveal-september-tsmc-enterprise-2026/)
 
 ## Roadmap
 
