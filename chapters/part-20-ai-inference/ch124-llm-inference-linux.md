@@ -1583,7 +1583,7 @@ Programmatically, the same operations are `hf_hub_download(repo_id, filename, ..
 
 ### Model Weight Distribution Mechanisms at a Glance
 
-`hf download` is one of several distinct mechanisms this chapter's tools use to move weight files from a remote store onto a Linux GPU box, each with its own take on deduplication, authentication, and native packaging:
+`hf download` is one of several distinct mechanisms this chapter's tools use to move weight files from a remote store onto a Linux GPU box, each with its own take on deduplication, authentication, and native packaging. The table below adds one mechanism not otherwise discussed in this chapter — **ModelScope**, Alibaba/DAMO's Apache-2.0-licensed hub for the China-centric open-model ecosystem, which mirrors many HF Hub-hosted models and exposes its own `ms-hub`/`modelscope` download CLI as a near-drop-in alternative to `hf download`:
 
 | **Mechanism** | **License/ecosystem** | **Content-addressing / dedup** | **Auth model** | **Native format** | **Primary ecosystem** |
 |---|---|---|---|---|---|
