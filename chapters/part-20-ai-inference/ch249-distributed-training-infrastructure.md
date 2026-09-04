@@ -1029,7 +1029,7 @@ for inputs, targets in dataloader:
     optimizer.step()
 ```
 
-[Source: PyTorch, "Getting Started with Fully Sharded Data Parallel (FSDP2)"](https://docs.pytorch.org/tutorials/intermediate/FSDP1_tutorial.html)
+[Source: PyTorch, "Getting Started with Fully Sharded Data Parallel (FSDP2)"](https://docs.pytorch.org/tutorials/intermediate/FSDP_tutorial.html)
 [Source: PyTorch, `torch.distributed.fsdp.fully_shard` docs](https://docs.pytorch.org/docs/stable/distributed.fsdp.fully_shard.html)
 
 Key configuration knobs on `fully_shard`:
@@ -1048,10 +1048,10 @@ Key configuration knobs on `fully_shard`:
 
 [Source: PyTorch, `torch.distributed.fsdp` docs](https://docs.pytorch.org/docs/stable/fsdp.html)
 
-*Note: needs verification — current PyTorch tutorials describe the original FSDP1 wrapper
-(`torch.distributed.fsdp.FullyShardedDataParallel`) as being superseded by FSDP2/`fully_shard`
-for new code; whether FSDP1 carries a formal deprecation warning as of the PyTorch version in use
-should be re-checked rather than assumed, since this varies by release.*
+The original FSDP1 wrapper (`torch.distributed.fsdp.FullyShardedDataParallel`) is formally
+deprecated: its own tutorial page now carries an explicit banner directing readers to the FSDP2
+tutorial instead, so new code should use `fully_shard` rather than the FSDP1 class.
+[Source: PyTorch, "Getting Started with Fully Sharded Data Parallel(FSDP)" (FSDP1, deprecated)](https://docs.pytorch.org/tutorials/intermediate/FSDP1_tutorial.html)
 
 ### 3.10 Tensor Parallel (TP)
 
@@ -1217,7 +1217,7 @@ scheduling, and fault-handling across many such actors/processes from one script
 
 ```python
 import monarch
-from monarch.actor import Actor, endpoint
+from monarch.actor import Actor, endpoint, this_host
 
 class TrainerActor(Actor):
     @endpoint
@@ -1225,9 +1225,9 @@ class TrainerActor(Actor):
         ...
         return loss.item()
 
-# Spawn a mesh of actor processes across a process mesh
-proc_mesh = monarch.proc_mesh(gpus=8)
-trainers = proc_mesh.spawn("trainers", TrainerActor)
+# Spawn a mesh of actor processes on the local host's GPUs
+procs = this_host().spawn_procs({"gpus": 8})
+trainers = procs.spawn("trainers", TrainerActor)
 
 # Call an endpoint across every actor in the mesh
 losses = trainers.train_step.call(batch).get()
@@ -1242,9 +1242,10 @@ its API surface should be expected to change across releases. It is the foundati
 fault-tolerant training, extending fault handling to the actor-mesh level rather than requiring
 each individual training script to implement its own retry/restart logic.
 [Source: Meta, `meta-pytorch/monarch` GitHub repository](https://github.com/meta-pytorch/monarch)
-*Note: needs verification — Monarch's API is under active, rapid development; code samples above
-should be re-checked against the installed `torchmonarch` version before being treated as stable
-usage guidance.*
+*Note: needs verification — Monarch's API is under active, rapid development (some current
+official examples use an async `await proc_mesh(...)` form instead of the synchronous
+`this_host().spawn_procs(...)` shown above); code samples above should be re-checked against the
+installed `torchmonarch` version before being treated as stable usage guidance.*
 
 ### 3.14 Custom Extensions
 
