@@ -96,6 +96,29 @@ mechanisms make this tractable instead of requiring purity up front:
   together by ordinary interpreted Python, at the cost of a CPU–GPU synchronization point at each
   break. [Source: UW PLSE, "How does torch.compile work?"](https://uwplse.org/2025/04/28/torchdynamo.html)
 
+`torch._dynamo.explain` surfaces exactly this graph/guard/break structure for a given call:
+
+```python
+import torch
+
+def f(x):
+    if x.sum() > 0:      # data-dependent branch on a *traced* tensor's value
+        return x * 2
+    return x - 1
+
+print(torch._dynamo.explain(f)(torch.randn(4)))
+```
+```text
+Graph Count: 2
+Graph Break Count: 1
+Op Count: 3
+Break Reasons: [GraphBreakReason(reason='...data-dependent branch...', ...)]
+```
+The `if x.sum() > 0` line is exactly the case §1.3 below rules out for JAX by construction: Dynamo
+tolerates it by ending one FX graph, letting the interpreter evaluate the branch, and starting a
+second FX graph — hence Graph Count: 2 for a one-branch function.
+[Source: PyTorch docs, "Working with Graph Breaks"](https://docs.pytorch.org/docs/stable/compile/programming_model.graph_breaks_index.html)
+
 This design is the direct consequence of Dynamo's starting assumption: the input is unrestricted
 Python, so the compiler must be able to *give up gracefully* rather than reject the program.
 Contrast this with JAX's tracing model below, which instead restricts what the traced function is
@@ -117,6 +140,29 @@ whatever operations the traced function performs on those Tracers get recorded a
 of simply running the Python function once.
 [Source: JAX Autodidax tutorial](https://docs.jax.dev/en/latest/autodidax.html)
 
+Autodidax's own pedagogical reference implementation (a from-scratch re-derivation of JAX's core
+interpreter stack that mirrors, without being a literal copy of, `jax/core.py`) makes the
+mechanism concrete:
+
+```python
+def bind(prim, *args, **params):
+  top_trace = find_top_trace(args)
+  tracers = [full_raise(top_trace, arg) for arg in args]
+  outs = top_trace.process_primitive(prim, tracers, params)
+  return [full_lower(out) for out in outs]
+
+def find_top_trace(xs) -> Trace:
+  top_main = max((x._trace.main for x in xs if isinstance(x, Tracer)),
+                 default=trace_stack[0], key=op.attrgetter('level'))
+  if dynamic_trace and dynamic_trace.level > top_main.level:
+    top_main = dynamic_trace
+  return top_main.trace_type(top_main)
+```
+`bind` looks up the currently active trace, lifts (`full_raise`) any plain values into that
+trace's `Tracer` type, and asks the trace to `process_primitive` — the call this section's prose
+describes above.
+[Source: JAX Autodidax tutorial, "Part 1: Transformations as interpreters"](https://docs.jax.dev/en/latest/autodidax.html)
+
 The recorded output is a **jaxpr**: JAX's own intermediate representation, explicitly typed,
 purely functional, first-order, and in a restricted A-normal form — each `JaxprEqn` binds the
 result of one primitive application to fresh variables, and a `Jaxpr` is a list of such equations
@@ -127,10 +173,52 @@ construction is not a special case bolted onto tracing, it is one instantiation 
 interpreter-stack pattern that `grad`, `vmap`, and `jit` all share.
 [Source: JAX Autodidax tutorial](https://docs.jax.dev/en/latest/autodidax.html)
 
+Building and printing a jaxpr for a trivial function shows the resulting IR directly:
+
+```python
+jaxpr, consts, _ = make_jaxpr_v1(lambda x: 2. * x,
+                                  raise_to_shaped(get_aval(3.)))
+print(jaxpr)
+```
+```text
+{ lambda a:float64[] .
+  let b:float64[] = mul 2.0 a
+  in ( b ) }
+```
+(This is Autodidax's own pedagogical `make_jaxpr_v1`, built directly on the `bind` machinery
+above; the printed form matches what production JAX's public `jax.make_jaxpr` emits for the same
+function.) [Source: JAX Autodidax tutorial](https://docs.jax.dev/en/latest/autodidax.html)
+
 Because tracing runs the Python function exactly once with abstract values, any Python-level
 branch that depends on a *traced* value's concrete data cannot be resolved — there is no fallback
 to "run it anyway and see": the value genuinely does not exist yet. This is the origin of JAX's
 functional-purity requirement, covered next.
+
+```mermaid
+graph TD
+    subgraph "PyTorch: eager + optional capture"
+        Py["Python bytecode"]
+        Dynamo["TorchDynamo\n(CPython frame-eval hook,\nbytecode symbolic eval)"]
+        FX["torch.fx.Graph\n(captured ops)"]
+        Guard["Guard\n(shape/dtype/id checks)"]
+        Eager["Eager interpreter\n(direct C++ kernel calls)"]
+        Py --> Dynamo
+        Dynamo -- "capturable ops" --> FX
+        Dynamo -- "graph break:\nunsupported op/branch" --> Eager
+        FX --> Guard
+        Guard -- "pass: reuse cached graph" --> FX
+        Guard -- "fail: retrace" --> Dynamo
+    end
+    subgraph "JAX: abstract tracing"
+        PyF["Python function"]
+        Tracer["Tracer objects\n(shape/dtype only,\nno concrete data)"]
+        Bind["bind()\nfind_top_trace / full_raise"]
+        Jaxpr["jaxpr\n(typed, pure,\nA-normal form)"]
+        PyF -- "called once with\nTracer args" --> Tracer
+        Tracer --> Bind
+        Bind --> Jaxpr
+    end
+```
 
 ## 2. Functional Purity and What It Buys
 
@@ -204,6 +292,23 @@ back toward the leaves, invoking each `Node`'s `apply()` and accumulating gradie
 `Edge`s (a tensor used in more than one downstream operation receives the sum of the cotangents
 flowing back along each edge).
 
+Introspecting the tape directly on a small expression shows the `Node`/`Edge` structure the prose
+above describes:
+
+```python
+>>> x = torch.tensor(2.0, requires_grad=True)
+>>> y = torch.tensor(3.0, requires_grad=True)
+>>> z = (x * y) + x
+>>> z.grad_fn                     # the Node that produced z
+<AddBackward0 object at 0x...>
+>>> z.grad_fn.next_functions      # Edges to each input's own grad_fn
+((<MulBackward0 object at 0x...>, 0), (<AccumulateGrad object at 0x...>, 0))
+```
+The second edge points to an `AccumulateGrad` node rather than another `*Backward0` node because
+`x` is itself a leaf tensor — exactly the "gradient-accumulator `Node` for leaf tensors" the prose
+above mentions.
+[Source: PyTorch docs, "Autograd mechanics"](https://docs.pytorch.org/docs/stable/notes/autograd.html)
+
 ### 3.2 AOTAutograd: Capturing the Joint Graph
 
 The tape described above is PyTorch's *eager* autodiff path — it exists independently of
@@ -224,6 +329,20 @@ is what enables joint-graph optimizations such as recomputation/activation-check
 made across the forward/backward boundary.
 [Source: PyTorch DeepWiki, "AOT Autograd and Functionalization"](https://deepwiki.com/pytorch/pytorch/2.4-aot-autograd-and-functionalization);
 [Source: functorch AOT Autograd documentation](https://docs.pytorch.org/functorch/stable/aot_autograd.html)
+
+`aot_export_module` (in `torch/_functorch/aot_autograd.py` — an underscore-prefixed, semi-public
+module, not part of the frozen public API, but the standard inspection entry point) exposes the
+resulting joint graph directly:
+
+```python
+from torch._functorch.aot_autograd import aot_export_module
+
+# trace_joint=True asks for both forward and backward in one graph;
+# it expects the traced module to return a scalar loss
+gm, signature = aot_export_module(model, (example_input,), trace_joint=True)
+gm.print_readable()   # the functionalized joint torch.fx.GraphModule
+```
+[Source: PyTorch source, `torch/_functorch/aot_autograd.py`](https://github.com/pytorch/pytorch/blob/main/torch/_functorch/aot_autograd.py)
 
 ### 3.3 JAX's grad as a Jaxpr-to-Jaxpr Transform
 
@@ -248,12 +367,53 @@ then simply: linearize the function to get the linear jaxpr, transpose that line
 evaluate the transposed jaxpr on a seed cotangent (typically 1.0 for a scalar-valued function).
 [Source: JAX Autodidax tutorial](https://docs.jax.dev/en/latest/autodidax.html)
 
+The Autodidax reference implementation of `eval_jaxpr_transposed` shows the backward walk plainly
+— it is a Python loop over `jaxpr.eqns[::-1]`, not a compiled kernel:
+
+```python
+def eval_jaxpr_transposed(jaxpr, args, cotangents):
+  primal_env, ct_env = {}, {}
+  def read_cotangent(v):
+    return ct_env.pop(v, np.zeros(v.aval.shape, v.aval.dtype))
+  def write_cotangent(x, val):
+    if type(x) is Var and val is not None:
+      ct_env[x] = add(ct_env[x], val) if x in ct_env else val
+
+  map(write_primal, jaxpr.in_binders, args)
+  map(write_cotangent, jaxpr.outs, cotangents)
+  for eqn in jaxpr.eqns[::-1]:                      # walk the linear jaxpr backward
+    primals_in = map(read_primal, eqn.inputs)
+    cts_in = map(read_cotangent, eqn.out_binders)
+    cts_out = transpose_rules[eqn.primitive](cts_in, *primals_in, **eqn.params)
+    map(write_cotangent, eqn.inputs, cts_out)        # accumulate where a value fans out
+  return [read_cotangent(v) for v, x in zip(jaxpr.in_binders, args) if type(x) is UndefPrimal]
+```
+(Trimmed for brevity — `read_primal`/`write_primal` and `UndefPrimal` handling are elided; see the
+source for the full definition.) [Source: JAX Autodidax tutorial, "Part 3: reverse-mode autodiff"](https://docs.jax.dev/en/latest/autodidax.html)
+
 The structural difference from §3.1 is worth stating plainly: PyTorch's `Node`/`Edge` graph is a
 runtime data structure built by side effect as ATen kernels execute, walked once by an interpreter
 loop (the autograd engine) at `.backward()` time. JAX's reverse-mode gradient is itself *another
 jaxpr* — a first-class IR value that can be further traced, `jit`-compiled, `vmap`-ed over, or
 composed with other transformations, because transposition is defined as a jaxpr-to-jaxpr
 function rather than as an imperative graph walk over live objects.
+
+```mermaid
+graph TD
+    subgraph "PyTorch: runtime tape walk"
+        Fwd1["Forward pass runs"]
+        Tape["Node/Edge graph built\nby side effect (per ATen op)"]
+        Bwd["autograd engine:\n.backward() walks Nodes,\ncalls apply(), accumulates\ncotangents along Edges"]
+        Fwd1 --> Tape --> Bwd
+    end
+    subgraph "JAX: jaxpr-to-jaxpr transform"
+        J["jaxpr (primal)"]
+        Lin["linearize:\nPartialEvalTrace splits\nknown/unknown -> linear jaxpr"]
+        Trans["transpose:\neval_jaxpr_transposed walks\nlinear jaxpr backward"]
+        J2["jaxpr (gradient)\nfirst-class, jit-able, vmap-able"]
+        J --> Lin --> Trans --> J2
+    end
+```
 
 ### 3.4 Custom Gradient Rules
 
@@ -267,6 +427,65 @@ mechanisms are `jax.custom_jvp` (register a custom forward-mode Jacobian-vector-
 for that primitive) — both operate at the jaxpr-transformation level described in §3.3 rather than
 by inserting a node into a runtime tape, consistent with autodiff being a program transform rather
 than a graph interpreter in JAX's model.
+
+A `torch.autograd.Function` subclass separates the traced forward computation from the context
+setup a modern `torch.compile`-compatible implementation needs, via a dedicated `setup_context`
+staticmethod rather than mutating `ctx` inside `forward` itself:
+
+```python
+class Exp(torch.autograd.Function):
+    @staticmethod
+    def forward(x):
+        return torch.exp(x)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        x, = inputs
+        ctx.save_for_backward(output)   # save the *output*, not x — exp'(x) == exp(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        output, = ctx.saved_tensors
+        return grad_output * output
+```
+[Source: PyTorch docs, "Extending torch.autograd"](https://docs.pytorch.org/docs/2.9/notes/extending.html)
+
+`jax.custom_vjp` registers the forward/backward pair directly as a jaxpr-level rule, sidestepping
+`linearize`/transpose entirely for the wrapped primitive:
+
+```python
+import jax
+
+@jax.custom_vjp
+def f(x, y):
+    return jax.numpy.sin(x) * y
+
+def f_fwd(x, y):
+    return f(x, y), (jax.numpy.cos(x), jax.numpy.sin(x), y)   # primal output, residuals
+
+def f_bwd(res, g):
+    cos_x, sin_x, y = res
+    return (cos_x * y * g, sin_x * g)                          # cotangents w.r.t. (x, y)
+
+f.defvjp(f_fwd, f_bwd)
+```
+[Source: JAX docs, "Custom derivative rules"](https://docs.jax.dev/en/latest/notebooks/Custom_derivative_rules_for_Python_code.html)
+
+```mermaid
+graph TD
+    subgraph "PyTorch: custom Node grafted into tape"
+        F1["forward() runs,\nsetup_context() saves tensors"]
+        N1["PyNode wraps ctx;\nspliced into Node/Edge graph"]
+        B1["backward(ctx, grad_output)\ncalled during tape walk"]
+        F1 --> N1 --> B1
+    end
+    subgraph "JAX: custom jaxpr-level rule"
+        F2["f_fwd traced: returns\nprimal output + residuals"]
+        R2["custom_vjp primitive\nsubstituted during transpose"]
+        B2["f_bwd(residuals, g)\ninvoked by transpose,\nno linearize needed for f"]
+        F2 --> R2 --> B2
+    end
+```
 
 ## 4. Lowering and Codegen
 
@@ -298,6 +517,20 @@ kernels). This chapter's contribution ends at the jaxpr→StableHLO emission ste
 JAX itself does not choose Triton-vs-C++ or hand-roll a loop IR — that decision-making lives
 entirely in XLA, downstream of the boundary this chapter hands off at.
 
+The current API surfaces this lowering explicitly through a `trace`/`lower`/`as_text` chain on a
+`jit`-wrapped function, rather than compiling straight to an executable:
+
+```python
+import jax
+
+def f(x, y):
+    return jax.numpy.sin(x) * y
+
+lowered = jax.jit(f).trace(1.0, 2.0).lower()
+print(lowered.as_text())   # StableHLO MLIR module text
+```
+[Source: JAX docs, "Understanding Jaxprs" / AOT compilation](https://docs.jax.dev/en/latest/aot.html)
+
 ### 4.3 PyTorch/XLA: A Third Path
 
 PyTorch/XLA gives PyTorch a second graph-capture route into the same XLA backend JAX uses, and its
@@ -316,6 +549,34 @@ informally as "TorchTPU" — though the scope and timeline of that transition we
 independently verifiable at the time of writing, and any statement about a specific replacement
 date should be treated as unconfirmed. *Note: needs verification against current PyTorch/XLA
 project status before citing a specific migration timeline.*
+
+```python
+import torch_xla
+import torch_xla.core.xla_model as xm
+
+x = torch.randn(4, 4, device=xm.xla_device())
+y = torch.randn(4, 4, device=xm.xla_device())
+z = x @ y                    # recorded into the deferred graph, not yet executed
+torch_xla.sync()             # explicit synchronization point: compile + execute the deferred graph
+```
+[Source: PyTorch/XLA docs, "LazyTensor guide"](https://docs.pytorch.org/xla/master/learn/lazytensor.html)
+
+```mermaid
+graph LR
+    subgraph "PyTorch: Inductor path"
+        A1["AOTAutograd joint\nATen/Prim graph"] --> B1["TorchInductor\nloop-level IR + fusion"]
+        B1 --> C1["Triton"]
+        B1 --> D1["C++/OpenMP"]
+    end
+    subgraph "JAX path"
+        A2["jaxpr"] --> B2["StableHLO\n(jit().trace().lower())"]
+        B2 --> C2["XLA: HLO,\noptimization passes"]
+    end
+    subgraph "PyTorch/XLA path"
+        A3["LazyTensor:\nops recorded eagerly,\nexecution deferred"] --> B3["torch_xla.sync():\ngraph compiled to HLO"]
+        B3 --> C2
+    end
+```
 
 ## 5. Runtime and Dispatch
 
@@ -355,6 +616,40 @@ handle around a `TensorImpl`, not the storage itself.
 [Source: ezyang, "Let's talk about the PyTorch dispatcher"](https://blog.ezyang.com/2020/09/lets-talk-about-the-pytorch-dispatcher/);
 [Source: PyTorch blog, "How Computational Graphs are Constructed in PyTorch"](https://pytorch.org/blog/computational-graphs-constructed-in-pytorch/)
 
+The redispatch-after-exclusion pattern described above is implemented directly in the C++ core,
+via an RAII guard that pushes onto the thread-local excluded-key set for the scope of a call:
+
+```cpp
+// simplified from aten/src/ATen/core/dispatch/Dispatcher.h and
+// c10/core/impl/LocalDispatchKeySet.h
+{
+  c10::impl::ExcludeDispatchKeyGuard guard(c10::DispatchKey::Autograd);
+  // any dispatcher call made here has Autograd excluded from its key set
+  return op.redispatch(dispatchKeySet & c10::after_autograd_keyset, args...);
+}
+// guard destructor restores the previous excluded-key set on scope exit
+```
+(Trimmed and simplified — the real call sites thread the dispatch key set through generated
+per-operator boxed/unboxed wrappers rather than a single inline block.)
+[Source: PyTorch source, `aten/src/ATen/core/dispatch/Dispatcher.h`](https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/core/dispatch/Dispatcher.h)
+
+```mermaid
+sequenceDiagram
+    participant Py as Python caller
+    participant Disp as Dispatcher
+    participant AG as Autograd key handler
+    participant Guard as ExcludeDispatchKeyGuard
+    participant CUDA as CUDA backend kernel
+    Py->>Disp: torch.add(x, y)
+    Disp->>Disp: compute dispatch key set
+    Disp->>AG: highest-priority key = Autograd
+    AG->>AG: build Node/Edge (grad_fn) per §3.1
+    AG->>Guard: exclude Autograd, redispatch
+    Guard->>Disp: redispatch(keySet & ~Autograd)
+    Disp->>CUDA: dispatch to CUDA kernel
+    CUDA-->>Py: result tensor (grad_fn attached)
+```
+
 ### 5.2 CUDA Streams and Graphs Under Eager Execution
 
 Eager dispatch, as described above, pays a real per-operation cost: every tensor op is a separate
@@ -367,6 +662,19 @@ PyTorch operations issued on a capturing CUDA stream is recorded once as a CUDA 
 be replayed with a single launch, amortizing per-kernel launch overhead across all iterations that
 reuse the same captured graph — a narrower, execution-time complement to the compile-time capture
 strategies in §1.
+
+```python
+g = torch.cuda.CUDAGraph()
+
+# warmup on a side stream first (not shown) — required before capture
+with torch.cuda.graph(g):
+    y = model(static_input)   # eager ops recorded once into g, not executed per-call
+
+for _ in range(num_iters):
+    static_input.copy_(next_batch())
+    g.replay()                # single launch replays the whole recorded op sequence
+```
+[Source: PyTorch docs, "CUDA semantics" — Graphs](https://docs.pytorch.org/docs/2.9/notes/cuda.html#cuda-graphs)
 
 ### 5.3 PJRT: Compiled Executables and the jit Cache
 
@@ -409,6 +717,20 @@ communication for already-ready buckets with backward computation still running 
 the graph.
 [Source: "TAGC: Optimizing Gradient Communication in Distributed Transformer Training"](https://arxiv.org/pdf/2504.05638)
 
+```python
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+dist.init_process_group("nccl", rank=rank, world_size=world_size)
+model = MyModel().to(rank)
+ddp_model = DDP(model, device_ids=[rank])   # wraps model, registers per-parameter grad hooks
+
+loss = ddp_model(batch).mean()
+loss.backward()          # bucketed all-reduces fire here, overlapped with backward compute
+optimizer.step()
+```
+[Source: PyTorch docs, "Distributed Data Parallel"](https://docs.pytorch.org/docs/2.9/notes/ddp.html)
+
 ### 6.2 PyTorch FSDP: Sharding as Communication Scheduling
 
 `FullyShardedDataParallel` keeps only a shard of each parameter, gradient, and optimizer state resident
@@ -425,6 +747,21 @@ for the FlatParameter that just finished backward at the same time as the all-ga
 unit's all-gather during forward computation of the current one — both scheduled on separate CUDA
 streams from the compute stream so communication and computation overlap rather than serialize.
 [Source: "PyTorch FSDP: Experiences on Scaling Fully Sharded Data Parallel"](https://arxiv.org/pdf/2304.11277)
+
+*Note: the `FlatParameter`-based mechanism described above is the original (FSDP1) design. As of
+PyTorch 2.11, the recommended API is **FSDP2** (`fully_shard`), which replaces the single
+flattened `FlatParameter` with per-parameter `DTensor` sharding — the communication-overlap
+scheduling described above is the same idea, but classic `FullyShardedDataParallel` is now
+considered deprecated in favor of it:*
+
+```python
+from torch.distributed.fsdp import fully_shard
+
+for layer in model.layers:
+    fully_shard(layer)     # shard each layer's parameters as DTensors
+fully_shard(model)         # then the root module, wiring up prefetch order
+```
+[Source: PyTorch docs, "FullyShardedDataParallel"](https://docs.pytorch.org/docs/2.9/fsdp.html)
 
 ### 6.3 JAX/XLA: GSPMD and shard_map as Compiler Mechanics
 
@@ -454,6 +791,41 @@ a consequence of propagating sharding constraints through an already-captured HL
 extension of the graph-capture-first, compiler-driven pattern that distinguishes JAX's whole
 pipeline from PyTorch's eager-dispatch-first one.
 
+`shard_map` (now promoted to a top-level `jax.shard_map` API, paired with `jax.make_mesh`) is the
+explicit counterpart to implicit `NamedSharding` propagation: the user writes per-shard code
+directly, and the compiler inserts only the collectives that code's own logic requires:
+
+```python
+import jax
+from jax.sharding import PartitionSpec as P
+
+mesh = jax.make_mesh((8,), ('x',))
+
+@jax.jit
+def parallel_matmul(a, b):
+    return jax.shard_map(
+        lambda a, b: jax.numpy.dot(a, b),
+        mesh=mesh, in_specs=(P('x', None), P(None, None)), out_specs=P('x', None),
+    )(a, b)
+```
+[Source: JAX docs, "shard_map"](https://docs.jax.dev/en/latest/notebooks/shard_map.html)
+
+```mermaid
+graph TD
+    subgraph "PyTorch DDP: framework-scheduled collectives"
+        D1["backward() runs"] --> D2["grad-ready hooks fire\nper parameter"]
+        D2 --> D3["bucket all-reduce\nissued explicitly by DDP"]
+    end
+    subgraph "PyTorch FSDP2: framework-scheduled, finer-grained"
+        F1["fully_shard() wraps\neach layer as DTensor"] --> F2["forward: all-gather\nprefetched per unit"]
+        F2 --> F3["backward: reduce-scatter\noverlapped with next all-gather"]
+    end
+    subgraph "JAX GSPMD/shard_map: compiler-inserted"
+        J1["sharded jaxpr / StableHLO"] --> J2["GSPMD propagates sharding,\nresolves conflicts"]
+        J2 --> J3["compiler inserts all-gather,\nall-to-all, collective-permute,\ndynamic-slice as needed"]
+    end
+```
+
 ## 7. Reaching the Hardware
 
 Both lowering paths in §4 eventually produce GPU source that still has to become an actual
@@ -472,6 +844,24 @@ differently-layered GPU compilation path outside the ML-framework space entirely
 targets SPIR-V rather than PTX and does not route through either Triton or XLA —
 [Chapter 152](../part-07a-gpu-apis/ch152-rust-gpu-ecosystem.md) covers the Rust GPU ecosystem's
 `rustc`-based shader compilation as a point of comparison.
+
+```mermaid
+graph TD
+    PT["PyTorch:\nTorchDynamo -> AOTAutograd\n-> TorchInductor loop IR"]
+    JX["JAX:\njaxpr -> StableHLO -> XLA HLO"]
+    Triton["Triton-IR -> LLVM"]
+    XLAcg["XLA codegen:\nLLVM IR / cuBLAS-cuDNN calls"]
+    PTX["PTX"]
+    SASS["SASS"]
+    PT -->|"Triton backend"| Triton
+    PT -->|"C++/OpenMP backend"| CPU["CPU object code\n(not GPU path)"]
+    JX -->|"Triton-emitting fusions"| Triton
+    JX -->|"non-Triton codegen"| XLAcg
+    Triton --> PTX
+    XLAcg --> PTX
+    PTX -->|"ptxas (AOT)"| SASS
+    PTX -->|"NVRTC + driver JIT"| SASS
+```
 
 ## 8. Comparison Table
 
