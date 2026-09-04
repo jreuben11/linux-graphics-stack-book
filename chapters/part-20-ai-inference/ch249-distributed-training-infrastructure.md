@@ -22,24 +22,28 @@ topology and the parallelism strategies built on top of NCCL's primitives.
    - [2.1 Double Binary Tree: NCCL's Latency-Optimized Algorithm](#21-double-binary-tree-nccls-latency-optimized-algorithm)
    - [2.2 Topology-Aware Selection: NCCL_TOPO_FILE and Multi-Node Rings](#22-topology-aware-selection-nccl_topo_file-and-multi-node-rings)
    - [2.3 RCCL at Multi-Node Scale](#23-rccl-at-multi-node-scale)
+   - [2.4 SHARP: In-Network Reduction Acceleration](#24-sharp-in-network-reduction-acceleration)
 3. [Parallelism Strategies](#3-parallelism-strategies)
    - [3.1 Data Parallelism: Scaling DDP/FSDP Across Nodes](#31-data-parallelism-scaling-ddpfsdp-across-nodes)
    - [3.2 Tensor Parallelism: Intra-Layer Sharding](#32-tensor-parallelism-intra-layer-sharding)
    - [3.3 Pipeline Parallelism: Inter-Layer Sharding and the Bubble](#33-pipeline-parallelism-inter-layer-sharding-and-the-bubble)
    - [3.4 3D and Hybrid Parallelism: DeepSpeed ZeRO and Megatron-LM](#34-3d-and-hybrid-parallelism-deepspeed-zero-and-megatron-lm)
    - [3.5 JAX's Alternative: GSPMD and shard_map](#35-jaxs-alternative-gspmd-and-shard_map)
-4. [GPU-Accelerated Data Loading](#4-gpu-accelerated-data-loading)
-   - [4.1 The CPU Data-Loading Bottleneck](#41-the-cpu-data-loading-bottleneck)
-   - [4.2 NVIDIA DALI: A GPU-Resident Pipeline](#42-nvidia-dali-a-gpu-resident-pipeline)
-   - [4.3 PyTorch DataLoader: Worker-Process Prefetching](#43-pytorch-dataloader-worker-process-prefetching)
-   - [4.4 JAX Input Pipelines: tf.data and Grain](#44-jax-input-pipelines-tfdata-and-grain)
-5. [Cluster Topology and Scheduling](#5-cluster-topology-and-scheduling)
-   - [5.1 InfiniBand and RoCE Fabric Considerations](#51-infiniband-and-roce-fabric-considerations)
-   - [5.2 Kubernetes GPU Scheduling for Training Jobs](#52-kubernetes-gpu-scheduling-for-training-jobs)
-   - [5.3 Elastic and Fault-Tolerant Restart](#53-elastic-and-fault-tolerant-restart)
-   - [5.4 Checkpointing at Scale](#54-checkpointing-at-scale)
-6. [Integrations](#6-integrations)
-7. [Roadmap](#7-roadmap)
+4. [GPU-Initiated Communication: NVSHMEM and NCCL Extensions](#4-gpu-initiated-communication-nvshmem-and-nccl-extensions)
+   - [4.1 NVSHMEM: One-Sided Communication for Data-Dependent Communication Patterns](#41-nvshmem-one-sided-communication-for-data-dependent-communication-patterns)
+   - [4.2 nccl-extensions: nccl_ep and nccl_m2n](#42-nccl-extensions-nccl_ep-and-nccl_m2n)
+5. [GPU-Accelerated Data Loading](#5-gpu-accelerated-data-loading)
+   - [5.1 The CPU Data-Loading Bottleneck](#51-the-cpu-data-loading-bottleneck)
+   - [5.2 NVIDIA DALI: A GPU-Resident Pipeline](#52-nvidia-dali-a-gpu-resident-pipeline)
+   - [5.3 PyTorch DataLoader: Worker-Process Prefetching](#53-pytorch-dataloader-worker-process-prefetching)
+   - [5.4 JAX Input Pipelines: tf.data and Grain](#54-jax-input-pipelines-tfdata-and-grain)
+6. [Cluster Topology and Scheduling](#6-cluster-topology-and-scheduling)
+   - [6.1 InfiniBand and RoCE Fabric Considerations](#61-infiniband-and-roce-fabric-considerations)
+   - [6.2 Kubernetes GPU Scheduling for Training Jobs](#62-kubernetes-gpu-scheduling-for-training-jobs)
+   - [6.3 Elastic and Fault-Tolerant Restart](#63-elastic-and-fault-tolerant-restart)
+   - [6.4 Checkpointing at Scale](#64-checkpointing-at-scale)
+7. [Integrations](#7-integrations)
+8. [Roadmap](#8-roadmap)
 
 ---
 
@@ -155,7 +159,7 @@ NIC it uses partway through, trading strict same-NIC-per-channel locality (avoid
 network rails, `NCCL_CROSS_NIC=0`) against the flexibility to route around a congested or
 unavailable path (`NCCL_CROSS_NIC=1`, or NCCL's topology-dependent default of `2`).
 [Source: NCCL environment variables reference](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html)
-This is the mechanism that connects the fabric design decisions in §5.1 (rail-optimized
+This is the mechanism that connects the fabric design decisions in §6.1 (rail-optimized
 topology, which NIC a given GPU is wired to) to the collective algorithm NCCL actually runs: a
 rail-optimized fabric is specifically designed so that the GPU-to-NIC mapping NCCL's topology
 graph discovers lines up with the ring/tree structure NCCL wants to build, minimizing the
@@ -172,12 +176,93 @@ links (Chapter 48's RCCL section) — but the concrete transport bandwidths diff
 MI300X node's fully-connected XGMI mesh gives every GPU direct peer-to-peer DMA to every other
 GPU in the node (Chapter 48), which changes the intra-node portion of the topology graph RCCL
 builds relative to a partially-connected NVLink/NVSwitch topology, while the inter-node
-portion converges on the same InfiniBand/RoCE fabric considerations covered in §5.1 regardless
+portion converges on the same InfiniBand/RoCE fabric considerations covered in §6.1 regardless
 of GPU vendor. AMD's ROCm roadmap has signaled a new RDMA transport layer, referred to as ROCm
 Optiq, intended to eventually replace RCCL's current libfabric-based network backend for
 scale-out InfiniBand clusters (noted in Chapter 48's roadmap); its production maturity was not
 independently verified for this chapter. *Note: needs verification against current ROCm
 release notes before citing Optiq as shipping.*
+
+### 2.4 SHARP: In-Network Reduction Acceleration
+
+§2.1's double binary tree and §2.2's topology-aware channel construction both optimize *where*
+NCCL's ring/tree AllReduce traffic flows, but the reduction arithmetic itself still happens at
+the endpoints — GPUs (or, in the ring case, NICs performing GPUDirect RDMA writes into
+neighboring GPU memory) doing the actual summation. **SHARP** (Scalable Hierarchical
+Aggregation and Reduction Protocol) is NVIDIA's in-network computing technology for NVIDIA
+Quantum InfiniBand switches: the switch ASIC itself performs partial reductions on data as it
+transits the fabric, rather than only routing it, so gradients are summed *in-flight* instead
+of being routed to every participating rank for endpoint-side summation. This is a genuinely
+different mechanism from §2.1's tree algorithm, not merely a faster implementation of it — a
+software tree still moves every byte to an endpoint that adds it; SHARP removes most of that
+endpoint arithmetic and a large fraction of the associated data movement entirely, at the cost
+of requiring specific switch hardware and firmware rather than running over commodity IB/RoCE
+fabric.
+[Source: NVIDIA, "In-Network Computing With NVIDIA SHARP"](https://resources.nvidia.com/en-us-accelerated-networking-resource-library/network-computing-nvidia-sharp)
+
+NCCL exposes SHARP through **CollNet**, a collective transport (distinct from NCCL's
+point-to-point Net transport) implemented by the separate **NCCL-RDMA-SHARP plugin**
+(`libnccl-net.so`, shipped as part of NVIDIA's HPC-X/MLNX_OFED stack), which replaces NCCL's
+default inter-node transport with an RDMA-based one offering both ordinary point-to-point and
+SHARP-accelerated collective paths. Enabling it is a communicator-init-time environment
+decision, not a per-call one:
+
+```bash
+# Enable the CollNet transport and let NCCL prefer it for AllReduce/AllGather/ReduceScatter
+# where a SHARP-capable path exists across the whole communicator.
+NCCL_COLLNET_ENABLE=1 \
+NCCL_ALGO=CollNet \
+LD_LIBRARY_PATH=/opt/hpcx/nccl_rdma_sharp_plugin/lib:$LD_LIBRARY_PATH \
+torchrun --nnodes=4 --nproc-per-node=8 --rdzv-backend=c10d train.py
+```
+[Source: NVIDIA, "NCCL-RDMA-SHARP Plugins"](https://networking-docs.nvidia.com/hpcxum/2131lts/nccl-rdma-sharp-plugins)
+
+CollNet/SHARP has real prerequisites beyond the environment variables above: **NVIDIA Quantum-2
+InfiniBand switches** running SHARP-capable firmware, **ConnectX-6 Dx or ConnectX-7** HCAs, and
+a **SHARP Aggregation Manager** daemon running on the cluster to allocate and coordinate the
+limited number of concurrent aggregation trees the switch fabric can support — SHARP is not a
+feature that appears simply by upgrading NCCL, and does not run over RoCE, only InfiniBand.
+CollNet/SHARP support for the AllReduce algorithm itself dates to NCCL 2.19; NCCL 2.27 extended
+SHARP acceleration to AllGather and ReduceScatter as well, and — notably for §3.4's ZeRO/FSDP
+traffic pattern, which is dominated by reduce-scatter and all-gather rather than AllReduce —
+combined it with **NVLS** (NVLink SHARP, §2.1's complementary-tree algorithm's hardware-
+accelerated sibling, built on NVSwitch multicast) into a two-tier reduction: NVLS performs the
+in-node reduction across a node's GPUs using NVSwitch's SHARP-capable multicast hardware, and
+IB SHARP performs the inter-node reduction across nodes, so that the switch fabric does
+reduction work at both the intra-node and inter-node hop rather than only one. This is the
+relationship to keep straight against Chapter 66's brief mention of an "NVLink SHARP-capable
+switch fabric" in its NVLS discussion: that is the intra-node, NVSwitch-domain half of this same
+two-tier design, not a separate technology — this section's InfiniBand-fabric SHARP is the
+inter-node half.
+[Source: NVIDIA Developer Blog, "Enabling Fast Inference and Resilient Training with NCCL 2.27"](https://developer.nvidia.com/blog/enabling-fast-inference-and-resilient-training-with-nccl-2-27/)
+
+```mermaid
+graph LR
+    subgraph "Without SHARP -- reduction only at endpoints"
+        A1["GPU rank 0"] --> S1["IB switch (routes only)"]
+        A2["GPU rank 1"] --> S1
+        A3["GPU rank 2"] --> S1
+        S1 --> A4["GPU rank 3: receives all,\nsums in GPU memory"]
+    end
+    subgraph "With SHARP -- reduction in-flight, in the switch ASIC"
+        B1["GPU rank 0"] --> S2["IB switch ASIC:\npartial sum computed in-flight"]
+        B2["GPU rank 1"] --> S2
+        B3["GPU rank 2"] --> S2
+        B4["GPU rank 3"] --> S2
+        S2 --> B5["Reduced result multicast\nback to all ranks"]
+    end
+```
+
+Reported gains are workload- and scale-dependent: NVIDIA has cited up to 2.5x higher collective
+throughput with SHARP-accelerated NCCL relative to non-SHARP paths, and a roughly 2.7x reduction
+in the number of streaming multiprocessors a collective call occupies (6 SMs per GPU versus 16
+for a traditional ring-based collective) — SMs a SHARP-offloaded collective frees up are SMs the
+overlapping compute kernel gets to keep, which matters most for the small, frequent,
+latency-sensitive AllReduces §2.1 already identified as the case the tree algorithm is optimized
+for (tensor parallelism's per-layer boundary, §3.2). *Note: needs verification — these figures
+come from NVIDIA marketing/blog material rather than an independently reproduced benchmark; treat
+as directional rather than a guaranteed multiplier for any specific cluster and workload.*
+[Source: NVIDIA, "In-Network Computing With NVIDIA SHARP"](https://resources.nvidia.com/en-us-accelerated-networking-resource-library/network-computing-nvidia-sharp)
 
 ## 3. Parallelism Strategies
 
@@ -476,9 +561,136 @@ graph TD
     end
 ```
 
-## 4. GPU-Accelerated Data Loading
+## 4. GPU-Initiated Communication: NVSHMEM and NCCL Extensions
 
-### 4.1 The CPU Data-Loading Bottleneck
+Every collective in §2–§3 shares one structural assumption: all ranks in the communicator issue
+the *same* call at (approximately) the same time — an AllReduce, an all-gather, a
+reduce-scatter, all symmetric operations where every rank sends and receives a predictable,
+statically-known amount of data to/from every other rank. Some communication patterns that arise
+in modern training and inference workloads do not fit that shape: **Mixture-of-Experts (MoE)**
+token routing sends each token to a small, data-dependent subset of experts that differs
+token-by-token and step-by-step, so the volume and destination of what each GPU sends to each
+other GPU is not known until runtime; resharding a set of weights from a trainer's device mesh to
+a disjoint inference deployment's device mesh is a one-time bulk data-movement operation between
+two groups of ranks that were never part of the same collective communicator at all. Both call
+for **GPU-initiated, one-sided** communication — a GPU kernel directly issuing a put or get
+against a specific remote address on a specific remote rank, without a symmetric collective call
+every other rank has to participate in — rather than the collective model §2–§3 are built around.
+
+### 4.1 NVSHMEM: One-Sided Communication for Data-Dependent Communication Patterns
+
+Chapter 66 §12 already covers NVSHMEM's mechanics in full — the symmetric heap, PE addressing,
+GPU-kernel-initiated `nvshmem_put`/`nvshmem_get` without a CPU round-trip, and its NVLink/PCIe
+p2p and InfiniBand+GPUDirect RDMA transports — and is not restated here. NVSHMEM is NVIDIA's GPU
+implementation of **OpenSHMEM**, the PGAS (Partitioned Global Address Space)/SHMEM one-sided
+programming-model standard; current NVSHMEM releases implement the OpenSHMEM 1.3 API surface and
+additionally expose a number of OpenSHMEM 1.4/1.5 APIs, extended with the GPU-specific
+kernel-side put/get and symmetric-heap machinery Chapter 66 §12 describes.
+[Source: NVSHMEM documentation, "Introduction"](https://docs.nvidia.com/nvshmem/api/index.html)
+
+What is specific to *this* chapter is why a distributed training job reaches for NVSHMEM's
+one-sided model instead of NCCL's collectives in the first place: MoE all-to-all token dispatch
+is the canonical case. Each GPU's router decides, per token, which expert(s) — potentially
+resident on any other GPU in the group — should process it; the resulting communication pattern
+is a set of variable-sized, data-dependent transfers with no fixed, symmetric shape a collective
+call can express in one invocation. NVSHMEM's kernel-initiated put/get lets each GPU issue
+exactly the transfers its own routing decisions call for, directly from the kernel that computed
+the routing, without a host-side round-trip to set up a matching collective call and without
+every other rank needing to agree in advance on how much data is coming. This is the same
+underlying need NCCL's own newer **Device API** — used by `nccl_ep` below — was built to serve;
+the two are related in *purpose* (both move GPU-initiated, data-dependent communication off the
+collective model and onto one-sided/device-initiated primitives) but are independent
+implementations: `nccl_ep`'s dispatch/combine primitives are built on NCCL's own Device API LSA
+(NVLink load/store) and GIN (GPU-Initiated Networking, RDMA put/signal) operations, not on top of
+NVSHMEM — the nccl-extensions project's documentation makes no reference to NVSHMEM as a
+dependency or building block. *Note: needs verification — this is based on the absence of any
+NVSHMEM reference in nccl-extensions' published documentation as of September 2026 rather than an
+explicit statement of non-dependency; treat the two as parallel, independently-implemented
+approaches to the same problem rather than one being layered on the other.*
+[Source: NVIDIA/nccl-extensions README](https://github.com/NVIDIA/nccl-extensions)
+
+### 4.2 nccl-extensions: nccl_ep and nccl_m2n
+
+**nccl-extensions** (`github.com/NVIDIA/nccl-extensions`) is a separate NVIDIA repository —
+distinct from the core NCCL library, though it builds directly on NCCL's Device API — providing
+"communication patterns for AI, built on top of NCCL device and host APIs," aimed specifically at
+the two workload shapes §4 opened with: MoE token shuffle and inference-deployment weight
+rollout. It is an actively developed, young project (first commits mid-2026) that its own
+README describes as evolving and subject to change, so the API surface below should be read as a
+snapshot rather than a stable contract.
+[Source: NVIDIA/nccl-extensions README](https://github.com/NVIDIA/nccl-extensions)
+
+**`nccl_ep`** (Expert Parallelism) provides `ncclEpDispatch`/`ncclEpCombine` primitives —
+optimized MoE token dispatch (routing each token to its selected expert(s), wherever they live in
+the group) and combine (gathering each token's expert outputs back to its originating rank) —
+built on NCCL's Device API, using **LSA** (Load/Store Accessible memory — direct NVLink/P2P-PCIe
+load/store, no collective call) for intra-node transfers and **GIN** (GPU-Initiated Networking —
+one-sided RDMA put/signal operations, issued from device code) for inter-node transfers, so that
+neither path requires CPU involvement in the critical dispatch/combine loop and both inherit
+NCCL's existing topology detection and transport plugin architecture rather than reimplementing
+it. It exposes two selectable execution modes: a **low-latency (LL)** mode for inference-style
+small-batch, point-to-point dispatch, and a **high-throughput (HT)** mode for training/prefill-
+style large-batch dispatch using hierarchical communication patterns and, on Hopper-generation
+GPUs, TMA (Tensor Memory Accelerator) operations.
+[Source: NVIDIA/nccl (originating `nccl_ep`, now developed in nccl-extensions)](https://github.com/NVIDIA/nccl/blob/master/contrib/nccl_ep/README.md);
+[Source: NVIDIA/nccl-extensions README](https://github.com/NVIDIA/nccl-extensions)
+
+`nccl_ep` originated as a `contrib/` component inside the main NCCL repository before being
+moved out into nccl-extensions as its own project — the NCCL repository's `contrib/nccl_ep`
+directory now carries a notice pointing contributors and issues to the new location, which is
+also the origin of this section's placement here (a genuinely new, MoE/expert-parallelism
+communication primitive) rather than as a subsection of §3, since it is a communication
+mechanism NCCL/NVSHMEM provide rather than a parallelism *strategy* in the §3.1–§3.5 taxonomy's
+sense — MoE expert placement is itself commonly composed with the data/tensor/pipeline
+strategies §3 already covers, using `nccl_ep` as the mechanism moving tokens between whichever
+GPUs the composed strategy has placed the experts on.
+
+**`nccl_m2n`** (Mesh-to-Mesh Rollout) solves a different, non-MoE problem: reshard a tensor
+between two *disjoint* groups of GPU processes — the canonical case being a trainer mesh and a
+separately-provisioned inference mesh in a reinforcement-learning weight-rollout pipeline, where
+updated policy weights need to move from the ranks that just finished a training step to the
+ranks serving inference, and the two groups were never part of the same NCCL communicator to
+begin with. `nccl_m2n` performs this as a single, zero-copy call built on NCCL's window API
+(the same symmetric-memory-window registration mechanism underlying NCCL's newer one-sided
+primitives), rather than requiring an intermediate host-side gather/scatter or a manually
+constructed ad hoc communicator spanning both meshes. This is conceptually adjacent to §6.4's
+reshard-on-load checkpointing — both move sharded state between two differently-shaped
+parallelism configurations — but solves it live, between two running process groups with
+different roles, rather than through a checkpoint file on persistent storage.
+[Source: NVIDIA/nccl-extensions README](https://github.com/NVIDIA/nccl-extensions)
+
+```python
+# Illustrative shape of the nccl_ep dispatch/combine call pair, per the
+# nccl-extensions Python bindings (nccl.ep) -- exact signatures are still
+# evolving; verify current arguments against the installed package version
+# before depending on this in production code.
+# pip install "nccl-extensions[cu12]"  (pinned to NCCL 2.30.7 as of Sep 2026)
+import nccl.ep
+
+dispatched = nccl.ep.dispatch(tokens, expert_assignment, group=ep_group)  # LSA/GIN, device-initiated
+expert_out = run_expert_ffn(dispatched)
+combined = nccl.ep.combine(expert_out, expert_assignment, group=ep_group)
+```
+*Note: needs verification — the nccl-extensions `python/` package's exact API (function names,
+argument order) was not directly inspected against source for this chapter; the snippet above
+illustrates the dispatch/combine call shape the README describes, not a verified working example.*
+[Source: NVIDIA/nccl-extensions README](https://github.com/NVIDIA/nccl-extensions)
+
+```mermaid
+graph TD
+    subgraph "Collective model (Section 2-3): symmetric, every rank participates identically"
+        C1["AllReduce / AllGather / ReduceScatter"]
+    end
+    subgraph "GPU-initiated one-sided model (Section 4): asymmetric, data-dependent"
+        N1["NVSHMEM put/get -- Chapter 66 Section 12\ngeneral-purpose PGAS one-sided ops"]
+        N2["nccl_ep dispatch/combine -- Section 4.2\nMoE token routing via NCCL Device API LSA/GIN"]
+        N3["nccl_m2n mesh-to-mesh -- Section 4.2\ntrainer-to-inference weight rollout, NCCL window API"]
+    end
+```
+
+## 5. GPU-Accelerated Data Loading
+
+### 5.1 The CPU Data-Loading Bottleneck
 
 A multi-node training job with the collective and parallelism infrastructure of §2–§3 correctly
 configured can still be bottlenecked by something upstream of any GPU-to-GPU communication: the
@@ -492,7 +704,7 @@ compute — a bottleneck that gets strictly worse in multi-node training, where 
 feeding from the same per-node CPU core count.
 [Source: NVIDIA DALI developer page](https://developer.nvidia.com/dali)
 
-### 4.2 NVIDIA DALI: A GPU-Resident Pipeline
+### 5.2 NVIDIA DALI: A GPU-Resident Pipeline
 
 **DALI** (Data Loading Library) addresses this by moving the decode-and-augment pipeline onto
 the GPU itself rather than only optimizing the CPU-side implementation. A DALI pipeline is
@@ -540,7 +752,7 @@ custom augmentation step benefit from JAX's own compilation while remaining part
 DALI graph.
 [Source: NVIDIA DALI JAX plugin documentation](https://docs.nvidia.com/deeplearning/dali/user-guide/docs/plugins/jax_tutorials.html)
 
-### 4.3 PyTorch DataLoader: Worker-Process Prefetching
+### 5.3 PyTorch DataLoader: Worker-Process Prefetching
 
 PyTorch's default `torch.utils.data.DataLoader` takes the opposite architectural approach from
 DALI: rather than moving decode/augmentation onto the GPU, it parallelizes the CPU-side
@@ -579,10 +791,10 @@ images) where per-batch serialization cost itself becomes significant.
 `DataLoader` and DALI are not mutually exclusive choices at the framework-integration level —
 DALI's `DALIGenericIterator` is designed to be dropped in wherever a `DataLoader`-produced
 iterator was previously used — but they represent different answers to where the CPU bottleneck
-described in §4.1 should be relieved: more CPU parallelism versus moving the work off the CPU
+described in §5.1 should be relieved: more CPU parallelism versus moving the work off the CPU
 entirely.
 
-### 4.4 JAX Input Pipelines: tf.data and Grain
+### 5.4 JAX Input Pipelines: tf.data and Grain
 
 JAX does not ship its own built-in data-loading library analogous to `DataLoader`, by design —
 consistent with JAX's narrower core-library scope described in Chapter 245, input pipelines are
@@ -592,20 +804,20 @@ input-pipeline capabilities (decode, shuffle, batch, prefetch) independent of an
 model code, and **Grain**, a JAX-ecosystem data-loading library built specifically around
 deterministic, checkpointable input pipelines — reproducing the exact same data order after a
 restart from a checkpoint, which matters for the elastic/fault-tolerant restart scenarios in
-§5.3, where a training job may resume mid-epoch on a different set of hosts than it was running
+§6.3, where a training job may resume mid-epoch on a different set of hosts than it was running
 on when it checkpointed. Both integrate with JAX's `jax.Array`/`Mesh` sharding model the same
-way DALI's JAX iterator does (§4.2): the input pipeline is responsible for producing
+way DALI's JAX iterator does (§5.2): the input pipeline is responsible for producing
 already-sharded batches (or batches that JAX's own device-put/sharding machinery distributes)
 rather than JAX itself owning any decode or augmentation logic.
 
 ```mermaid
 graph LR
-    subgraph "NVIDIA DALI -- GPU-resident pipeline (Section 4.2)"
+    subgraph "NVIDIA DALI -- GPU-resident pipeline (Section 5.2)"
         D1["CPU: raw compressed bytes\n(fn.readers.file)"] --> D2["Mixed backend: nvJPEG decode\n(device=mixed)"]
         D2 --> D3["GPU: resize / crop / normalize"]
         D3 --> D4["GPU-resident batch fed\ndirectly to the training step"]
     end
-    subgraph "PyTorch DataLoader -- CPU worker-process pipeline (Section 4.3)"
+    subgraph "PyTorch DataLoader -- CPU worker-process pipeline (Section 5.3)"
         L1["Worker subprocesses 1..N\n(decode + augment on CPU)"] --> L2["Batch serialized across the\nmultiprocessing boundary"]
         L2 --> L3["Main process: deserialize"]
         L3 --> L4["pin_memory=True:\nasync H2D DMA copy"]
@@ -613,9 +825,9 @@ graph LR
     end
 ```
 
-## 5. Cluster Topology and Scheduling
+## 6. Cluster Topology and Scheduling
 
-### 5.1 InfiniBand and RoCE Fabric Considerations
+### 6.1 InfiniBand and RoCE Fabric Considerations
 
 Multi-node collectives (§2) are only as fast as the fabric carrying them, and the two dominant
 fabric choices for GPU training clusters — InfiniBand and RoCE (RDMA over Converged Ethernet,
@@ -659,7 +871,7 @@ graph TD
 ```
 [Source: "GPU Cluster Network Topology Design"](https://introl.com/blog/gpu-cluster-network-topology-fat-tree-dragonfly-rail-optimized-2025)
 
-### 5.2 Kubernetes GPU Scheduling for Training Jobs
+### 6.2 Kubernetes GPU Scheduling for Training Jobs
 
 Chapter 240 §7.1 documents the standard Kubernetes GPU-scheduling stack — the NVIDIA device
 plugin exposing GPUs as the schedulable `nvidia.com/gpu` resource, the NVIDIA GPU Operator
@@ -700,7 +912,7 @@ Chapter 240 §7.1; requesting the full `nvidia.com/gpu` count on one node, combi
 label match, is the coarse-grained way of keeping a tensor-parallel group intra-node before
 Topology Manager or DRA are configured to do so automatically.)
 
-### 5.3 Elastic and Fault-Tolerant Restart
+### 6.3 Elastic and Fault-Tolerant Restart
 
 At the scale multi-node training runs at, some fraction of nodes failing mid-job — a GPU Xid
 error, a NIC flapping, a host becoming unreachable — is a statistical certainty rather than an
@@ -715,7 +927,7 @@ membership and consensus on when to start or resume training through a **rendezv
 deployments) rather than through a static, pre-agreed rank list. On a membership change — a node
 failing, or, in genuinely elastic deployments, a node joining — `torchrun` terminates and
 respawns the affected processes, re-running rendezvous with the new membership and typically
-resuming training from the most recent checkpoint (§5.4) rather than restarting the whole job
+resuming training from the most recent checkpoint (§6.4) rather than restarting the whole job
 from scratch.
 [Source: PyTorch, "Fault-tolerant Distributed Training with torchrun"](https://docs.pytorch.org/tutorials/beginner/ddp_series_fault_tolerance.html)
 
@@ -743,7 +955,7 @@ sequenceDiagram
     A0->>Rdzv: Missing heartbeat detected, request re-rendezvous
     Rdzv-->>A0: New membership (survivors only)
     A0->>A0: torchrun terminates and respawns local ranks
-    A0->>A0: Resume from most recent checkpoint (Section 5.4)
+    A0->>A0: Resume from most recent checkpoint (Section 6.4)
 ```
 [Source: PyTorch, "Fault-tolerant Distributed Training with torchrun"](https://docs.pytorch.org/tutorials/beginner/ddp_series_fault_tolerance.html)
 
@@ -754,9 +966,9 @@ and adoption breadth outside of the specific deployments that have reported usin
 independently verified for this chapter. *Note: needs verification against current TorchFT
 project status.*
 
-### 5.4 Checkpointing at Scale
+### 6.4 Checkpointing at Scale
 
-Whether restart is triggered by an elastic-agent-detected failure (§5.3) or a routine
+Whether restart is triggered by an elastic-agent-detected failure (§6.3) or a routine
 preemption, resuming correctly requires a checkpoint recent enough that the recomputation cost
 of the lost steps is acceptable — and at the model sizes 3D parallelism (§3.4) targets, writing
 that checkpoint is itself an expensive, synchronizing operation that can stall training for a
@@ -795,13 +1007,18 @@ checkpoint as an intermediate step. JAX's equivalent, Orbax (introduced in Chapt
 provides the analogous sharded-checkpoint and cross-mesh-reshaping capability for
 GSPMD/`shard_map`-partitioned JAX training state, and is not re-described here.
 
-## 6. Integrations
+## 7. Integrations
 
 - **Chapter 66 (CUDA Runtime, Streams, and NVRTC), §18**: owns NCCL's core API, single-
   communicator ring/tree AllReduce mechanics, and per-communicator NVLink/PCIe/InfiniBand
   transport selection; this chapter's §2 builds on that material rather than restating it,
-  covering the double-binary-tree algorithm's internal structure and multi-node topology-file-
-  driven channel construction specifically.
+  covering the double-binary-tree algorithm's internal structure, multi-node topology-file-
+  driven channel construction, and SHARP in-network reduction acceleration (§2.4) specifically.
+- **Chapter 66 (CUDA Runtime, Streams, and NVRTC), §12**: owns NVSHMEM's mechanics — the
+  symmetric heap, PE addressing, and GPU-kernel-initiated one-sided put/get — in full; this
+  chapter's §4.1 builds on that material rather than restating it, covering only the
+  distributed-training-specific angle of *when* a training job reaches for one-sided
+  communication (MoE token dispatch) instead of NCCL's collectives.
 - **Chapter 246 (JAX and PyTorch Internals), §6**: owns the mechanism by which PyTorch
   DDP/FSDP and JAX GSPMD/`shard_map` turn a sharding decision into scheduled or compiler-
   inserted collectives; this chapter's §3 covers the strategic layer above that mechanism —
@@ -809,22 +1026,22 @@ GSPMD/`shard_map`-partitioned JAX training state, and is not re-described here.
   for — and §3.5 maps that same taxonomy onto JAX's compiler-driven sharding.
 - **Chapter 245 (The JAX Ecosystem), §5 and §8**: owns the `Mesh`/`NamedSharding`/
   `PartitionSpec`/`shard_map` user-facing sharding API this chapter's §3.5 assumes, and the
-  Orbax checkpointing library this chapter's §5.4 cross-references rather than re-describes.
+  Orbax checkpointing library this chapter's §6.4 cross-references rather than re-describes.
 - **Chapter 48 (ROCm and Machine Learning on Linux GPUs)**: owns RCCL's topology detection via
   `rocm_agent_enumerator` and XGMI/Infinity Fabric intra-node transport detail that this
   chapter's §2.3 builds on for multi-node RCCL behavior.
 - **Chapter 4 (GPU Memory Management) and Chapter 49 (Multi-GPU and PRIME Render Offload)**:
   own the kernel-level GEM/DMA-BUF/PRIME peer-to-peer DMA primitives that NVLink/XGMI
-  transports (§2.1–§2.3) and GPUDirect RDMA (§5.1) are built on.
+  transports (§2.1–§2.3) and GPUDirect RDMA (§6.1) are built on.
 - **Chapter 69 (Omniverse, USD, and the LIVERPS Stack)**: introduced single-node multi-GPU
   workload partitioning in a rendering context; this chapter's §3 is the training-specific,
   multi-node generalization of that same underlying hardware capability.
 - **Chapter 240 (NVIDIA Cosmos, OSMO, and Omniverse Farm), §7.1**: owns the Kubernetes GPU
-  Operator/device-plugin/GPU Feature Discovery stack this chapter's §5.2 builds on for
+  Operator/device-plugin/GPU Feature Discovery stack this chapter's §6.2 builds on for
   topology-aware training-job placement specifically, as distinct from Chapter 240's Physical
   AI orchestration use case.
 
-## 7. Roadmap
+## 8. Roadmap
 
 ### Near-term (6–12 months)
 
@@ -832,10 +1049,15 @@ GSPMD/`shard_map`-partitioned JAX training state, and is not re-described here.
   `Mesh`/`PartitionSpec` model** (Chapter 246 §6.3's roadmap already flags this convergence at
   the mechanism level); the parallelism-strategy taxonomy in this chapter's §3 is expected to
   remain framework-agnostic even as the specific PyTorch APIs expressing it keep changing.
-- **Reshard-on-load checkpointing (§5.4) is an active area of continued optimization** across
+- **Reshard-on-load checkpointing (§6.4) is an active area of continued optimization** across
   both `torch.distributed.checkpoint` and Orbax, as elastic training makes "resume on a
   differently-shaped cluster" progressively more of a routine operational requirement rather
   than an edge case.
+- **nccl-extensions (§4.2) is explicitly an early-stage, evolving project** — its own README
+  describes it as under constant development and subject to change — so `nccl_ep` and `nccl_m2n`
+  should be expected to keep shifting API surface as MoE and mesh-to-mesh rollout patterns mature
+  into more standardized primitives, likely alongside continued growth of NCCL's underlying
+  Device API (LSA/GIN) that both are built on.
 
 ### Medium-term (1–3 years)
 
@@ -844,20 +1066,20 @@ GSPMD/`shard_map`-partitioned JAX training state, and is not re-described here.
   libfabric plumbing, narrowing one of the remaining multi-node-scale gaps between the NCCL and
   RCCL ecosystems; its actual production timeline should be verified independently before
   relying on it.
-- **TorchFT-style failure recovery without a full checkpoint reload (§5.3)**, if it matures
-  beyond its current early integrations, would change the cost model for §5.3/§5.4 together —
+- **TorchFT-style failure recovery without a full checkpoint reload (§6.3)**, if it matures
+  beyond its current early integrations, would change the cost model for §6.3/§6.4 together —
   reducing how often the expensive sharded-checkpoint write path needs to be on a training job's
   critical path for fault tolerance specifically, as distinct from routine periodic
   checkpointing for other reasons (evaluation, publishing intermediate artifacts).
 
 ### Long-term
 
-- **Rail-optimized InfiniBand/RoCE fabric design (§5.1) and topology-aware Kubernetes GPU
-  scheduling (§5.2) are likely to keep converging into a single, more automated placement
+- **Rail-optimized InfiniBand/RoCE fabric design (§6.1) and topology-aware Kubernetes GPU
+  scheduling (§6.2) are likely to keep converging into a single, more automated placement
   layer**, where the physical fabric topology a cluster operator designs and the
   logical placement decisions a training-job scheduler makes are derived from the same
   topology description rather than being configured and reasoned about separately, reducing
-  the operational risk of the mismatch §5.1 and §2.2 describe (a scheduler placing a
+  the operational risk of the mismatch §6.1 and §2.2 describe (a scheduler placing a
   tensor-parallel group across nodes a rail-optimized fabric was specifically designed to keep
   it off of).
 
