@@ -1009,6 +1009,25 @@ docker run --rm \
 
 The EFA environment variables (`FI_PROVIDER=efa`, `NCCL_SOCKET_IFNAME=efa0`) are needed alongside the GPU device because NCCL uses EFA for inter-node collective communication. The EFA network interface is exposed to the container as a standard network device (not a `/dev/dri` device) and is injected via the Amazon EFA CNI plugin in EKS environments.
 
+### NVIDIA Brev: Multi-Cloud GPU Dev Environments
+
+Everything above this point in §9 treats a cloud GPU instance as something the user provisions and configures directly against a single provider's own console or CLI. **NVIDIA Brev** (`docs.nvidia.com/brev`) sits one layer above that: it is a provisioning and environment-packaging service that presents GPU instances from many independent cloud and neocloud providers — AWS, Google Cloud, Crusoe, Lambda, Nebius, Hyperstack, Oracle Cloud, and others — through a single console, CLI, and instance catalog, with CUDA, Python, JupyterLab, and Docker preinstalled on the resulting instance rather than assembled by hand as in the AWS/GCP workflows above. [Source: NVIDIA Brev documentation](https://docs.nvidia.com/brev/latest/) [Source: NVIDIA Brev Quickstart](https://docs.nvidia.com/brev/getting-started/quickstart)
+
+Brev's distinguishing unit is the **Launchable**: a bundle of a compute specification (GPU/CPU type, storage, region), a software environment (VM mode with Python/CUDA/Docker, a single container image, a Docker Compose stack, or — in beta — a single-node Kubernetes cluster with `kubectl`/Helm), a source payload (a Git repository, notebook, or embedded code), and deploy-time launch parameters (API keys, model IDs), packaged behind one shareable link. Clicking that link takes a user through sign-in, any required launch parameters, and a compute-configuration choice, then provisions an environment identical to the one the link's author configured — the same "one-click reproducible environment" niche that a Binder link or a devcontainer fills for CPU-only work, applied to preconfigured multi-GPU instances instead. [Source: NVIDIA Brev, "Launchables"](https://docs.nvidia.com/brev/concepts/launchables)
+
+```bash
+# brev-cli (Go, MIT-licensed, github.com/brevdev/brev-cli)
+brev login                 # authenticate to the Brev console
+brev ls                    # list available/running instances
+brev create my-gpu-box     # provision a new GPU instance
+brev open my-gpu-box       # open a VS Code / SSH session against it
+brev shell my-gpu-box      # drop into a shell on the instance
+brev port-forward my-gpu-box -p 8888:8888   # forward a remote port (e.g. Jupyter)
+```
+[Source: brevdev/brev-cli on GitHub](https://github.com/brevdev/brev-cli)
+
+Because Brev provisions the same underlying AWS/GCP/Crusoe/Lambda/etc. GPU instance types covered earlier in this section, everything this chapter documents about container GPU access (§1–§4), Kubernetes GPU scheduling (§5), and cloud-specific driver/kernel pinning (§9, above) still applies once inside a Brev-provisioned instance; Brev's own value is entirely at the provisioning and environment-sharing layer, not a new GPU access mechanism.
+
 ---
 
 ## Roadmap
