@@ -1015,6 +1015,85 @@ letting the agent script call the registered function directly, which is the arc
 prompt gates camera or geolocation access.
 [Source: WebMCP explainer, W3C Web Machine Learning Community Group](https://github.com/webmachinelearning/webmcp)
 
+**API surface.** The current live spec draft's WebIDL defines the full registration shape — the
+initial `registerTool()` example above uses only the first four fields; the complete dictionary
+also carries a `title`, per-tool `annotations`, and per-registration options for scoping and
+teardown:
+
+```webidl
+dictionary ModelContextTool {
+  required DOMString name;        // 1-128 chars, [A-Za-z0-9_.-]
+  USVString title;
+  required DOMString description;
+  object inputSchema;
+  required ToolExecuteCallback execute;
+  ToolAnnotations annotations;
+};
+
+dictionary ToolAnnotations {
+  boolean readOnlyHint = false;
+  boolean untrustedContentHint = false;
+  boolean consequentialHint = false;   // hints only, not platform-enforced
+};
+
+dictionary ModelContextRegisterToolOptions {
+  sequence<USVString> exposedTo;   // origins allowed to see this tool
+  AbortSignal signal;              // abort -> auto-unregister
+};
+```
+
+`readOnlyHint`/`consequentialHint` let a page tell an agent "this tool is safe to call
+speculatively" versus "this tool has side effects and needs explicit confirmation," but — like
+MCP's own tool annotations — these are advisory hints the calling agent may or may not honor, not
+a platform-enforced permission boundary. There is deliberately no `outputSchema`, no streaming
+progress callback, and no icon/image field in the current draft; `outputSchema` is an open item
+the spec defers rather than a settled omission.
+[Source: WebMCP spec draft, W3C Web Machine Learning Community Group](https://webmachinelearning.github.io/webmcp/)
+
+There is no separate `unregisterTool()` call. Registration is torn down by aborting the
+`AbortSignal` passed via `options.signal` at registration time; the spec's own guidance is to
+re-register a tool when its definition needs to change rather than expose a mutation API:
+
+```javascript
+const controller = new AbortController();
+navigator.modelContext.registerTool(
+  { name: "add-to-cart", description: "...", inputSchema, async execute() { /* ... */ } },
+  { signal: controller.signal },
+);
+// later, e.g. when the cart UI unmounts:
+controller.abort();   // unregisters the tool
+```
+[Source: WebMCP spec draft, W3C Web Machine Learning Community Group](https://webmachinelearning.github.io/webmcp/)
+
+**Discovery is same-document/same-frame-tree scoped**, not a cross-tab or arbitrary-page
+protocol: `getTools({ fromOrigins })` returns tools registered by the calling document and,
+optionally, by same-origin documents named in `fromOrigins`; each returned `RegisteredTool`
+carries a `window` reference back to its owning document, and `executeTool(tool, input, {
+signal })` invokes it through that reference. A browser extension or a built-in side-panel agent
+that needs to reach a page's tools from *outside* that page's own frame tree has no standardized
+API for doing so today — Chrome currently bridges this internally (a private DevTools WebMCP
+panel and an internal "Model Context Tool Inspector" extension), not through a documented public
+extension API. *Note: needs verification — no cross-tab or extension-facing discovery protocol
+is defined in the spec, Chrome's public developer docs, or the MCP-B polyfill docs as of this
+writing; treat any claim of a standardized cross-page bridging mechanism as unconfirmed.*
+[Source: WebMCP spec draft, W3C Web Machine Learning Community Group](https://webmachinelearning.github.io/webmcp/)
+
+**Polyfill.** `@mcp-b/webmcp-polyfill` (npm) implements the API for browsers without native
+support:
+
+```bash
+npm i @mcp-b/webmcp-polyfill
+```
+[Source: `@mcp-b/webmcp-polyfill` on npm](https://www.npmjs.com/package/@mcp-b/webmcp-polyfill)
+
+**API location.** The getter is moving from `Navigator` to `Document`
+([webmachinelearning/webmcp#184](https://github.com/webmachinelearning/webmcp/issues/184)):
+`document.modelContext` is the current canonical location, with `navigator.modelContext` kept as
+a deprecated, one-time-warning alias for backward compatibility. New code should prefer
+`document.modelContext.registerTool(...)` over the `navigator.modelContext` form shown in the
+example above.
+[Source: WebMCP spec draft, W3C Web Machine Learning Community Group](https://webmachinelearning.github.io/webmcp/)
+
 The motivating problem WebMCP names is **disintermediation**: an agent that scrapes a page's DOM
 and then calls the site's backend API directly (bypassing the page's own JavaScript, client-side
 validation, and UI state) can take actions the page's own logic never sanctioned — the web
@@ -1032,9 +1111,18 @@ model on-device, and WebMCP so that model's decisions can act on the page withou
 through a scraped-DOM heuristic.
 [Source: Christian Liebel, "WebNN, Built-in AI, WebMCP"](https://speakerdeck.com/christianliebel/webnn-built-in-ai-webmcp-whats-new-in-web-ai)
 
-*Note: needs verification — WebMCP is an early-stage Community Group incubation, not a W3C
-Candidate Recommendation; its API surface (method names, registration shape) should be
-rechecked against the current explainer before being treated as stable.*
+**Implementation status.** WebMCP remains a Draft Community Group Report, not a W3C Candidate
+Recommendation. Chrome runs it as an origin trial starting in Chrome 149 (local testing via
+`chrome://flags/#enable-webmcp-testing`, production access via an origin-trial token from
+`developer.chrome.com/origintrials`); Edge mirrors Chrome's implementation as an origin trial
+starting in Edge 150. Firefox and Safari have open standards-positions issues but no shipping
+timeline as of this writing.
+[Source: Chrome for Developers, WebMCP](https://developer.chrome.com/docs/ai/webmcp)
+
+*Note: needs verification — WebMCP's API surface (method names, registration shape, the
+Navigator-to-Document migration described above) is under active change during origin trials and
+should be rechecked against the current spec draft before being treated as stable; it should not
+be relied upon in production code while still an origin trial.*
 
 ---
 
