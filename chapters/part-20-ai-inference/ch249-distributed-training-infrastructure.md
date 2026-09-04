@@ -961,6 +961,30 @@ Chapter 240 §7.1; requesting the full `nvidia.com/gpu` count on one node, combi
 label match, is the coarse-grained way of keeping a tensor-parallel group intra-node before
 Topology Manager or DRA are configured to do so automatically.)
 
+**NVIDIA Run:ai** is a commercial orchestration layer built directly on top of this stack rather
+than a replacement for it: it registers its own scheduler, `runai-scheduler`, with Kubernetes,
+and only pods whose `schedulerName` is set to `runai-scheduler` are handled by it — ordinary
+pods without that field continue to be handled by the default `kube-scheduler`, so the two
+coexist on the same cluster. On top of GFD's per-node GPU labels and the device-plugin-exposed
+`nvidia.com/gpu` resource, Run:ai adds a hierarchical **Project/Department quota model** (fair-
+share allocation with real-time quota recalculation, gang scheduling so a multi-pod distributed
+job is only started once every pod in the group can be placed, and priority queues) and **GPU
+fractions**: rather than MIG's fixed, administrator-provisioned hardware partitions, a workload
+requests either a fractional share (e.g. `0.5`) or an exact memory amount, and Run:ai's per-node
+agent enforces that memory ceiling — giving each fractional workload its own virtual memory
+address space and, by default, NVIDIA's own time-slicing for the compute-runtime side of the
+split — without any node-level MIG reconfiguration. Because MIG's hardware partitions and
+Run:ai's software-level fractions both claim the whole GPU's partitioning scheme, the two cannot
+be applied to the same node simultaneously; a cluster chooses one mechanism per node, not per
+workload. [Source: NVIDIA Run:ai, "GPU Fractions"](https://run-ai-docs.nvidia.com/self-hosted/2.20/platform-management/runai-scheduler/resource-optimization/fractions)
+Following NVIDIA's acquisition of Run:ai (closed late 2024), the scheduling engine itself —
+gang scheduling, hierarchical queues/quotas, and GPU sharing via pod annotations, but not the
+full commercial platform's UI/API/multi-tenant control plane — was open-sourced as the
+standalone **KAI Scheduler** at KubeCon Europe on 2025-04-01 under Apache-2.0 and is now a CNCF
+Sandbox project; it remains the scheduling core packaged inside the commercial Run:ai platform,
+so a cluster can adopt the same gang-scheduling and fair-share mechanics without the commercial
+product. [Source: NVIDIA Developer Blog, "NVIDIA Open Sources Run:ai Scheduler to Foster Community Collaboration"](https://developer.nvidia.com/blog/nvidia-open-sources-runai-scheduler-to-foster-community-collaboration/) [Source: NVIDIA/KAI-Scheduler on GitHub](https://github.com/NVIDIA/KAI-Scheduler)
+
 ### 6.3 Elastic and Fault-Tolerant Restart
 
 At the scale multi-node training runs at, some fraction of nodes failing mid-job — a GPU Xid
