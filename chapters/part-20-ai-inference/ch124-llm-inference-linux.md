@@ -98,6 +98,7 @@ This chapter examines the full software path from a **GGUF** file on disk to gen
   - the **REST API** endpoints (**/api/generate**, **/api/chat**, **/api/embeddings**)
   - parallel request handling via **OLLAMA_NUM_PARALLEL** and llama.cpp's batched-decode path
   - **LM Studio** as a GUI-first alternative model manager, also built on llama.cpp on Linux
+  - a comparison table of local model runners — **GPT4All**, **Jan**, **koboldcpp**, **text-generation-webui**, and **llamafile** alongside Ollama, LM Studio, and Docker Model Runner — by interface, backend, model format, GPU coverage, API compatibility, and license
 - **Section 6 — ONNX Runtime with GPU Execution Providers**
   - **ONNX Runtime** (**ORT**) and its **Execution Provider** (**EP**) plugin architecture
   - the **CUDA EP** using **cuDNN** and **cuBLAS** configured via **OrtCUDAProviderOptionsV2** (including **CUDA Graph** capture to eliminate per-iteration kernel launch overhead, **TF32** on Ampere+, and **TransformerOptimizer** graph fusions such as **SkipLayerNorm** and **FusedMatMul**)
@@ -695,7 +696,27 @@ Within a single runner, Ollama serialises requests by default. When `OLLAMA_NUM_
 
 ### 5.6 GUI Alternative: LM Studio
 
-Ollama is not the only model manager competing for the "local model, minimal setup" niche. **LM Studio** targets the same audience with a desktop GUI rather than a CLI-first daemon: model discovery, download, and chat happen in a native app window, while a background server exposes an OpenAI- and Anthropic-compatible API on `localhost:1234` for programmatic use. Like Ollama, its default inference backend on Linux is llama.cpp — LM Studio additionally ships an MLX backend, but MLX is Apple-Silicon-only, so on Linux (as on Windows) llama.cpp is the sole engine, and the GGUF/quantization material in §1 applies unchanged. [Source](https://lmstudio.ai/docs/app) LM Studio's own documentation lists x64 Linux PCs as a supported platform alongside Apple Silicon Macs and Windows; Note: needs verification whether Linux feature parity with the macOS build (packaging format, update cadence) still lags as of the current release, since public discussion of this has historically varied by version. Where Ollama's model library and REST API (§5.3–§5.4) suit scripted or server-side deployments, LM Studio's GUI-first design suits interactive, single-user desktop use — the two are complementary defaults for different workflows more than direct substitutes.
+Ollama is not the only model manager competing for the "local model, minimal setup" niche. **LM Studio** targets the same audience with a desktop GUI rather than a CLI-first daemon: model discovery, download, and chat happen in a native app window, while a background server exposes an OpenAI- and Anthropic-compatible API on `localhost:1234` for programmatic use. Like Ollama, its default inference backend on Linux is llama.cpp — LM Studio additionally ships an MLX backend, but MLX is Apple-Silicon-only, so on Linux (as on Windows) llama.cpp is the sole engine, and the GGUF/quantization material in §1 applies unchanged. On Linux specifically, LM Studio ships built-in CUDA, ROCm/HIP, and Vulkan variants of its llama.cpp runtime, auto-selecting the fastest available (CUDA or ROCm) and falling back to Vulkan when neither is detected — the same tiered-fallback pattern as Ollama's own GPU detection in §5.2. [Source](https://lmstudio.ai/docs/app) LM Studio's own documentation lists x64 Linux PCs as a supported platform alongside Apple Silicon Macs and Windows; Note: needs verification whether Linux feature parity with the macOS build (packaging format, update cadence) still lags as of the current release, since public discussion of this has historically varied by version. Where Ollama's model library and REST API (§5.3–§5.4) suit scripted or server-side deployments, LM Studio's GUI-first design suits interactive, single-user desktop use — the two are complementary defaults for different workflows more than direct substitutes.
+
+### 5.7 Comparison: Local Model Runners
+
+Ollama (§5) and LM Studio (§5.6) are the two most commonly deployed entries in a broader category of "point it at a GGUF file, get a chat UI and/or local API" tools, nearly all of which share the same llama.cpp inference core described in §1–§3 and differ mainly in packaging, GPU-backend coverage, and API surface. The table below adds the remaining widely-used members of that category — none discussed elsewhere in this chapter — for reference:
+
+| **Tool** | **Interface** | **Backend engine** | **Model format(s)** | **GPU backends (Linux)** | **API compatibility** | **License** |
+|---|---|---|---|---|---|---|
+| llama.cpp (raw, §1–§3) | CLI (`llama-cli`) + bundled server (`llama-server`) | Itself (GGML) | GGUF | CUDA, ROCm/HIP, Vulkan, SYCL, CPU | OpenAI-compatible (`llama-server` `/v1/...`) | MIT |
+| Ollama (§5) | CLI + REST daemon | llama.cpp (vendored; built on it directly since v0.30) | GGUF (OCI-layer blobs) | CUDA, ROCm, Vulkan (fallback) | Native REST (`/api/generate`, `/api/chat`) + OpenAI-compatible subset (`/v1`) | MIT |
+| LM Studio (§5.6) | Desktop GUI + background server | llama.cpp (+ MLX, Apple Silicon only) | GGUF (+ MLX format on Mac) | CUDA, ROCm/HIP, Vulkan | OpenAI- and Anthropic-compatible (`localhost:1234`) | Proprietary (free); engine components MIT |
+| GPT4All | Desktop GUI + CLI + Python bindings | llama.cpp (Nomic fork, "Nomic Vulkan" GPU backend) | GGUF | CUDA, Vulkan | OpenAI-compatible subset (`localhost:4891/v1`) | MIT (app); model licenses vary |
+| Jan | Desktop GUI | llama.cpp via Cortex.cpp (multi-engine: also ONNX, TensorRT-LLM) | GGUF | CUDA, Vulkan (AMD/Intel Arc, less tested) | OpenAI-compatible (`localhost:1337/v1`) | Apache 2.0 |
+| koboldcpp | CLI + bundled web UI (Kobold Lite) | llama.cpp fork (vendored/patched) | GGUF (+ legacy GGML `.bin`) | CUDA, Vulkan; ROCm via the community `koboldcpp-rocm` fork | OpenAI-compatible (`/v1`) + native KoboldAI, Ollama-, and A1111/Forge-compatible APIs | AGPL-3.0 |
+| text-generation-webui (TextGen) | Desktop/web GUI | Multi-engine: llama.cpp, ExLlamaV2/V3, Transformers, TensorRT-LLM | GGUF, EXL2/EXL3 (safetensors), HF Transformers | CUDA, ROCm, Vulkan | OpenAI- and Anthropic-compatible (`--api` flag) | AGPL-3.0 |
+| llamafile (§4.7) | Single self-contained executable (CLI + optional server) | llama.cpp + Cosmopolitan Libc | GGUF (embeddable in the executable itself) | CUDA (relaunched on Linux in early 2026); ROCm/Vulkan coverage needs verification | OpenAI-compatible server mode (inherited from `llama-server`) | Apache 2.0 |
+| Docker Model Runner (§18) | `docker model` CLI verb group | `llama-server` (default; vLLM, SGLang also available) | OCI Artifacts wrapping GGUF, or HF GGUF pulled by reference | CPU, CUDA, ROCm, Vulkan | OpenAI-compatible (`/engines/v1`) | Apache 2.0 |
+
+[Source](https://github.com/nomic-ai/gpt4all) [Source](https://docs.gpt4all.io/gpt4all_api_server/home.html) [Source](https://www.jan.ai/docs/desktop/api-server) [Source](https://www.jan.ai/docs/desktop/local-engine/llama-cpp) [Source](https://github.com/LostRuins/koboldcpp) [Source](https://github.com/YellowRoseCx/koboldcpp-rocm) [Source](https://github.com/oobabooga/text-generation-webui) [Source](https://www.helpnetsecurity.com/2026/03/20/llamafile-0-10-0-released/)
+
+Two patterns stand out. First, nearly every tool converges on the OpenAI `/v1/chat/completions` shape as its lowest common denominator for programmatic access, regardless of how different their GUIs or native APIs are — a reader building a client integration can usually target that surface and swap tools underneath it with minimal code changes. Second, licensing splits along a rough interface/API-surface-area line: the CLI-first, narrowly-scoped tools (llama.cpp, Ollama, Jan, Docker Model Runner) sit under permissive MIT/Apache 2.0 terms, while the two full-featured web-GUI-plus-many-integrations tools (koboldcpp, text-generation-webui) chose AGPL-3.0 — a distinction worth checking before embedding either into a closed-source product, independent of their technical capabilities.
 
 ---
 
@@ -1952,6 +1973,14 @@ This chapter draws on and extends topics covered across the book:
 - [GGUF File Format — DeepWiki](https://deepwiki.com/ggml-org/llama.cpp/7.1-gguf-file-format)
 - [Ollama GitHub repository](https://github.com/ollama/ollama)
 - [Ollama GPU Discovery — DeepWiki](https://deepwiki.com/13rac1/ollama/5.3-gpu-discovery-and-hardware-acceleration)
+- [GPT4All GitHub repository](https://github.com/nomic-ai/gpt4all)
+- [GPT4All API Server docs](https://docs.gpt4all.io/gpt4all_api_server/home.html)
+- [Jan Local API Server docs](https://www.jan.ai/docs/desktop/api-server)
+- [Jan llama.cpp Local Engine docs](https://www.jan.ai/docs/desktop/local-engine/llama-cpp)
+- [koboldcpp GitHub repository](https://github.com/LostRuins/koboldcpp)
+- [koboldcpp-rocm GitHub repository](https://github.com/YellowRoseCx/koboldcpp-rocm)
+- [text-generation-webui GitHub repository](https://github.com/oobabooga/text-generation-webui)
+- [llamafile 0.10.0 release coverage](https://www.helpnetsecurity.com/2026/03/20/llamafile-0-10-0-released/)
 - [vLLM Automatic Prefix Caching](https://docs.vllm.ai/en/stable/design/prefix_caching/)
 - [vLLM Hybrid KV Cache Manager](https://docs.vllm.ai/en/latest/design/hybrid_kv_cache_manager/)
 - [ONNX Runtime CUDA Execution Provider](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html)
