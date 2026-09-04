@@ -976,6 +976,66 @@ const device = hasWebNN ? 'webnn' : 'webgpu';
 const model = await pipeline('task', 'model', { device });
 ```
 
+### 8.6 WebMCP: Agent Tool Invocation Alongside WebNN Inference
+
+Everything in §2–§8 addresses one half of in-browser AI: running an inference graph. **WebMCP**
+(`github.com/webmachinelearning/webmcp`, incubated in the W3C Web Machine Learning group
+alongside WebNN) addresses a related but distinct problem — how a page exposes *actions* to an
+AI agent, whether that agent's model runs locally via WebNN/WebGPU or remotely via a hosted API.
+The name deliberately echoes the Model Context Protocol (MCP): WebMCP is MCP's tool-registration
+pattern adapted to the browser's page/agent boundary rather than a client/server process
+boundary.
+[Source: WebMCP explainer, W3C Web Machine Learning Community Group](https://github.com/webmachinelearning/webmcp)
+
+A page registers a tool by name, description, and typed input schema, with a callback that runs
+in the page's own execution context:
+
+```javascript
+navigator.modelContext.registerTool({
+  name: "add-to-cart",
+  description: "Add a product to the shopping cart by SKU and quantity",
+  inputSchema: {
+    type: "object",
+    properties: {
+      sku: { type: "string" },
+      quantity: { type: "integer", minimum: 1 },
+    },
+    required: ["sku", "quantity"],
+  },
+  async execute({ sku, quantity }) {
+    return await cart.add(sku, quantity);
+  },
+});
+```
+
+An agent (browser-embedded or extension-mediated) discovers available tools via
+`getTools()` and invokes one via `executeTool()`; the browser mediates the call rather than
+letting the agent script call the registered function directly, which is the architectural point
+— it keeps the invocation auditable and interruptible by the browser the same way a permission
+prompt gates camera or geolocation access.
+[Source: WebMCP explainer, W3C Web Machine Learning Community Group](https://github.com/webmachinelearning/webmcp)
+
+The motivating problem WebMCP names is **disintermediation**: an agent that scrapes a page's DOM
+and then calls the site's backend API directly (bypassing the page's own JavaScript, client-side
+validation, and UI state) can take actions the page's own logic never sanctioned — the web
+equivalent of a screen-scraping bot rather than a user driving the UI. WebMCP's alternative is to
+keep the agent's actions routed *through* the page's declared tool surface, so whatever
+validation, rate-limiting, or state-consistency logic the page's own JavaScript already enforces
+for a human clicking a button also applies to an agent calling the equivalent tool.
+[Source: WebMCP explainer, W3C Web Machine Learning Community Group](https://github.com/webmachinelearning/webmcp)
+
+WebMCP is orthogonal to WebNN rather than dependent on it: WebNN (§2–§7) is how a page or an
+in-browser agent runs an inference *graph*; WebMCP is how that agent (or a remote one) invokes an
+*action* the page exposes. The two are frequently discussed together at W3C because a fully
+local, privacy-preserving agentic browser experience needs both — WebNN to run the reasoning
+model on-device, and WebMCP so that model's decisions can act on the page without a round trip
+through a scraped-DOM heuristic.
+[Source: Christian Liebel, "WebNN, Built-in AI, WebMCP"](https://speakerdeck.com/christianliebel/webnn-built-in-ai-webmcp-whats-new-in-web-ai)
+
+*Note: needs verification — WebMCP is an early-stage Community Group incubation, not a W3C
+Candidate Recommendation; its API surface (method names, registration shape) should be
+rechecked against the current explainer before being treated as stable.*
+
 ---
 
 ## Roadmap
@@ -993,7 +1053,7 @@ const model = await pipeline('task', 'model', { device });
 - **Linux NPU backend in Chromium:** The current Linux WebNN path uses TFLite/XNNPACK (CPU) unconditionally. As Intel OpenVINO (`intel_vpu` kernel driver) and AMD XDNA user-space runtimes mature on Linux, a `services/webnn/` Linux NPU backend analogous to the existing DirectML (Windows) and Core ML (macOS) backends is a stated goal. Note: needs verification on the exact timeline.
 - **W3C WebNN full Recommendation:** Once two conformant implementations exist (Chromium on all major platforms, Firefox), the MLWG can advance to full W3C Recommendation, unlocking mandatory browser support and enabling frameworks like ONNX Runtime Web and TensorFlow.js to advertise WebNN as a stable execution provider. [Source](https://progosling.com/en/dev-digest/2026-02/webnn-candidate-recommendation)
 - **Small Language Model (SLM) acceleration:** The MLWG is specifically optimising WebNN for in-browser SLMs (quantised 1–7B-parameter models). This involves graph-level quantisation metadata, `int4` / `int8` weight types in the buffer management API, and model-weight caching across page navigations. [Source](https://www.w3.org/blog/2025/ai-at-tpac-2025/)
-- **WebMCP and agent integration:** The emerging WebMCP proposal, discussed alongside WebNN at W3C, would allow browser-based ML agents to call local model inference via WebNN as a typed capability channel — tying WebNN to the broader browser-native agentic computing story. [Source](https://speakerdeck.com/christianliebel/webnn-built-in-ai-webmcp-whats-new-in-web-ai)
+- **WebMCP and agent integration:** The WebMCP proposal (§8.6), discussed alongside WebNN at W3C, would tie WebNN inference to the broader browser-native agentic computing story by giving pages a standard way to expose typed tools to an agent whose reasoning model may itself run locally via WebNN. [Source](https://speakerdeck.com/christianliebel/webnn-built-in-ai-webmcp-whats-new-in-web-ai)
 - **Cross-browser Web Platform Test suite hardening:** Passing the WPT suite for all operator semantics (numerical tolerances, edge-case handling, async execution ordering) is a prerequisite for the W3C gate; this represents a sustained medium-term engineering effort across Google, Intel, Microsoft, and Mozilla. [Source](https://webstatus.dev/features/webnn)
 
 ### Long-term
