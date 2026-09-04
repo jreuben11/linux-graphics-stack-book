@@ -200,6 +200,7 @@ This chapter examines the full software path from a **GGUF** file on disk to gen
   - **Outlines**, **XGrammar**, and llama.cpp's native **GBNF** grammar format
   - backend-selection flags in vLLM (`--structured-outputs-config.backend`) and SGLang (`--grammar-backend`)
   - function/tool-calling parser selection (`--tool-call-parser`) matched to a model family's native tool-call format
+  - **DSPy**'s Signature/Module/Optimizer programming model and its `JSONAdapter`, layered above (not competing with) the grammar-compilation backends
 - **Section 25 — Multi-LoRA Serving**
   - the **Punica** batched SGMV kernel and **S-LoRA**'s Unified Paging, which both serving engines build on
   - vLLM's `--enable-lora`/`--lora-modules` and hot-swap `load_lora_adapter`/`unload_lora_adapter` API
@@ -1734,6 +1735,8 @@ Three implementations of the state-machine/grammar-compilation step are relevant
 
 vLLM and SGLang also accept `guidance`/`llguidance` and (vLLM only) `lm-format-enforcer` as alternative `--structured-outputs-config.backend`/`--grammar-backend` selections; this chapter does not cover their internals beyond naming them.
 
+**DSPy** (github.com/stanfordnlp/dspy, MIT, Stanford NLP) sits a layer above everything else in this section rather than beside it: its own framing is "Program, don't prompt, your LLMs" — a `Signature` is a Pydantic-typed input/output contract, `Module`s (`Predict`, `ChainOfThought`, `ReAct`, and others) compose signatures into a program, and an `Optimizer` (MIPROv2, GEPA, SIMBA, BootstrapFewShot) automatically searches over instructions and few-shot examples against a scoring metric, rather than a human hand-tuning a prompt string. [Source](https://dspy.ai/) Its structured-output guarantee comes from an **Adapter**, not from a grammar it compiles itself: `dspy.JSONAdapter` asks the underlying model for JSON — riding on whatever native structured-output mode the target already exposes, including vLLM's or SGLang's own `response_format`/`guided_json` from earlier in this section when DSPy is pointed at a local deployment from this chapter — then parses the response with `json_repair`, falls back to `ast.literal_eval`, and validates the result against the Signature's Pydantic `TypeAdapter`, retrying on failure rather than masking invalid tokens during generation. [Source](https://dspy.ai/diving-deeper/adapters/) The two layers compose rather than compete: DSPy never needs to know that XGrammar or GBNF exist underneath it, but a local backend that already guarantees schema-valid JSON at the token level makes DSPy's own parse-and-retry loop succeed on the first attempt far more often than an unconstrained model would.
+
 ---
 
 ## 25. Multi-LoRA Serving
@@ -2199,6 +2202,8 @@ This chapter draws on and extends topics covered across the book:
 - [vLLM Structured Outputs](https://docs.vllm.ai/en/latest/features/structured_outputs/)
 - [vLLM Tool Calling](https://docs.vllm.ai/en/latest/features/tool_calling/)
 - [SGLang Structured Outputs](https://docs.sglang.io/advanced_features/structured_outputs.html)
+- [DSPy](https://dspy.ai/)
+- [DSPy: Adapters — how signatures become prompts](https://dspy.ai/diving-deeper/adapters/)
 - [Punica: Multi-Tenant LoRA Serving (arXiv)](https://arxiv.org/abs/2310.18547)
 - [S-LoRA: Serving Thousands of Concurrent LoRA Adapters (arXiv)](https://arxiv.org/abs/2311.03285)
 - [vLLM LoRA Adapters Docs](https://docs.vllm.ai/en/latest/features/lora.html)
