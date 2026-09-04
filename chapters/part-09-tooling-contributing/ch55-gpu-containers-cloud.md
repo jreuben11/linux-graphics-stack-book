@@ -1028,6 +1028,44 @@ brev port-forward my-gpu-box -p 8888:8888   # forward a remote port (e.g. Jupyte
 
 Because Brev provisions the same underlying AWS/GCP/Crusoe/Lambda/etc. GPU instance types covered earlier in this section, everything this chapter documents about container GPU access (§1–§4), Kubernetes GPU scheduling (§5), and cloud-specific driver/kernel pinning (§9, above) still applies once inside a Brev-provisioned instance; Brev's own value is entirely at the provisioning and environment-sharing layer, not a new GPU access mechanism.
 
+**Authoring a Launchable is web-console-only** — there is no CLI or file format (YAML/JSON/TOML)
+for defining one. The "Launchable builder" in the Brev console walks through the same fields
+described above (details, default hardware, software config, source, network, launch parameters,
+view access) and produces a shareable link; this is a genuine gap in Brev's CLI surface, not an
+oversight in this book. [Source: NVIDIA Brev, "Launchables"](https://docs.nvidia.com/brev/concepts/launchables)
+
+**Deploying** an existing Launchable, by contrast, is fully scriptable. `brev create` accepts a
+Launchable ID or console URL and injects deploy-time parameters as repeatable `--param NAME=VALUE`
+flags, which resolve against the Launchable's declared parameter set (an unknown parameter name or
+a use of `--param` without `--launchable` is a CLI error):
+
+```bash
+brev create --launchable env-abc123 \
+    --param MODEL=llama-3.1-8b \
+    --param HF_TOKEN=$HF_TOKEN
+```
+
+`brev create`/`brev start` also expose the underlying instance-selection and deploy-mode flags
+directly, independent of any Launchable: `--gpu-name`/`-g` and `--type`/`-t` (comma-separated
+fallback chain) and `--provider` for hardware selection; `--min-vram`, `--min-total-vram`,
+`--min-capability`, `--min-disk`, `--max-boot-time` for constraint-based filtering; `--mode`/`-m`
+to choose `vm` (default), `k8s`, `container`, or `compose`, with `--container-image` or
+`--compose-file` required for the latter two modes; `--jupyter` (on by default for `vm`/`k8s`) to
+toggle the preinstalled JupyterLab; and `--startup-script`/`-s` accepting either an inline string
+or an `@filepath` reference. [Source: brevdev/brev-cli, `pkg/cmd/gpucreate/gpucreate.go`](https://github.com/brevdev/brev-cli/blob/main/pkg/cmd/gpucreate/gpucreate.go)
+
+`brev open` drives editor/terminal integration beyond the single VS Code example above — it
+accepts a positional editor argument or an explicit `--editor` flag (`code`, `cursor`, `windsurf`,
+`terminal`, `tmux`), a `--set-default` flag to persist a choice, `--host` to SSH into the host
+machine rather than the container, and `--dir`/`-d` to choose which directory to open:
+
+```bash
+brev open my-gpu-box cursor            # open in Cursor instead of VS Code
+brev open --set-default cursor         # make Cursor the default for future `brev open` calls
+brev search --gpu-name A100 | brev create ml-box | brev open cursor   # composed pipeline
+```
+[Source: brevdev/brev-cli, `pkg/cmd/open/open.go`](https://github.com/brevdev/brev-cli/blob/main/pkg/cmd/open/open.go)
+
 ### NVIDIA OpenShell and NemoClaw: Sandboxed Runtimes for Autonomous Agents
 
 Where Brev packages a GPU *environment* for a human developer to launch into, **NVIDIA
@@ -1049,20 +1087,108 @@ the standard risk set for any code-executing agent, addressed here with OS-level
 primitives rather than solely by prompting or output filtering.
 [Source: NVIDIA OpenShell documentation](https://docs.nvidia.com/openshell/)
 
-**NemoClaw** is built on top of OpenShell rather than a replacement for it: NVIDIA describes it
-as an open-source reference stack for running supported and qualified AI agents "more safely,"
-adding the operational layer OpenShell's sandboxing primitives alone do not provide — guided
-onboarding wizards, managed inference routing, network-policy enforcement, credential custody
-and secure storage, and agent lifecycle management — aimed at users deploying agents across
-local machines, DGX systems, and cloud GPU instances (the same AWS/GCP/Brev deployment targets
-§9 covers) without needing to hand-configure Landlock rules or seccomp profiles themselves.
+OpenShell is public and Apache-2.0-licensed (`github.com/NVIDIA/OpenShell`). Install it either via
+the project's install script or as a `uv` tool, which requires a running Docker daemon:
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | sh
+# or
+uv tool install -U openshell
+```
+
+A sandbox is created around a specific agent CLI (Claude Code, OpenCode, Codex) or as a bare
+environment; API keys such as `ANTHROPIC_API_KEY` are picked up from the calling shell's
+environment automatically:
+
+```bash
+openshell sandbox create -- claude       # sandbox running Claude Code
+openshell sandbox create -- opencode     # sandbox running OpenCode
+openshell sandbox create --from base     # bare sandbox, no agent CLI preinstalled
+```
+
+The four defense-in-depth layers described above are configured through a YAML policy file
+(`version: 1`), split into settings locked at sandbox creation and settings that can be
+hot-reloaded onto a running sandbox:
+
+```yaml
+version: 1
+filesystem_policy:
+  include_workdir: true
+  read_only: [/usr, /lib, /etc]
+  read_write: [/tmp]
+landlock:
+  compatibility: best_effort      # or hard_requirement
+process:
+  run_as_user: "1500"             # non-root UID; UID 0 is rejected
+  run_as_group: "1500"
+network_policies:
+  github:
+    endpoints:
+      - host: api.github.com
+        port: 443
+        protocol: rest             # tcp | rest | websocket | graphql | mcp | json-rpc
+        access: read-only          # read-only | read-write | full
+    binaries:
+      - path: /usr/bin/gh
+```
+
+`network_policies` entries can carry protocol-specific `rules` blocks (HTTP method/path/query for
+`rest`, operation type/fields for `graphql`, method/tool for `mcp`), and a separate
+`network_middlewares` block lets a policy insert traffic middleware — for example a regex-based
+redactor — in front of an endpoint group, with an explicit `on_error: fail_closed` so a
+misbehaving middleware blocks traffic rather than passing it through unfiltered. Filesystem paths
+must be absolute, contain no `..` segments, and are capped at 256 combined paths of at most 4096
+characters each.
+[Source: NVIDIA OpenShell, Policy Schema Reference](https://docs.nvidia.com/openshell/reference/policy-schema)
+
+The fourth layer — inference routing — is separate from this policy file: each sandbox gets a
+local `inference.local` HTTPS endpoint that proxies outbound model-API calls through a privacy
+router. The router strips sandbox-supplied credentials, forwards only a per-provider allowlist of
+headers (for example `openai-organization`/`x-model-id` for OpenAI, `anthropic-version`/
+`anthropic-beta` for Anthropic), and injects the operator's real backend credentials before the
+request leaves the router — so the agent itself never holds a usable API key, and any direct
+attempt to reach a raw provider host like `api.openai.com` instead is still subject to the
+ordinary `network_policies` allowlist above.
+[Source: NVIDIA OpenShell, "Inference Routing"](https://docs.nvidia.com/openshell/sandboxes/inference-routing)
+
+**NemoClaw** is built on top of OpenShell rather than a replacement for it: it is a public,
+Apache-2.0-licensed reference stack (`github.com/NVIDIA/NemoClaw`, self-labeled an **alpha
+project** in its own README) for running specific agents — **OpenClaw** (the default), Hermes, and
+LangChain's Deep Agents Code — through OpenShell's sandbox, adding guided onboarding, managed
+inference routing, network-policy enforcement, credential custody, and agent lifecycle management
+on top of OpenShell's raw sandboxing primitives.
 [Source: NVIDIA NemoClaw documentation](https://docs.nvidia.com/nemoclaw/)
 
-*Note: needs verification — specific installation commands, exact CLI syntax, and licensing
-terms for both OpenShell and NemoClaw could not be confirmed from publicly reachable
-documentation at the time of writing (several documentation sub-paths returned 404); the
-architectural description above should be treated as directionally accurate but rechecked
-against current NVIDIA documentation before citing specific commands or version numbers.*
+```bash
+curl -fsSL https://www.nvidia.com/nemoclaw.sh | bash
+```
+
+The installer auto-detects DGX and WSL hosts and defaults to installing OpenClaw; it also supports
+a scripted, non-interactive mode for provisioning pipelines, including selecting a specific
+provider and local model:
+
+```bash
+curl -fsSL https://www.nvidia.com/nemoclaw.sh \
+    | NEMOCLAW_NON_INTERACTIVE=1 NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1 bash
+
+curl -fsSL https://www.nvidia.com/nemoclaw.sh \
+    | NEMOCLAW_NON_INTERACTIVE=1 NEMOCLAW_PROVIDER=ollama NEMOCLAW_MODEL=nemotron-3-nano:30b bash
+```
+
+Once installed, an agent instance is managed through the `nemoclaw` CLI:
+
+```bash
+nemoclaw my-assistant status              # check instance status
+nemoclaw my-assistant dashboard-url --quiet   # print the web dashboard URL
+nemoclaw launch my-assistant              # start/launch the instance
+nemoclaw my-assistant connect             # attach a terminal session (then: openclaw tui)
+```
+[Source: NVIDIA NemoClaw, CLI Commands reference](https://docs.nvidia.com/nemoclaw/latest/reference/commands.html)
+
+*Note: needs verification — both projects are young (OpenShell created February 2026, NemoClaw
+March 2026) and NemoClaw explicitly self-describes as alpha; exact flag sets, the policy schema,
+and installer environment variables above should be re-checked against the installed version
+before being treated as a stable reference, since both are under active development.*
 
 ---
 
