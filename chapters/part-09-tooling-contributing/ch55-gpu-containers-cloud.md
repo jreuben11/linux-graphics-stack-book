@@ -1028,6 +1028,42 @@ brev port-forward my-gpu-box -p 8888:8888   # forward a remote port (e.g. Jupyte
 
 Because Brev provisions the same underlying AWS/GCP/Crusoe/Lambda/etc. GPU instance types covered earlier in this section, everything this chapter documents about container GPU access (§1–§4), Kubernetes GPU scheduling (§5), and cloud-specific driver/kernel pinning (§9, above) still applies once inside a Brev-provisioned instance; Brev's own value is entirely at the provisioning and environment-sharing layer, not a new GPU access mechanism.
 
+### NVIDIA OpenShell and NemoClaw: Sandboxed Runtimes for Autonomous Agents
+
+Where Brev packages a GPU *environment* for a human developer to launch into, **NVIDIA
+OpenShell** addresses a different, newer problem this chapter's container-isolation coverage
+(§1's device-node/CDI access model, §8's Kata/confidential-container isolation) is directly
+relevant to: safely running an *autonomous AI agent* — one that writes and executes its own
+code, calls arbitrary APIs, and reads/writes files with comparatively little human review of
+each individual action — on the same GPU infrastructure this chapter otherwise assumes runs
+human-launched workloads. OpenShell is described as a safe, private runtime for such agents,
+built on four layers of defense-in-depth: a **filesystem** layer using Landlock (the Linux LSM
+this book's kernel-security coverage would recognize as the same unprivileged sandboxing
+primitive Chrome and other user-space sandboxes use) to confine the agent to explicitly declared
+paths; a **network** layer enforcing an allowlist of reachable destinations; a **process** layer
+combining seccomp filtering with an unprivileged process identity to block privilege escalation;
+and an **inference** layer that routes the agent's own model-inference calls through controlled
+backends rather than letting the agent reach arbitrary external APIs directly. The stated threat
+model is data exfiltration, credential theft, unauthorized API usage, and privilege escalation —
+the standard risk set for any code-executing agent, addressed here with OS-level sandboxing
+primitives rather than solely by prompting or output filtering.
+[Source: NVIDIA OpenShell documentation](https://docs.nvidia.com/openshell/)
+
+**NemoClaw** is built on top of OpenShell rather than a replacement for it: NVIDIA describes it
+as an open-source reference stack for running supported and qualified AI agents "more safely,"
+adding the operational layer OpenShell's sandboxing primitives alone do not provide — guided
+onboarding wizards, managed inference routing, network-policy enforcement, credential custody
+and secure storage, and agent lifecycle management — aimed at users deploying agents across
+local machines, DGX systems, and cloud GPU instances (the same AWS/GCP/Brev deployment targets
+§9 covers) without needing to hand-configure Landlock rules or seccomp profiles themselves.
+[Source: NVIDIA NemoClaw documentation](https://docs.nvidia.com/nemoclaw/)
+
+*Note: needs verification — specific installation commands, exact CLI syntax, and licensing
+terms for both OpenShell and NemoClaw could not be confirmed from publicly reachable
+documentation at the time of writing (several documentation sub-paths returned 404); the
+architectural description above should be treated as directionally accurate but rechecked
+against current NVIDIA documentation before citing specific commands or version numbers.*
+
 ---
 
 ## Roadmap
