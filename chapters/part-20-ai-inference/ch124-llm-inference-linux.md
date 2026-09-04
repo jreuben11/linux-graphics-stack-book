@@ -194,6 +194,7 @@ This chapter examines the full software path from a **GGUF** file on disk to gen
   - **llama-swap**'s YAML-configured process supervision that loads/unloads backend processes per request, with idle-timeout unloading and concurrent-model "groups"
   - **LiteLLM**'s unified OpenAI-compatible proxy fronting both local (Ollama, vLLM) and cloud backends, with cost tracking and failover
   - **OpenRouter** as a hosted, multi-provider routing SaaS — the un-self-hosted counterpart to LiteLLM and Vercel's AI Gateway (§29.2)
+  - a comparison of llama-swap, LiteLLM, and OpenRouter by deployment model, problem solved, backend compatibility, and process-lifecycle ownership
 - **Section 24 — Structured Output, Grammars, and Function Calling**
   - constrained decoding via compiled-grammar token masking, composing transparently with quantisation, speculative decoding, and batching
   - **Outlines**, **XGrammar**, and llama.cpp's native **GBNF** grammar format
@@ -1694,6 +1695,20 @@ Every serving engine in this chapter — llama.cpp's `llama-server`, Ollama's da
 **LiteLLM** (github.com/BerriAI/litellm, MIT core license with a separate enterprise-licensed `enterprise/` subdirectory) solves an adjacent but distinct problem: rather than swapping which model process is loaded, its proxy server (`litellm --config config.yaml`) presents one OpenAI-compatible endpoint in front of upstream providers that are already running — local backends like Ollama or vLLM via their own `api_base` URLs, alongside cloud APIs (OpenAI, Anthropic, Bedrock, Vertex, and around a hundred others) — adding cost tracking, load balancing across multiple upstream instances, and automatic failover if one backend is unreachable. [Source](https://github.com/BerriAI/litellm) [Source](https://docs.litellm.ai/docs/proxy_server) In a local-inference setup combining, say, a small always-on Ollama model with an occasionally-launched large vLLM deployment, LiteLLM is the layer an application talks to, while llama-swap (or Ollama's own daemon) is what actually manages which weights are resident in VRAM underneath it — the two compose rather than compete.
 
 **OpenRouter** solves a similar-looking problem to LiteLLM from the opposite direction: rather than a proxy an operator self-hosts in front of chosen upstreams, it is itself a hosted routing service — one API key against several hundred models from dozens of providers, with automatic provider-level failover and price-based load balancing (by default, requests are weighted toward cheaper, stable providers, with any provider that has had a recent outage filtered out of consideration entirely). [Source](https://openrouter.ai/docs/guides/routing/provider-selection) It bills by passing through each upstream provider's own per-token rate plus a small fee on top, rather than charging its own flat token price — closer in spirit to a metered proxy than to a model host. Positioned against the rest of this section: OpenRouter and Vercel's AI Gateway (§29.2) occupy nearly the same niche — hosted, multi-provider routing with automatic failover — while LiteLLM is the self-hosted, operator-controlled equivalent of the same idea.
+
+### Model-Swapping and Routing Proxies at a Glance
+
+The three tools above look similar from a client's perspective — each presents a single endpoint in front of multiple models — but only one of them actually starts and stops backend processes; the other two route among backends that are already running somewhere:
+
+| **Tool** | **Deployment model** | **Problem solved** | **Upstream/backend compatibility** | **Key mechanism** | **License** |
+|---|---|---|---|---|---|
+| llama-swap | Self-hosted, single binary or Docker image, single host | Which model *process* is loaded into VRAM, swapped per incoming request | Any OpenAI/Anthropic-compatible CLI-launchable server — `llama-server`, vLLM, Ollama, or arbitrary shell launch commands | YAML-configured process supervision: stops/starts the matching backend process per request, with idle-timeout (TTL) unloading and optional concurrent "groups" | MIT |
+| LiteLLM (proxy) | Self-hosted proxy server (`litellm --config`) | One OpenAI-compatible endpoint in front of multiple already-running upstreams, local and cloud | ~100 providers via each one's own SDK/API — Ollama, vLLM, OpenAI, Anthropic, Bedrock, Vertex, and more | Config-driven routing, load balancing, cost tracking, and automatic failover across upstreams it never starts or stops itself | MIT core; `enterprise/` subdirectory separately licensed |
+| OpenRouter | Hosted third-party SaaS — no self-hosting | Same routing/failover problem as LiteLLM, delivered as a managed service instead of self-hosted software | Several hundred models from dozens of providers, via an OpenRouter account and API key | Price- and reliability-weighted automatic provider selection; bills by passing through each upstream's per-token rate plus a fee | Proprietary hosted service |
+
+[Source](https://github.com/mostlygeek/llama-swap) [Source](https://github.com/BerriAI/litellm) [Source](https://openrouter.ai/docs/guides/routing/provider-selection)
+
+The sharpest line in the table isn't self-hosted-vs-hosted, it's who owns process lifecycle: llama-swap is the only one of the three that ever launches or kills a backend, making it complementary to (rather than competing with) LiteLLM and OpenRouter — a workstation can run llama-swap underneath to manage what's resident in VRAM while LiteLLM or OpenRouter sits in front of it as the client-facing endpoint, exactly as the prose above describes for a mixed Ollama/vLLM setup.
 
 ---
 
