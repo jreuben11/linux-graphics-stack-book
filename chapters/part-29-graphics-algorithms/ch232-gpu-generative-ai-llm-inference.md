@@ -320,6 +320,38 @@ The base and refiner share the VAE decoder. VRAM requirement for sequential infe
 
 ControlNet [Source: Zhang et al., "Adding Conditional Control to Text-to-Image Diffusion Models", ICCV 2023, https://arxiv.org/abs/2302.05543] adds a parallel encoder path to the UNet. The control signal (edge map, depth map, pose skeleton) passes through a learned encoder identical to the UNet encoder, with an extra zero-initialized convolution at each resolution level. The encoder outputs are added to the corresponding UNet decoder skip connections. GPU implementation runs the ControlNet encoder in parallel with the UNet encoder when GPU memory permits, or sequentially with weight sharing.
 
+### Stability AI: Model and Product Ecosystem
+
+The Stable Diffusion architecture this section describes originates with **Stability AI**
+(`stability.ai`), whose model lineup now extends well beyond the image-diffusion pipeline
+covered above. The company's current product surface spans **Stable Diffusion** (the image
+models this section's UNet/scheduler/SDXL/ControlNet coverage applies to directly),
+**Stable Video** (volumetric and 4D video generation aimed at gaming and entertainment
+production pipelines), and **Stable Audio** (version 3.0 at time of writing, trained on
+licensed audio data and shipped with DAW plugin integration for music-production workflows —
+adjacent to, but outside, this book's graphics-inference scope), alongside a set of 3D
+generation tools.
+[Source: Stability AI](https://stability.ai)
+
+Deployment options mirror the self-hosted-vs-hosted split this chapter's ROCm/Vulkan/Ollama
+coverage (§10–§12) already treats for LLM inference: a hosted **Platform API**, a
+**Self-Hosted License** for running Stability's models on a team's own GPU infrastructure (the
+deployment mode this chapter's Linux inference-stack coverage is directly applicable to), a
+**Brand Studio** product for enterprise creative workflows, and cloud-marketplace availability
+through AWS and Azure partnerships. For a Linux GPU inference engineer, the self-hosted path is
+the relevant one: Stable Diffusion checkpoints (including SDXL) are ordinary UNet+VAE+text-
+encoder weight sets that run through the same INT8 PTQ, xformers attention, and
+`torch.compile`-on-ROCm optimization paths §9 covers for diffusion models generally, since
+Stability's own models are the reference architecture that section's optimizations were
+originally developed against.
+[Source: Stability AI](https://stability.ai)
+
+*Note: needs verification — this subsection reflects Stability AI's product lineup as presented
+on the company's own site at time of research; the company has changed its product portfolio
+and licensing terms significantly over its history, and specific version numbers (e.g. "Stable
+Audio 3.0") and licensing terms should be rechecked against current Stability AI documentation
+before being treated as durable facts.*
+
 ---
 
 ## 8. Rendering-Pipeline Interception as a Training-Data and Conditioning Channel
