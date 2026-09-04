@@ -176,6 +176,7 @@ This chapter examines the full software path from a **GGUF** file on disk to gen
   - why **kagent** is an agent-orchestration layer, not an inference engine — it never hosts model weights itself
   - its `Agent`, `ModelConfig`, and `ToolServer` custom resources, and how `ModelConfig` points at an already-running Ollama/vLLM/SGLang endpoint
   - Helm-based cluster installation
+  - full CRD YAML examples for `ModelConfig`, `Agent`, `RemoteMCPServer`, and the local-deployment `MCPServer` counterpart
 - **Section 20 — Running Hugging Face Models Locally via the CLI**
   - the **hf** CLI (renamed from `huggingface-cli`) and its `hf <resource> <action>` command grammar
   - `hf download` with `--include`/`--exclude` glob filtering for pulling a single GGUF quantisation out of a multi-file repo
@@ -215,7 +216,7 @@ This chapter examines the full software path from a **GGUF** file on disk to gen
   - cluster-scale prefill/decode disaggregation and prefix-cache-aware request routing, contrasted with §14's single-process connectors
   - **Ray Serve** and **KubeRay** as a general-purpose, Ray-based alternative path to distributed vLLM serving on Kubernetes, with **Anyscale** as its managed offering
   - a technical-capability comparison of llm-d, Ray Serve/KubeRay, **NVIDIA Dynamo**, **KServe**, **AIBrix**, **llmaz**, **KubeAI**, and **Kaito** by governance, Kubernetes integration mechanism, disaggregation approach, and autoscaling
-  - full CRD YAML examples and field-level explanations for `InferencePool`/`HTTPRoute` (GAIE), `LLMInferenceService` (KServe), `PodAutoscaler` (AIBrix), `OpenModel`/`Playground` (llmaz), `Model` (KubeAI), and `Workspace` (Kaito)
+  - full CRD YAML examples and field-level explanations for `InferencePool`/`HTTPRoute` (GAIE), `LLMInferenceService` (KServe), `PodAutoscaler` (AIBrix), `OpenModel`/`Playground` (llmaz), `Model` (KubeAI), `Workspace` (Kaito), and `RayService` (KubeRay)
 - **Section 28 — Managed Inference Platforms: AWS Bedrock and Bedrock AgentCore**
   - Bedrock's fully managed FM API, its Trainium2/Inferentia2 Neuron-SDK compute substrate, and On-Demand/Provisioned-Throughput/Batch billing
   - Guardrails' content/PII filters and contextual grounding checks, and Knowledge Bases' managed RAG pipeline
@@ -1564,6 +1565,96 @@ kagent (kagent.dev, github.com/kagent-dev/kagent) is worth a brief mention here 
 
 The relevant distinction for this chapter: a kagent `Agent` resource does not host or serve a model itself. Its `ModelConfig` resource points at an *already-running* inference endpoint — kagent's documented provider list includes the major cloud APIs alongside Ollama (via an `ollama.host` field addressing an in-cluster or external Ollama server) and a generic "bring your own OpenAI-compatible model" option, which covers pointing kagent at a self-hosted vLLM or SGLang deployment from §13 even without first-class provider support (a dedicated vLLM `ModelConfig` type was, as of this research, still an open feature request). [Source](https://kagent.dev/docs/kagent/supported-providers) In other words: kagent is the orchestration layer that *calls* the serving engines this chapter covers, deployed via Helm (`helm install kagent-crds oci://ghcr.io/kagent-dev/kagent/helm/kagent-crds`, followed by the main `kagent` chart) onto a cluster that already has an inference backend running somewhere. It is Apache 2.0 licensed and under active development. [Source](https://kagent.dev/docs/kagent/introduction/installation) A reader building a Kubernetes-hosted agent system on top of a self-hosted LLM deployed per this chapter's §13–§18 would reach for kagent at the orchestration layer, one level above everything else discussed here.
 
+### kagent CRD Configuration Examples
+
+kagent's CRDs (`kagent.dev/v1alpha2` for the resources below) separate *what an agent is* from *what model backs it* from *what tools it can call*, three concerns that map onto three separate custom resources rather than one monolithic spec. A `ModelConfig` points at the already-running endpoint discussed above:
+
+```yaml
+apiVersion: kagent.dev/v1alpha2
+kind: ModelConfig
+metadata:
+  name: default-model-config
+  namespace: kagent
+spec:
+  provider: OpenAI               # or Anthropic, AzureOpenAI, Ollama, Gemini, ...
+  model: gpt-4o
+  apiKeySecret: kagent-openai
+  apiKeySecretKey: OPENAI_API_KEY
+  openAI: {}                     # provider-specific block; empty struct selects defaults
+```
+
+[Source](https://kagent.dev/docs/kagent/resources/api-ref/)
+
+`provider` selects which of the mutually-exclusive provider blocks (`openAI`, `anthropic`, `azureOpenAI`, `ollama`, `gemini`, …) applies; for a self-hosted vLLM/SGLang endpoint from §13, the `OpenAI` provider with a custom `baseUrl` field is the documented workaround pending first-class provider support. An `Agent` then references the `ModelConfig` by name and declares its system prompt and tools:
+
+```yaml
+apiVersion: kagent.dev/v1alpha2
+kind: Agent
+metadata:
+  name: k8s-agent
+  namespace: kagent
+spec:
+  type: Declarative
+  declarative:
+    modelConfig: default-model-config
+    systemMessage: |
+      You are a Kubernetes operations assistant. Use the available
+      tools to inspect cluster state before proposing changes.
+    tools:
+      - type: McpServer
+        mcpServer:
+          apiGroup: kagent.dev
+          kind: RemoteMCPServer
+          name: kagent-tool-server
+          toolNames:
+            - k8s_get_resources
+            - k8s_describe_resource
+  description: "Diagnoses and explains Kubernetes cluster state."
+```
+
+[Source](https://kagent.dev/docs/kagent/resources/api-ref/)
+
+The `tools[].mcpServer` block resolves against a separate `RemoteMCPServer` resource, kagent's pointer to an *externally-running* MCP server (as opposed to one kagent deploys itself, covered next):
+
+```yaml
+apiVersion: kagent.dev/v1alpha2
+kind: RemoteMCPServer
+metadata:
+  name: kagent-tool-server
+  namespace: kagent
+spec:
+  url: https://kagent-tools.internal.svc.cluster.local:8084/mcp
+  protocol: STREAMABLE_HTTP        # or SSE
+  timeoutSeconds: 30
+  terminateOnClose: true
+  tls:
+    caCertSecretRef: kagent-tools-ca
+    caCertSecretKey: ca.crt
+```
+
+[Source](https://kagent.dev/docs/kagent/getting-started/first-mcp-tool/) [Source](https://docs.solo.io/kagent/latest/tools/remote/)
+
+An `http://` URL and a `spec.tls` block are mutually exclusive — TLS configuration only applies to an `https://` endpoint. When the MCP server should instead be deployed *by* kagent rather than merely referenced, the older `kagent.dev/v1alpha1` `MCPServer` CRD covers that local case, wrapping a container image and command directly:
+
+```yaml
+apiVersion: kagent.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: local-tool-server
+  namespace: kagent
+spec:
+  deployment:
+    image: ghcr.io/kagent-dev/tools/k8s-mcp-server:latest
+    port: 3000
+    cmd: /app/server
+    args: ["--stdio"]
+  transportType: stdio
+```
+
+[Source](https://kagent.dev/docs/kagent/getting-started/first-mcp-tool/)
+
+`RemoteMCPServer` (points at something already running, analogous to `ModelConfig` pointing at an already-running inference endpoint) and `MCPServer` (kagent deploys and manages the container itself) are the two ends of the same build-vs-integrate choice §13–§18 make for inference engines, applied one layer up at the tool-use boundary.
+
 ---
 
 ## 20. Running Hugging Face Models Locally via the CLI
@@ -2061,6 +2152,56 @@ inference:
 
 The same CRD kind, with a `tuning` block instead of `inference`, drives Kaito's fine-tuning path (QLoRA and full fine-tuning presets), and an `inference.adapters` list attaches LoRA adapters produced by an earlier tuning `Workspace` onto a base-model inference `Workspace` — the one project in this table whose CRD spans provisioning, fine-tuning, and serving in a single resource kind rather than splitting them.
 
+**KubeRay's `RayService`** is structurally different from the other six: rather than a serving-specific CRD with per-model fields, it wraps a whole Ray cluster (`rayClusterConfig`) plus a Ray Serve deployment graph expressed as an embedded YAML string (`serveConfigV2`), because Ray Serve's actual configuration surface is a Python API, not a Kubernetes-native schema — the CRD's job is to get that Python-defined application running and self-healing on a cluster, not to redeclare its config in CRD fields:
+
+```yaml
+apiVersion: ray.io/v1
+kind: RayService
+metadata:
+  name: rayservice-llm
+spec:
+  serveConfigV2: |
+    applications:
+      - name: llm-app
+        import_path: serve_llm:build_app     # Python callable, not a YAML model spec
+        route_prefix: /
+        runtime_env:
+          working_dir: "https://github.com/example/ray-llm-app/archive/main.zip"
+        deployments:
+          - name: VLLMDeployment
+            num_replicas: 2
+            ray_actor_options:
+              num_gpus: 1
+  rayClusterConfig:
+    rayVersion: "2.49.0"
+    headGroupSpec:
+      rayStartParams: {}
+      template:
+        spec:
+          containers:
+            - name: ray-head
+              image: rayproject/ray-llm:2.49.0-py311-cu124
+              resources:
+                limits: { cpu: "2", memory: "8Gi" }
+    workerGroupSpecs:
+      - groupName: gpu-worker-group
+        replicas: 2
+        minReplicas: 1
+        maxReplicas: 4
+        rayStartParams: {}
+        template:
+          spec:
+            containers:
+              - name: ray-worker
+                image: rayproject/ray-llm:2.49.0-py311-cu124
+                resources:
+                  limits: { cpu: "4", memory: "32Gi", nvidia.com/gpu: "1" }
+```
+
+[Source](https://raw.githubusercontent.com/ray-project/kuberay/v1.7.0/ray-operator/config/samples/ray-service.sample.yaml)
+
+The `import_path` in `serveConfigV2` is the key structural difference from every other CRD in this section: it names a Python module-level callable that the Ray Serve runtime imports and executes to build the deployment graph, rather than the CRD itself declaring model source, engine, and routing as typed fields. For an LLM specifically, that callable is typically `ray.serve.llm.build_openai_app()` fed an `LLMConfig` (model source, `deployment_config.autoscaling_config`, `engine_kwargs` passed straight through to vLLM) from §27's earlier Ray Serve discussion — the sample above substitutes a placeholder `serve_llm:build_app` in place of reproducing that Python config inline, since the RayService CRD's contract stops at "run this importable app," not "here is the LLM's configuration." `workerGroupSpecs[].minReplicas`/`maxReplicas` is KubeRay's own autoscaler, operating at the Ray-cluster-node level rather than the request-routing level AIBrix's `PodAutoscaler` or GAIE's EPP operate at — a third distinct autoscaling axis alongside the two AIBrix strategies covered above. [Source](https://docs.ray.io/en/latest/serve/llm/index.html)
+
 ---
 
 ## 28. Managed Inference Platforms: AWS Bedrock and Bedrock AgentCore
@@ -2342,6 +2483,9 @@ This chapter draws on and extends topics covered across the book:
 - [kagent Architecture Concepts](https://kagent.dev/docs/kagent/concepts/architecture)
 - [kagent Supported Providers](https://kagent.dev/docs/kagent/supported-providers)
 - [kagent Installation Guide](https://kagent.dev/docs/kagent/introduction/installation)
+- [kagent CRD API Reference](https://kagent.dev/docs/kagent/resources/api-ref/)
+- [kagent: Your First MCP Tool](https://kagent.dev/docs/kagent/getting-started/first-mcp-tool/)
+- [kagent Remote MCP Servers (docs.solo.io)](https://docs.solo.io/kagent/latest/tools/remote/)
 - [Hugging Face: Introducing the hf CLI](https://www.huggingface.co/blog/hf-cli)
 - [huggingface_hub Migration Guide](https://huggingface.co/docs/huggingface_hub/en/concepts/migration)
 - [huggingface_hub Download Guide](https://raw.githubusercontent.com/huggingface/huggingface_hub/main/docs/source/en/guides/download.md)
@@ -2397,6 +2541,8 @@ This chapter draws on and extends topics covered across the book:
 - [Kubernetes SIG Gateway API Inference Extension GitHub repository](https://github.com/kubernetes-sigs/gateway-api-inference-extension)
 - [KubeRay GitHub repository](https://github.com/ray-project/kuberay)
 - [Ray on Kubernetes: Configuring Autoscaling](https://docs.ray.io/en/latest/cluster/kubernetes/user-guides/configuring-autoscaling.html)
+- [KubeRay RayService Sample YAML](https://raw.githubusercontent.com/ray-project/kuberay/v1.7.0/ray-operator/config/samples/ray-service.sample.yaml)
+- [Ray Serve LLM Docs](https://docs.ray.io/en/latest/serve/llm/index.html)
 - [NVIDIA Dynamo: Kubernetes Autoscaling (Planner)](https://docs.nvidia.com/dynamo/latest/kubernetes/autoscaling.html)
 - [CNCF: KServe Becomes a CNCF Incubating Project](https://www.cncf.io/blog/2025/11/11/kserve-becomes-a-cncf-incubating-project/)
 - [KServe: Cloud Native AI Inference with KServe and llm-d](https://kserve.github.io/website/blog/cloud-native-ai-inference-kserve-llm-d)
