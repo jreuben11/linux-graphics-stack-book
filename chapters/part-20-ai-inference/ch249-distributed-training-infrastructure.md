@@ -29,6 +29,8 @@ topology and the parallelism strategies built on top of NCCL's primitives.
    - [3.3 Pipeline Parallelism: Inter-Layer Sharding and the Bubble](#33-pipeline-parallelism-inter-layer-sharding-and-the-bubble)
    - [3.4 3D and Hybrid Parallelism: DeepSpeed ZeRO and Megatron-LM](#34-3d-and-hybrid-parallelism-deepspeed-zero-and-megatron-lm)
    - [3.5 JAX's Alternative: GSPMD and shard_map](#35-jaxs-alternative-gspmd-and-shard_map)
+   - [3.6 Expert Parallelism: Megatron Core's Parallel Folding for MoE](#36-expert-parallelism-megatron-cores-parallel-folding-for-moe)
+   - [3.7 TorchTitan: A PyTorch-Native Training Platform](#37-torchtitan-a-pytorch-native-training-platform)
 4. [GPU-Initiated Communication: NVSHMEM and NCCL Extensions](#4-gpu-initiated-communication-nvshmem-and-nccl-extensions)
    - [4.1 NVSHMEM: One-Sided Communication for Data-Dependent Communication Patterns](#41-nvshmem-one-sided-communication-for-data-dependent-communication-patterns)
    - [4.2 nccl-extensions: nccl_ep and nccl_m2n](#42-nccl-extensions-nccl_ep-and-nccl_m2n)
@@ -43,6 +45,8 @@ topology and the parallelism strategies built on top of NCCL's primitives.
    - [6.3 Elastic and Fault-Tolerant Restart](#63-elastic-and-fault-tolerant-restart)
    - [6.4 Checkpointing at Scale](#64-checkpointing-at-scale)
    - [6.5 Experiment Tracking and Data Versioning: Weights & Biases and DVC](#65-experiment-tracking-and-data-versioning-weights--biases-and-dvc)
+   - [6.6 LLM Output Evaluation: DeepEval](#66-llm-output-evaluation-deepeval)
+   - [6.7 GPU Health Diagnostics and Management: DCGM, Xid Errors, and Fabric Manager](#67-gpu-health-diagnostics-and-management-dcgm-xid-errors-and-fabric-manager)
 7. [Integrations](#7-integrations)
 8. [Roadmap](#8-roadmap)
 
@@ -312,6 +316,23 @@ capability. *Note: needs verification — absence of a public CollNet/SHARP plug
 based on not finding one, not on a vendor statement that none exists; worth rechecking against
 current ROCm and Mellanox/NVIDIA-switch-ecosystem documentation before treating this as a
 permanent gap.*
+
+NVIDIA's own switch-side SHARP product documentation (the "SHARP Update Manager" / `sharpum`
+docs, currently at revision 3.8.0 against Quantum-2-generation firmware) gives the multi-tenant
+capacity numbers behind the "limited number of concurrent aggregation trees" constraint noted
+above: a Quantum-2 (NDR, QM9700-series) switch supports up to **1023 aggregation trees per
+subnet — 511 low-latency (LL) trees and 511 streaming-aggregation trees** — with multiple
+streaming-aggregation operations able to run concurrently on a single switch ASIC. The LL/
+streaming split matters operationally: LL trees are the small-message, latency-sensitive path
+§2.1 already covers as the tree algorithm's target case, while streaming trees are built for
+the sustained, high-volume aggregation of ML gradient reduction, where SHARP incrementally
+aggregates arriving partial sums rather than waiting for a complete message before reducing.
+Which tree class a job draws from — and how many of the subnet's 1023 total trees are free — is
+managed by the **SHARP Aggregation Manager** referenced above, which is also the daemon a
+cluster operator queries and configures via `sharp_cmd`/`sharp_daemon` when provisioning trees
+for a multi-tenant subnet shared across concurrent training jobs.
+[Source: NVIDIA, "Scalable Hierarchical Aggregation and Reduction Protocol (SHARP), Rev 3.8.0"](https://docs.nvidia.com/networking/display/nvidia-scalable-hierarchical-aggregation-and-reduction-protocol-sharp-rev-3-8-0.0.pdf)
+[Source: NVIDIA Quantum-2 QM9700 Series datasheet](https://www.nvidia.com/en-us/networking/quantum2/)
 
 ## 3. Parallelism Strategies
 
@@ -609,6 +630,126 @@ graph TD
         Replica1["Replica 1 -- mirrors Replica 0 on a different set of nodes"]
     end
 ```
+
+### 3.6 Expert Parallelism: Megatron Core's Parallel Folding for MoE
+
+§3.4's 3D parallelism (data/tensor/pipeline) and §3.1–§3.5's taxonomy generally assume a dense
+model — every token exercises every parameter. Mixture-of-Experts (MoE) models break that
+assumption: a router selects a small subset of "expert" FFN blocks per token, so most of the
+model's parameters sit idle for any given token, and training at scale needs a fifth
+parallelism axis — **expert parallelism (EP)** — that places different experts on different
+GPUs and routes tokens to wherever their selected expert lives, on top of whatever data/tensor/
+pipeline configuration §3.1–§3.4 already established for the model's non-MoE (attention/
+LayerNorm) layers. §4.2's `nccl_ep` is the *communication mechanism* for the token dispatch/
+combine this requires; this section covers the *parallelism strategy and system-engineering*
+layer above it, following NVIDIA's own treatment in Megatron Core.
+[Source: NVIDIA, "Scalable Training of Mixture-of-Experts Models with Megatron Core"](https://arxiv.org/abs/2603.07685)
+
+Megatron Core's central architectural move is **Parallel Folding**: rather than forcing
+attention layers and MoE layers to share one parallelism configuration, Parallel Folding
+decouples the two, letting attention layers run under high tensor parallelism (where §3.2's
+per-layer AllReduce cost is justified by attention's relatively small parameter count) while
+MoE layers run primarily under expert parallelism instead — since an MoE FFN's parameters
+dwarf attention's, but each token only touches a handful of experts, EP's all-to-all dispatch
+traffic scales with *token count* rather than *parameter count*, unlike TP's AllReduce, which
+scales with parameter count regardless of how sparse the computation is. The paper frames the
+resulting design space as breaking three interdependent constraints it calls the **"three
+walls"**:
+
+- **Memory wall** — fine-grained activation recomputation (recomputing only the MoE FFN's
+  activations rather than a whole transformer block), precision-aware optimizer state, and
+  CPU/NVMe offloading strategies, all aimed at the same per-GPU parameter/gradient/optimizer-
+  state memory pressure §3.4's ZeRO stages address for dense models, but applied to a
+  model whose *total* parameter count (summed across all experts) can be an order of magnitude
+  larger than its *active* parameter count per token.
+- **Communication wall** — the EP all-to-all's cost is dominated by dispatcher efficiency at
+  the bytes-moved and network-utilization level; Megatron Core integrates **DeepEP** (DeepSeek's
+  open-source MoE dispatch/combine kernels, built on NVSHMEM) and a comparable **HybridEP** path
+  as pluggable dispatchers beneath its EP layer — a different implementation from §4.2's
+  `nccl_ep`, though solving the identical dispatch/combine problem; a training stack can choose
+  between them based on cluster topology and NCCL/NVSHMEM version constraints.
+- **Compute-efficiency wall** — routing sends a variable, load-imbalanced number of tokens to
+  each expert, which turns a dense model's uniform, large-batch GEMMs into many small,
+  irregularly-shaped ones per expert; Megatron Core addresses this with **grouped GEMM** kernels
+  (batching the per-expert matmuls into a single kernel launch rather than one launch per
+  expert), permutation-fusion (fusing the token-to-expert gather/scatter into the surrounding
+  kernels rather than materializing it as a separate memory-bound pass), and CUDA Graph capture
+  of the resulting kernel sequence to amortize the launch-overhead cost that many small,
+  irregular kernels would otherwise incur.
+
+```mermaid
+graph TD
+    subgraph "Dense model (Section 3.1-3.5): one parallelism config for the whole model"
+        D1["Attention + FFN, same TP/PP/DP mesh throughout"]
+    end
+    subgraph "MoE with Parallel Folding (Section 3.6): decoupled configs per layer type"
+        M1["Attention layers -- high TP\n(small params, Section 3.2's per-layer AllReduce)"]
+        M2["Router: selects top-k experts per token"]
+        M3["MoE FFN layers -- Expert Parallelism\n(large total params, sparse per-token compute)"]
+        M1 --> M2 --> M3["Dispatch via DeepEP / HybridEP / nccl_ep (Section 4.2)"]
+    end
+```
+
+Reduced-precision training compounds all three walls at once: comprehensive FP8 (Hopper+) and
+FP4 (Blackwell+) support with **selective precision** — applying the lowest safe precision per
+tensor rather than uniformly across the model — cuts activation memory (memory wall) and
+all-to-all traffic volume (communication wall) simultaneously, while grouped-GEMM kernels
+targeting the same low-precision formats improve the third. The paper's framing is that these
+three walls are interdependent rather than separable engineering problems — a fix that reduces
+communication volume but increases activation memory (or vice versa) is not a net win, so
+Megatron Core's MoE stack optimizes them jointly rather than one at a time.
+[Source: NVIDIA, "Scalable Training of Mixture-of-Experts Models with Megatron Core"](https://arxiv.org/abs/2603.07685)
+*Note: needs verification — this section summarizes the paper's own stated architecture and
+results; independent reproduction of its throughput/memory claims was not performed for this
+chapter.*
+
+### 3.7 TorchTitan: A PyTorch-Native Training Platform
+
+Where §3.4's Megatron-LM and DeepSpeed are separate codebases layered on top of PyTorch — with
+their own custom CUDA kernels, model-definition conventions, and parallelism-composition
+code — **TorchTitan** (`github.com/pytorch/torchtitan`, PyTorch team, BSD license) takes the
+opposite approach: a small, "PyTorch-native platform for rapid experimentation and large-scale
+training," built entirely on PyTorch's own distributed primitives (**DTensor**, **FSDP2**,
+`torch.compile`) rather than reimplementing sharding and communication as a separate framework
+layer. Its stated design goals are ease of understanding/extension, minimal code changes when
+composing multiple parallelism dimensions, and a codebase built from small, swappable, reusable
+components rather than a monolithic training loop — a direct contrast to Megatron-LM's
+dedicated model-parallel kernel library.
+[Source: PyTorch, "torchtitan" GitHub repository](https://github.com/pytorch/torchtitan)
+
+TorchTitan composes the same parallelism dimensions §3.1–§3.6 already cover — data parallelism
+via **FSDP2** (per-parameter sharding, the successor to the FSDP algorithm §3.4 traces to
+ZeRO-3) and **HSDP**, tensor parallelism (including an async-TP variant that overlaps TP
+communication with compute), pipeline parallelism (with zero-bubble scheduling, addressing the
+same bubble-overhead problem §3.3 introduces), and **context parallelism** for long-sequence
+training (sharding the sequence dimension across GPUs to reach context lengths up to roughly 1M
+tokens, a dimension outside §3.1–§3.6's model-parallel taxonomy since it shards activations
+along the sequence axis rather than the model's parameters or expert set) — all as composable,
+independently togglable dimensions applied to a given model definition via `parallelize_module`-
+style functions operating on PyTorch's `DTensor`, rather than requiring the model to be
+rewritten against a parallelism-aware model-definition API the way Megatron-LM's own transformer
+implementation is. It also supports MoE models directly (with MXFP8 training for both dense and
+MoE models on Blackwell-generation GPUs), meta-device model initialization (materializing model
+structure without allocating parameter storage until sharding is applied, avoiding an
+out-of-memory instantiation step for models too large for a single GPU), `torch.compile`
+integration, Float8/MXFP8 quantized training, and PyTorch Distributed Checkpoint (DCP) for
+sharding-topology-agnostic checkpointing — the same reshard-on-load concern §6.4 covers for
+checkpointing generally.
+[Source: PyTorch, "torchtitan" GitHub repository](https://github.com/pytorch/torchtitan)
+
+TorchTitan is explicitly a research/reference platform rather than a drop-in replacement for
+Megatron-LM's production-hardened kernel library — it has been used to train Llama 3, Qwen,
+DeepSeek, and GPT-OSS-family models at verified scales up to 512 GPUs, which is meaningful but
+substantially smaller than the multi-thousand-GPU scales Megatron-LM and Megatron Core (§3.4,
+§3.6) are routinely run at in production. The practical choice between the two is less "which
+is more capable" than "which trade-off a team wants": Megatron Core's custom kernels and years
+of production tuning at the largest scales, versus TorchTitan's smaller codebase built entirely
+from upstream PyTorch primitives, which is easier to read, extend, and keep in sync with new
+PyTorch distributed features as they land.
+*Note: needs verification — TorchTitan's own documentation does not provide a direct feature-
+for-feature comparison against Megatron-LM/DeepSpeed; the contrast above is this chapter's own
+synthesis from each project's stated design goals and verified scale, not a claim either
+project makes about the other.*
 
 ## 4. GPU-Initiated Communication: NVSHMEM and NCCL Extensions
 
@@ -1185,6 +1326,110 @@ lineage from a specific dataset and code commit to a specific metric, while W&B'
 dashboards, cross-run comparison views, and Sweeps hyperparameter-search orchestration are
 harder to replicate with DVC's file-and-git-native model — a training pipeline can call DVCLive
 for the reproducibility record and `wandb.log()` for the dashboard in the same run.
+
+### 6.6 LLM Output Evaluation: DeepEval
+
+Everything through §6.5 addresses *training-time* observability — loss curves, gradient norms,
+data/model versioning. None of it answers the question that matters once a model checkpoint
+exists: is its output actually good? **DeepEval** (`deepeval.com`, open source) is an evaluation
+framework for exactly that gap, scoring single-turn, multi-turn (conversational), and
+agent-trajectory LLM outputs against a battery of 0–1 scored metrics, most of which are
+"LLM-as-a-Judge" — using a separate LLM call to grade the model-under-test's output against
+stated criteria, rather than relying only on exact-match or embedding-similarity metrics that
+predate the LLM-as-judge approach.
+[Source: DeepEval documentation](https://deepeval.com)
+
+DeepEval integrates directly into pytest's discovery and execution model rather than requiring
+a separate evaluation harness:
+
+```python
+from deepeval import assert_test
+from deepeval.test_case import LLMTestCase, SingleTurnParams
+from deepeval.metrics import GEval
+
+def test_correctness():
+    correctness_metric = GEval(
+        name="Correctness",
+        criteria="Determine if the 'actual output' is correct based on the 'expected output'.",
+        evaluation_params=[SingleTurnParams.ACTUAL_OUTPUT, SingleTurnParams.EXPECTED_OUTPUT],
+        threshold=0.5
+    )
+    test_case = LLMTestCase(
+        input="...", actual_output="...", expected_output="..."
+    )
+    assert_test(test_case, [correctness_metric])
+```
+
+Run via `deepeval test run test_example.py`; a failing threshold fails the pytest run the same
+way an assertion failure would, which is what makes it usable as a CI gate on a training or
+fine-tuning pipeline rather than only as an offline research tool. Beyond `GEval` (a
+general-purpose custom-criteria judge), DeepEval ships `ConversationalGEval` for multi-turn
+dialogue and a `TaskCompletionMetric` for agent-trajectory evaluation — scoring whether an
+agentic rollout (the kind §4.2's `nccl_m2n` weight sync feeds into an RL trainer to produce)
+actually accomplished its stated task, not just whether any individual response looked
+reasonable. It also has framework integrations for LangChain, LangGraph, and CrewAI, and a
+companion hosted platform (Confident AI) for tracking evaluation-metric regressions across model
+versions over time — the evaluation-side counterpart to §6.5's W&B/DVC experiment tracking.
+[Source: DeepEval documentation](https://deepeval.com)
+
+In a distributed training pipeline, DeepEval most naturally sits as a post-training or
+periodic-checkpoint gate: after a training run produces a checkpoint (§6.4), an evaluation job
+runs a fixed test suite against it and reports scores back into the same experiment-tracking
+system §6.5 already logs loss curves to, so a checkpoint's eval-quality trend is visible
+alongside its training-loss trend rather than in a separate, disconnected tool.
+*Note: needs verification — DeepEval's own docs do not describe a specific distributed-training-
+pipeline integration pattern; the checkpoint-gate framing above is this chapter's own synthesis,
+not a claim DeepEval's documentation makes.*
+
+### 6.7 GPU Health Diagnostics and Management: DCGM, Xid Errors, and Fabric Manager
+
+A multi-thousand-GPU training run (the scale §3.1–§3.7 and §6.1–§6.6 are all ultimately in
+service of) fails routinely not because of a software bug but because a single GPU, NVLink, or
+switch degrades mid-run — and at that scale, the operational question shifts from "did training
+converge" to "which of these thousands of GPUs is unhealthy, and can the scheduler route around
+it before it silently corrupts a checkpoint or hangs the whole job." **NVIDIA Data Center GPU
+Manager (DCGM)** is the tool this chapter has already referenced for cluster-level GPU
+monitoring — ch55's GPU Operator deployment and ch248's render-farm health-monitoring coverage
+both build on it — and this section collects its role specifically as it bears on distributed
+training reliability.
+
+DCGM exposes GPU health at several layers relevant to a training job: continuous background
+health checks (memory errors, thermal throttling, NVLink/PCIe error counters), on-demand
+diagnostics (`dcgmi diag`, run at increasing levels of intrusiveness up to a full stress test),
+and **Xid errors** — hardware/driver error codes the NVIDIA kernel driver logs to the kernel
+ring buffer (visible via `dmesg` or `nvidia-smi -q` under "Xid") whenever the GPU firmware
+detects a fault, ranging from recoverable single-bit ECC errors to unrecoverable ones that
+require a node reboot or RMA. A production training scheduler watches for specific Xid codes
+(persistent Xid 79, "GPU has fallen off the bus," or Xid 63/64 row-remapping events, are common
+triggers) and cordons or drains the affected node automatically, since letting a training job
+continue scheduling work onto a degrading GPU risks silent numerical corruption that is far more
+expensive to detect after the fact than the cost of restarting from the last checkpoint (§6.4)
+on healthy hardware.
+[Source: NVIDIA DCGM documentation](https://docs.nvidia.com/datacenter/dcgm/latest/user-guide/index.html)
+
+**NVIDIA Fabric Manager** is the companion piece for multi-GPU nodes and NVSwitch-based
+topologies (the NVLink/NVSwitch fabric §2.3's NVLS coverage and §6.2's topology-awareness
+coverage both assume): it configures and monitors the NVSwitch fabric itself — establishing
+NVLink routing tables at boot, and, on multi-node NVSwitch systems, coordinating fabric state
+across nodes so the whole NVLink domain presents a consistent address space. Fabric Manager
+failures or NVSwitch-level faults show up as GPU-to-GPU communication failures that can look
+like an application-level NCCL hang (the same failure mode §2's collective-communication
+coverage assumes correct fabric operation for) rather than an obvious hardware error, which is
+why cluster health-checking treats Fabric Manager status and DCGM's NVSwitch error counters as a
+prerequisite check before attributing a stalled collective to the training framework itself.
+[Source: NVIDIA Fabric Manager documentation](https://docs.nvidia.com/datacenter/tesla/fabric-manager-user-guide/index.html)
+
+At scale, these checks are not run manually per-node but wired into the scheduler (§6.1's Slurm/
+Kubernetes coverage) as pre-flight gates and continuous background monitors — a node failing
+`dcgmi diag` or reporting persistent Xid errors is excluded from job placement before a training
+run starts, and a node developing new Xid errors mid-run triggers the same elastic-resharding/
+checkpoint-restart path §6.4 already covers for planned or unplanned node loss, closing the loop
+between hardware health signals and the training-continuity machinery the rest of this chapter
+describes.
+*Note: needs verification — specific Xid code numbers and their conventional operational
+handling are widely documented in NVIDIA forum posts and cluster-operator runbooks, but this
+section's specific-code examples should be rechecked against current NVIDIA Xid documentation
+before being treated as exhaustive or authoritative.*
 
 ## 7. Integrations
 
