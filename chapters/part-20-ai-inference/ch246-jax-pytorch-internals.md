@@ -39,6 +39,7 @@ front end — the Python-to-IR journey — and hands off at the StableHLO/Induct
    - [4.1 TorchInductor: Loop-Level IR to Triton and C++](#41-torchinductor-loop-level-ir-to-triton-and-c)
    - [4.2 JAX's Path: jaxpr to StableHLO](#42-jaxs-path-jaxpr-to-stablehlo)
    - [4.3 PyTorch/XLA: A Third Path](#43-pytorchxla-a-third-path)
+   - [4.4 Beyond torch.compile: RL-Trained Kernel Generation](#44-beyond-torchcompile-rl-trained-kernel-generation)
 5. [Runtime and Dispatch](#5-runtime-and-dispatch)
    - [5.1 The ATen Dispatcher](#51-the-aten-dispatcher)
    - [5.2 CUDA Streams and Graphs Under Eager Execution](#52-cuda-streams-and-graphs-under-eager-execution)
@@ -577,6 +578,47 @@ graph LR
         B3 --> C2
     end
 ```
+
+### 4.4 Beyond torch.compile: RL-Trained Kernel Generation
+
+§4.1–§4.3 all describe *compilers* — deterministic transformations from a captured graph down to
+Triton, C++, or HLO, tuned by fixed heuristics and autotuning sweeps over a bounded search space
+(block sizes, tiling, fusion groups). **ByteDance's CUDA Agent** takes a different approach to
+the same last-mile problem — generating a fast kernel for a given PyTorch operator — by training
+an agent to write and iteratively optimize raw CUDA kernels through reinforcement learning
+rather than through a fixed compiler pipeline.
+[Source: ByteDance, "CUDA Agent"](https://cuda-agent.github.io)
+
+The system has three components. A **data synthesis pipeline** builds roughly 6,000 training
+tasks from real PyTorch operators, execution-tested and filtered so every task has a verified
+correct reference implementation to grade against. A **skill-augmented environment** gives the
+agent a ReAct-style write→compile→profile loop with explicit tools for profiling, compilation,
+and debugging — the agent can inspect why a candidate kernel is slow or wrong and revise it,
+rather than emitting one shot and stopping, which is the same iterate-and-verify structure a
+human CUDA performance engineer would use manually. **Stable RL training** proceeds in stages:
+single-turn supervised warmup, then Rejection Fine-Tuning on the agent's own best trajectories,
+then multi-turn agentic RL with up to 128k context and as many as 150 training turns per task —
+letting the training process reward a kernel not just for correctness but for measured speedup
+over successive revisions.
+[Source: ByteDance, "CUDA Agent"](https://cuda-agent.github.io)
+
+On KernelBench, the reported results are a 98.8% overall pass rate and a 2.11x overall speedup
+against `torch.compile` — the TorchInductor-generated Triton/C++ output §4.1 describes — with the
+largest gains concentrated on the hardest optimization tasks, where the agent's reported results
+outperform general-purpose coding models (Claude Opus, Gemini 3 Pro) prompted to write CUDA
+directly rather than trained specifically on this task.
+[Source: ByteDance, "CUDA Agent"](https://cuda-agent.github.io)
+
+The relationship to §4.1's compiler pipeline is complementary rather than substitutive: Inductor
+and Triton generate a kernel deterministically for *any* graph in bounded compile time, which is
+what makes them usable as `torch.compile`'s default, always-on backend; an RL-trained kernel
+agent instead spends a much larger, non-deterministic search budget (up to 150 iterative
+write/profile/revise turns) chasing a better kernel for one specific, high-value operator — the
+same "spend more compute for a bigger win on a narrower target" trade-off a human performance
+engineer hand-tuning a hot kernel makes, rather than a competing default compilation path.
+*Note: needs verification — the pass-rate and speedup figures above are as reported by ByteDance's
+own project page; no independent reproduction of these benchmark results was performed for this
+chapter.*
 
 ## 5. Runtime and Dispatch
 
