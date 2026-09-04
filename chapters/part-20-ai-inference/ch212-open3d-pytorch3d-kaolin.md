@@ -139,6 +139,38 @@ pcd_down.orient_normals_consistent_tangent_plane(100)
 Coarse alignment uses Fast Point Feature Histograms (FPFH) — 33-dimensional descriptors
 per point — as the basis for RANSAC correspondence matching.
 
+**How FPFH describes local geometry.** For each point *p* with an estimated normal,
+Open3D first computes a Simplified Point Feature Histogram (SPFH): for every neighbour
+*p_i* within the search radius, it builds a Darboux frame from the two points' normals
+and derives three angular features relating the normals to the line connecting the
+points, then bins these into a histogram. FPFH then re-weights each point's SPFH with
+its neighbours' SPFH values, inversely weighted by distance:
+
+```
+FPFH(p) = SPFH(p) + (1/k) · Σᵢ (1/dist(p, pᵢ)) · SPFH(pᵢ)
+```
+
+This second pass injects neighbourhood-of-neighbourhood context in O(nk) time instead of
+the O(nk²) cost of the original (non-fast) PFH, while still giving points on similar local
+surface shapes — a corner, a curvature ridge — similar 33-dimensional descriptors even
+across two independently-scanned point clouds with no shared coordinate frame.
+[Source: Rusu, Blodow, Beetz, "Fast Point Feature Histograms (FPFH) for 3D Registration", ICRA 2009](https://ieeexplore.ieee.org/document/5152473)
+
+**Why RANSAC on top of FPFH matches.** Nearest-neighbour matching in 33-dimensional
+descriptor space is noisy — repetitive or locally symmetric geometry produces plenty of
+wrong correspondences. RANSAC (Fischler & Bolles, 1981) recovers a rigid transform from a
+correspondence set contaminated with outliers by repeatedly: sampling a minimal set of
+`ransac_n` (3) correspondences, solving for the candidate transform they imply, and
+scoring how many of the *full* correspondence set become inliers under it. Open3D's
+correspondence checkers (`CorrespondenceCheckerBasedOnEdgeLength`,
+`CorrespondenceCheckerBasedOnDistance`) reject a bad 3-point sample *before* solving for
+a transform at all — a rigid transform preserves inter-point distances, so if the edge
+between two source points is far shorter or longer than the corresponding target edge,
+the sample can be discarded immediately. `RANSACConvergenceCriteria(100000, 0.999)` stops
+early once the running probability of already having drawn an all-inlier 3-point sample
+reaches 99.9%, rather than always running the full iteration cap.
+[Source: Fischler & Bolles, "Random Sample Consensus", Communications of the ACM, 1981](https://dl.acm.org/doi/10.1145/358669.358692)
+
 ```python
 voxel_size = 0.05
 radius_feature = voxel_size * 5   # feature neighbourhood radius
@@ -185,7 +217,27 @@ result_fgr = o3d.pipelines.registration.registration_fgr_based_on_feature_matchi
 
 ### 1.4 ICP Fine Registration
 
-Point-to-plane ICP (requires normals on the target) refines the coarse RANSAC result:
+Point-to-plane ICP (requires normals on the target) refines the coarse RANSAC result.
+Where RANSAC has no notion of "roughly correct already," ICP is the reverse: it is a
+local optimiser that requires the RANSAC (or FGR) output as its `init` transform, and
+will converge to whatever local minimum is nearest that starting point — a poor initial
+guess can converge ICP to a wrong but self-consistent alignment. Each iteration
+alternates a correspondence step (nearest target neighbour for every transformed source
+point, within `max_correspondence_distance`) and an optimisation step that minimises one
+of two objectives over that correspondence set:
+
+```
+point-to-point:  E(T) = Σ ‖p − Tq‖²
+point-to-plane:  E(T) = Σ ((p − Tq) · n_p)²
+```
+
+Point-to-point has a closed-form SVD solution and penalises raw Euclidean distance.
+Point-to-plane penalises only the displacement component along the *target's* surface
+normal `n_p`, letting points slide freely along the locally tangent surface — this
+converges in markedly fewer iterations on smooth surfaces, at the cost of requiring
+normals on the target (already computed during preprocessing for FPFH, so no extra work
+in the standard pipeline).
+[Source: Besl & McKay, "A Method for Registration of 3-D Shapes", IEEE PAMI, 1992](https://ieeexplore.ieee.org/document/121791)
 
 ```python
 # Legacy API — CPU
@@ -229,7 +281,32 @@ reg_ms = treg.multi_scale_icp(
 ### 1.5 3D Reconstruction: TSDF Integration
 
 The `ScalableTSDFVolume` (Legacy API) integrates a sequence of RGB-D frames into a
-TSDF map stored in GPU-friendly hash blocks:
+TSDF map stored in GPU-friendly hash blocks.
+
+**What a TSDF stores.** Each voxel holds a signed distance to the nearest surface
+(negative = inside the scanned object, positive = outside, zero = on the surface) plus
+an accumulated weight, and optionally colour. The distance is *truncated* —
+`sdf_trunc` bounds how far from the surface a value is stored meaningfully — because
+depth-sensor noise makes far-field distance estimates unreliable anyway, and truncation
+keeps the representation local and cheap. `integrate()` projects each voxel near the
+camera frustum into the depth image using the frame's known pose (`extrinsic`), compares
+the voxel's distance-along-ray to the measured depth, and folds the result into a running
+weighted average:
+
+```
+sdf_new = (w_old · sdf_old + w_new · sdf_sample) / (w_old + w_new)
+w_new   = w_old + w_sample
+```
+
+This running average is what makes TSDF fusion robust to per-frame depth noise — errors
+average out across many observing frames rather than accumulating, unlike naively
+merging raw point clouds from each frame. `ScalableTSDFVolume`'s hierarchical hashing
+allocates memory only near voxels that have actually been observed, rather than a dense
+grid over all of space, which is what makes room-scale (rather than tabletop-scale)
+scanning tractable. `extract_triangle_mesh()` runs Marching Cubes over the SDF's
+zero-crossing to produce the final explicit mesh.
+[Source: Curless & Levoy, "A Volumetric Method for Building Complex Models from Range Images", SIGGRAPH 1996](https://dl.acm.org/doi/10.1145/237170.237269);
+[Newcombe et al., "KinectFusion", ISMAR 2011](https://ieeexplore.ieee.org/document/6162880)
 
 ```python
 volume = o3d.pipelines.integration.ScalableTSDFVolume(
@@ -288,8 +365,36 @@ mesh = vbg.extract_triangle_mesh(weight_threshold=3.0)
 
 ### 1.6 Surface Reconstruction: Poisson
 
-Poisson reconstruction fits a watertight mesh to an oriented point cloud. It requires
-normals pre-computed and consistently oriented (see §1.2):
+Poisson reconstruction fits a watertight mesh to an oriented point cloud. Unlike TSDF
+fusion, it needs no per-frame poses or depth stream — only one static oriented point
+cloud, typically the output of merging several ICP-registered scans — which makes it the
+complementary "final step" option to §1.5 when live per-frame RGB-D data is unavailable.
+It requires normals pre-computed and consistently oriented (see §1.2).
+
+**The Poisson-equation reformulation.** Kazhdan, Bolitho & Hoppe (SGP 2006) treat the
+unknown solid as an indicator function χ (1 inside, 0 outside), whose boundary is the
+surface. Each input point's *normal* is treated as a noisy sample of ∇χ at that location
+— which is exactly why consistently oriented normals are a hard prerequisite: without
+them there is no "inside vs. outside" signal to reconstruct from at all. Rather than
+integrating that noisy gradient field directly, the method applies the divergence
+operator and solves the Poisson equation
+
+```
+∇²χ = ∇·V
+```
+
+for χ, where **V** is the vector field built from the input normals — turning scattered
+noisy-gradient fitting into a standard, well-posed PDE solve. This is computed over an
+adaptive octree (fine subdivision near the surface, coarse away from it) rather than a
+uniform grid, which is what makes high-resolution solves tractable; `depth` sets the
+octree's maximum depth and hence the effective mesh resolution. Because the solve is
+global, it happily extrapolates a smooth surface into regions with no input points at
+all — usually desirable for watertightness, but it means the output can contain
+fabricated geometry in data-poor regions. The **density** return value is exactly the
+local per-vertex supporting-sample count from the octree solve, which is what the
+quantile-based filter below is pruning.
+[Source: Kazhdan, Bolitho, Hoppe, "Poisson Surface Reconstruction", SGP 2006](https://hhoppe.com/poissonrecon.pdf);
+[Kazhdan & Hoppe, "Screened Poisson Surface Reconstruction", ACM TOG 2013](https://dl.acm.org/doi/10.1145/2487228.2487237)
 
 ```python
 import numpy as np
