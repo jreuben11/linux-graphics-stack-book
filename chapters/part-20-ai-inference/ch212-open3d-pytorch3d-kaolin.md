@@ -7,7 +7,7 @@ differentiable 3D geometry pipelines.
 
 This chapter covers three complementary Python libraries that sit above the CUDA/PyTorch
 layer and below application-level 3D ML systems: **Open3D** (3D data processing, ICP
-registration, reconstruction, and ML inference on point clouds); **PyTorch3D** (batched
+[Iterative Closest Point] registration, reconstruction, and ML inference on point clouds); **PyTorch3D** (batched
 3D data structures, differentiable rasterization, and the Implicitron NeRF framework);
 and **Kaolin** (NVIDIA's 3D deep learning library — Structured Point Cloud octrees, USD I/O,
 PBR rendering, Simplicits physics simulation, and Gaussian Splatting support). Chapter 115 covers the NeRFStudio and 3D
@@ -21,23 +21,25 @@ covers the foundational data structures and operations beneath those training lo
 
 1. [Open3D: 3D Data Processing and Reconstruction](#1-open3d-3d-data-processing-and-reconstruction)
    - [1.1 Architecture: Tensor API vs Legacy API](#11-architecture-tensor-api-vs-legacy-api)
-   - [1.2 Point Cloud Processing](#12-point-cloud-processing)
-   - [1.3 Global Registration: FPFH and RANSAC](#13-global-registration-fpfh-and-ransac)
-   - [1.4 ICP Fine Registration](#14-icp-fine-registration)
-   - [1.5 3D Reconstruction: TSDF Integration](#15-3d-reconstruction-tsdf-integration)
-   - [1.6 Surface Reconstruction: Poisson](#16-surface-reconstruction-poisson)
-   - [1.7 Open3D-ML: Point Cloud Segmentation and Detection](#17-open3d-ml-point-cloud-segmentation-and-detection)
-   - [1.8 Visualization and Headless Rendering](#18-visualization-and-headless-rendering)
-   - [1.9 What is Open3D?](#19-what-is-open3d)
-   - [1.10 What is a Point Cloud?](#110-what-is-a-point-cloud)
-   - [1.11 What is ICP Registration?](#111-what-is-icp-registration)
+   - [1.2 What is Open3D?](#12-what-is-open3d)
+   - [1.3 What is a Point Cloud?](#13-what-is-a-point-cloud)
+   - [1.4 What is ICP Registration?](#14-what-is-icp-registration)
+   - [1.5 Point Cloud Processing](#15-point-cloud-processing)
+   - [1.6 Global Registration: FPFH and RANSAC](#16-global-registration-fpfh-and-ransac)
+   - [1.7 ICP Fine Registration](#17-icp-fine-registration)
+   - [1.8 RGBD Odometry: Frame-to-Frame Visual Tracking](#18-rgbd-odometry-frame-to-frame-visual-tracking)
+   - [1.9 3D Reconstruction: TSDF Integration](#19-3d-reconstruction-tsdf-integration)
+   - [1.10 Surface Reconstruction: Poisson](#110-surface-reconstruction-poisson)
+   - [1.11 Open3D-ML: Point Cloud Segmentation and Detection](#111-open3d-ml-point-cloud-segmentation-and-detection)
+   - [1.12 Visualization and Headless Rendering](#112-visualization-and-headless-rendering)
 2. [PyTorch3D: Differentiable 3D Deep Learning](#2-pytorch3d-differentiable-3d-deep-learning)
    - [2.1 Data Structures: Meshes, Pointclouds, Volumes](#21-data-structures-meshes-pointclouds-volumes)
-   - [2.2 Differentiable Mesh Rendering](#22-differentiable-mesh-rendering)
-   - [2.3 Points Rendering](#23-points-rendering)
-   - [2.4 Loss Functions](#24-loss-functions)
-   - [2.5 IO Layer](#25-io-layer)
-   - [2.6 Implicitron: Neural Radiance Fields](#26-implicitron-neural-radiance-fields)
+   - [2.2 Transforms and Cameras: Rigid Motion and Projection Models](#22-transforms-and-cameras-rigid-motion-and-projection-models)
+   - [2.3 Differentiable Mesh Rendering](#23-differentiable-mesh-rendering)
+   - [2.4 Points Rendering](#24-points-rendering)
+   - [2.5 Loss Functions](#25-loss-functions)
+   - [2.6 IO Layer](#26-io-layer)
+   - [2.7 Implicitron: Neural Radiance Fields](#27-implicitron-neural-radiance-fields)
 3. [Kaolin: NVIDIA's 3D Deep Learning Library](#3-kaolin-nvidias-3d-deep-learning-library)
    - [3.1 Module Architecture and SurfaceMesh](#31-module-architecture-and-surfacemesh)
    - [3.2 Structured Point Cloud (SPC) Octree Operations](#32-structured-point-cloud-spc-octree-operations)
@@ -49,12 +51,14 @@ covers the foundational data structures and operations beneath those training lo
    - [3.8 Physics Simulation: Simplicits](#38-physics-simulation-simplicits)
    - [3.9 Visualization: Timelapse, Dash3D, and the Omniverse Training Visualizer](#39-visualization-timelapse-dash3d-and-the-omniverse-training-visualizer)
    - [3.10 Dataset Loaders](#310-dataset-loaders)
-   - [3.11 Voxelgrid and Point Cloud Utility Operations](#311-voxelgrid-and-point-cloud-utility-operations)
+   - [3.11 Common Benchmark Datasets: ShapeNet, ScanNet, ModelNet40, and KITTI/nuScenes](#311-common-benchmark-datasets-shapenet-scannet-modelnet40-and-kittinuscenes)
+   - [3.12 Voxelgrid and Point Cloud Utility Operations](#312-voxelgrid-and-point-cloud-utility-operations)
 4. [trimesh: CPU Mesh Utility and NumPy Bridge](#4-trimesh-cpu-mesh-utility-and-numpy-bridge)
    - [4.1 Data Model and Format Support](#41-data-model-and-format-support)
-   - [4.2 Boolean Operations](#42-boolean-operations)
-   - [4.3 Ray Casting and Collision](#43-ray-casting-and-collision)
-   - [4.4 NumPy Bridge to PyTorch3D and Open3D](#44-numpy-bridge-to-pytorch3d-and-open3d)
+   - [4.2 LiDAR-Native Formats: LAS, LAZ, and E57](#42-lidar-native-formats-las-laz-and-e57)
+   - [4.3 Boolean Operations](#43-boolean-operations)
+   - [4.4 Ray Casting and Collision](#44-ray-casting-and-collision)
+   - [4.5 NumPy Bridge to PyTorch3D and Open3D](#45-numpy-bridge-to-pytorch3d-and-open3d)
 5. [Sparse 3D Convolution: MinkowskiEngine, torchsparse, and spconv](#5-sparse-3d-convolution-minkowskiengine-torchsparse-and-spconv)
    - [5.1 MinkowskiEngine](#51-minkowskiengine)
    - [5.2 torchsparse (TorchSparse++)](#52-torchsparse-torchsparse)
@@ -66,6 +70,9 @@ covers the foundational data structures and operations beneath those training lo
    - [6.3 PointNet++ Set Abstraction](#63-pointnet-set-abstraction)
    - [6.4 DGCNN](#64-dgcnn)
    - [6.5 Installation](#65-installation)
+   - [6.6 Graph Transformers: Attention over Graph Structure](#66-graph-transformers-attention-over-graph-structure)
+   - [6.7 GraphRAG: Knowledge Graphs for LLM Retrieval](#67-graphrag-knowledge-graphs-for-llm-retrieval)
+   - [6.8 Neo4j Graph Data Science: Algorithms and PyG Integration](#68-neo4j-graph-data-science-algorithms-and-pyg-integration)
 7. [Warp: Differentiable GPU Kernels and Geometry](#7-warp-differentiable-gpu-kernels-and-geometry)
    - [7.1 Kernel Model and Arrays](#71-kernel-model-and-arrays)
    - [7.2 Mesh Queries](#72-mesh-queries)
@@ -113,7 +120,44 @@ python -c "import open3d as o3d; print(o3d.core.cuda.is_available())"
 Python 3.8–3.12 are supported. NumPy ≥ 2.0 requires Open3D > 0.18.0.
 [Source: open3d.org/docs/release/getting_started.html](https://www.open3d.org/docs/release/getting_started.html)
 
-### 1.2 Point Cloud Processing
+### 1.2 What is Open3D?
+
+Open3D is an open-source library (Apache 2.0) for 3D data processing, reconstruction, and machine learning inference on point clouds and meshes. Its C++ core implements geometry algorithms, spatial data structures, and rendering pipelines; Python bindings expose a nearly identical API. The library occupies the layer between raw sensor input — depth cameras, LiDAR scanners, photogrammetry pipelines — and application-level perception and reconstruction systems. On the Linux graphics stack, Open3D targets CUDA-capable NVIDIA GPUs through its Tensor API, falling back to CPU paths when no GPU is available, and uses the Filament rendering engine for real-time visualization.
+
+Open3D's principal abstractions are the `PointCloud` (an unordered set of 3D points with optional color, normal, and label attributes), the `TriangleMesh` (indexed triangle geometry), the `VoxelGrid`, and the `Image`/`RGBDImage` pair for depth-integrated sensor data. Its pipelines implement the full photogrammetric reconstruction chain: point cloud preprocessing and downsampling, feature-based global registration, ICP fine registration, TSDF volume integration, and surface reconstruction via Poisson solving. The library maintains two parallel namespaces — the original `open3d.geometry` Legacy API (CPU-only, stable) and the newer `open3d.t.geometry` Tensor API (GPU-capable via `.cuda(device_id)`) — so that algorithms run automatically on the device of their input tensors. Open3D-ML extends the library with PyTorch and TensorFlow backends for semantic segmentation and 3D object detection trained on point cloud data.
+[Source: open3d.org/docs/release/introduction.html](https://www.open3d.org/docs/release/introduction.html)
+
+### 1.3 What is a Point Cloud?
+
+A point cloud is an unordered collection of 3D Cartesian coordinate samples, typically produced by a depth camera (structured-light or time-of-flight sensor) or a LiDAR scanner. Each point encodes at minimum an (x, y, z) position in a reference frame; practical point clouds also carry per-point color (r, g, b from an aligned RGB image), surface normals estimated from local neighborhood geometry, reflectance intensity from LiDAR return amplitude, and semantic labels assigned by a segmentation network.
+
+Unlike a triangle mesh, a point cloud carries no explicit connectivity — there are no edges or faces, only spatial proximity relationships that algorithms compute on demand through k-nearest-neighbor or radius searches implemented in structures such as KD-trees or octrees. This makes point clouds the natural output format for range sensors: they require no assumption about the surface topology of the scene. The core operations on point clouds are downsampling (voxel averaging reduces density while preserving spatial coverage), normal estimation (PCA over local neighborhoods recovers surface orientation needed for point-to-plane ICP and Poisson reconstruction), registration (alignment of two partially overlapping clouds), and segmentation (labeling each point by semantic class or object instance). On the Linux stack, point clouds arrive from depth cameras through the librealsense or OpenNI2 SDK, are exchanged in ROS 2 as `sensor_msgs/PointCloud2`, stored as PLY or PCD files, and consumed by Open3D, PyTorch3D, or Kaolin for downstream ML inference.
+
+**What an octree is, and why it matters here.** An octree is a tree data structure for
+partitioning 3D space: a root cube enclosing the whole volume is recursively split into 8
+equal sub-cubes (octants) wherever finer detail is needed — the 3D analogue of a quadtree
+in 2D or a binary interval tree in 1D. Its defining property is sparsity: only cubes that
+actually contain data get subdivided and stored, so empty space costs almost nothing
+regardless of scene extent. This matters throughout this chapter because point clouds and
+scanned scenes are overwhelmingly empty in 3D — a dense voxel grid at useful resolution
+(512³ ≈ 134M cells) is prohibitive in memory and bandwidth, while an octree gives O(log N)
+occupancy queries and keeps cost proportional to occupied surface area rather than to the
+cube of spatial resolution. This chapter uses octrees in two places: adaptively inside
+Poisson surface reconstruction (§1.9), finely subdivided near the surface and coarse away
+from it so that high-resolution solves stay tractable; and as Kaolin's GPU-resident SPC
+data structure (§3.2), packing occupied voxels in Morton order so sparse 3D convolution
+can run directly on the octree without ever materialising a dense grid.
+[Source: Samet, "The Design and Analysis of Spatial Data Structures", ch. 1](https://dl.acm.org/doi/10.5555/54176)
+
+### 1.4 What is ICP Registration?
+
+Iterative Closest Point (ICP) is the standard algorithm for fine-aligning two partially overlapping 3D point clouds given an approximate initial transformation. ICP alternates two steps until convergence: for each point in the source cloud, find its nearest neighbor in the target cloud (the correspondence step); then solve for the rigid transformation — rotation R and translation t — that minimizes the sum of squared distances between corresponding pairs (the minimization step). The loop repeats until the change in transformation between iterations falls below a convergence threshold.
+
+Two formulations dominate in practice. Point-to-point ICP minimizes the Euclidean distance between source points and their target correspondences, with a closed-form solution via singular value decomposition. Point-to-plane ICP minimizes the distance from each source point to the tangent plane at its target correspondence, requiring normals on the target; it converges in fewer iterations on smooth surfaces and is the preferred mode for depth-camera data. Robust variants weight correspondences by a Huber or Tukey function to suppress the influence of outliers from dynamic objects or sensor noise.
+
+Because ICP is a local optimizer, it requires a sufficiently accurate initial alignment to converge to the correct solution. For large-scale misalignments, a global registration step — typically FPFH feature matching with RANSAC, or Fast Global Registration — provides the coarse transformation that ICP then refines. Open3D implements both point-to-point and point-to-plane ICP in its Legacy API (`registration_icp`) and in the GPU-capable Tensor API (`t.pipelines.registration.icp`), the latter supporting multi-scale voxel scheduling to escape shallow local minima.
+
+### 1.5 Point Cloud Processing
 
 ```python
 import open3d as o3d
@@ -134,7 +178,7 @@ pcd_down.orient_normals_consistent_tangent_plane(100)
 
 [Source: open3d.org/docs/release/tutorial/geometry/pointcloud.html](https://www.open3d.org/docs/release/tutorial/geometry/pointcloud.html)
 
-### 1.3 Global Registration: FPFH and RANSAC
+### 1.6 Global Registration: FPFH and RANSAC
 
 Coarse alignment uses Fast Point Feature Histograms (FPFH) — 33-dimensional descriptors
 per point — as the basis for RANSAC correspondence matching.
@@ -143,17 +187,52 @@ per point — as the basis for RANSAC correspondence matching.
 Open3D first computes a Simplified Point Feature Histogram (SPFH): for every neighbour
 *p_i* within the search radius, it builds a Darboux frame from the two points' normals
 and derives three angular features relating the normals to the line connecting the
-points, then bins these into a histogram. FPFH then re-weights each point's SPFH with
-its neighbours' SPFH values, inversely weighted by distance:
+points, then bins these into a histogram.
+
+A *Darboux frame* here is a local orthonormal basis (**u**, **v**, **w**) anchored at
+*p* — analogous to a Frenet–Serret frame for a curve (the moving tangent/normal/binormal
+basis **T**, **N**, **B** built from a curve's position derivatives with respect to arc
+length, whose rotation rates give the curve's curvature and torsion), but built for a pair
+of oriented points instead of a point moving along a curve — constructed as:
+
+```
+u = n_p                                    (p's own normal)
+v = u × (p_i − p) / ‖p_i − p‖               (perpendicular to u and to the p→p_i line)
+w = u × v                                  (completes the right-handed frame)
+```
+
+Expressing the neighbour's normal **n**ᵢ and the connecting direction in this frame reduces
+the pair's geometric relationship to three rotation-invariant scalars — independent of the
+point cloud's global coordinate frame — which are exactly the three angular features binned
+into the SPFH histogram:
+
+```
+α = v · n_i
+φ = u · (p_i − p) / ‖p_i − p‖
+θ = atan2(w · n_i, u · n_i)
+```
+
+[Source: Rusu, "Semantic 3D Object Maps for Everyday Manipulation in Human Living
+Environments" (PhD thesis), §3.3](https://mediatum.ub.tum.de/doc/1006247/1006247.pdf)
+[Source: PCL, `pfh.h` Darboux frame computation](https://github.com/PointCloudLibrary/pcl/blob/master/features/include/pcl/features/pfh.h)
+
+FPFH then re-weights each point's SPFH with its neighbours' SPFH values, inversely
+weighted by distance:
 
 ```
 FPFH(p) = SPFH(p) + (1/k) · Σᵢ (1/dist(p, pᵢ)) · SPFH(pᵢ)
 ```
 
-This second pass injects neighbourhood-of-neighbourhood context in O(nk) time instead of
-the O(nk²) cost of the original (non-fast) PFH, while still giving points on similar local
-surface shapes — a corner, a curvature ridge — similar 33-dimensional descriptors even
-across two independently-scanned point clouds with no shared coordinate frame.
+`SPFH(p)` alone only encodes *p*'s relationship to its own *k* neighbours. But each
+neighbour *pᵢ* has its own SPFH, computed from *its* neighbours — a different, overlapping
+set of points around *pᵢ*. Summing each neighbour's SPFH into `FPFH(p)`, distance-weighted,
+therefore pulls in points up to two hops away from *p* (the neighbours of *p*'s neighbours)
+without ever explicitly searching that wider radius. This second pass injects that
+neighbourhood-of-neighbourhood context in O(nk) time instead of the O(nk²) cost a direct
+wider-radius search — or the original (non-fast) PFH — would require, while still giving
+points on similar local surface shapes — a corner, a curvature ridge — similar
+33-dimensional descriptors even across two independently-scanned point clouds with no
+shared coordinate frame.
 [Source: Rusu, Blodow, Beetz, "Fast Point Feature Histograms (FPFH) for 3D Registration", ICRA 2009](https://ieeexplore.ieee.org/document/5152473)
 
 **Why RANSAC on top of FPFH matches.** Nearest-neighbour matching in 33-dimensional
@@ -215,7 +294,7 @@ result_fgr = o3d.pipelines.registration.registration_fgr_based_on_feature_matchi
 
 [Source: open3d.org/docs/release/tutorial/pipelines/global_registration.html](https://www.open3d.org/docs/release/tutorial/pipelines/global_registration.html)
 
-### 1.4 ICP Fine Registration
+### 1.7 ICP Fine Registration
 
 Point-to-plane ICP (requires normals on the target) refines the coarse RANSAC result.
 Where RANSAC has no notion of "roughly correct already," ICP is the reverse: it is a
@@ -278,10 +357,60 @@ reg_ms = treg.multi_scale_icp(
 
 [Source: open3d.org/docs/release/tutorial/t_pipelines/t_icp_registration.html](https://www.open3d.org/docs/release/tutorial/t_pipelines/t_icp_registration.html)
 
-### 1.5 3D Reconstruction: TSDF Integration
+### 1.8 RGBD Odometry: Frame-to-Frame Visual Tracking
+
+ICP (§1.7) aligns two already-extracted point clouds; `compute_rgbd_odometry` instead
+estimates the 6-DoF rigid motion between two *RGB-D image pairs* directly, without an
+explicit point cloud extraction step, which makes it the standard way to chain
+consecutive camera frames into a pose trajectory before TSDF fusion. It returns a
+3-tuple: `success` (bool), the 4×4 motion matrix `T_target→source`, and a 6×6
+information matrix usable as a pose-graph edge covariance. Two Jacobian formulations are
+available: `RGBDOdometryJacobianFromColorTerm()` (minimises photoconsistency error,
+sensitive to lighting) and the hybrid `RGBDOdometryJacobianFromHybridTerm()` (combines
+photometric and geometric point-to-plane terms, more robust and the usual default). An
+`OdometryOption` controls a coarse-to-fine image pyramid
+(`iteration_number_per_pyramid_level`, default `[20, 10, 5]`) and depth validity bounds
+(`depth_diff_max=0.03`, `depth_min=0.0`, `depth_max=4.0`), rejecting correspondences
+whose depth values disagree by more than the truncation threshold or fall outside the
+sensor's reliable range.
+
+```python
+source_rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(color0, depth0)
+target_rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(color1, depth1)
+
+option = o3d.pipelines.odometry.OdometryOption()
+success, T_target_to_source, info = o3d.pipelines.odometry.compute_rgbd_odometry(
+    source_rgbd, target_rgbd, intrinsic,
+    np.identity(4),
+    o3d.pipelines.odometry.RGBDOdometryJacobianFromHybridTerm(),
+    option
+)
+# T_target_to_source: 4x4 numpy array — feeds directly as one edge in a pose graph,
+# or accumulates frame-to-frame into the per-frame extrinsics TSDF integration (§1.9)
+# consumes.
+```
+
+Chained across a whole sequence, per-frame odometry accumulates drift just like any
+dead-reckoning estimate; production pipelines therefore treat it as the local edge in a
+pose graph and periodically close loops with the global registration of §1.6, then run
+pose-graph optimisation before TSDF integration — the same multiway-registration pattern
+Open3D's reconstruction system tutorial uses for scene-scale RGB-D fusion.
+[Source: open3d.org/docs/release/python_api/open3d.pipelines.odometry.compute_rgbd_odometry.html](https://www.open3d.org/docs/release/python_api/open3d.pipelines.odometry.compute_rgbd_odometry.html)
+[Source: open3d.org/docs/release/tutorial/pipelines/rgbd_odometry.html](https://www.open3d.org/docs/release/tutorial/pipelines/rgbd_odometry.html)
+
+### 1.9 3D Reconstruction: TSDF Integration
 
 The `ScalableTSDFVolume` (Legacy API) integrates a sequence of RGB-D frames into a
-TSDF map stored in GPU-friendly hash blocks.
+TSDF [Truncated Signed Distance Function] map stored in GPU-friendly hash blocks.
+
+**What a signed distance function is.** A signed distance function (SDF) maps any point
+in space to the shortest distance from that point to a surface, signed by which side of
+the surface the point is on: negative inside the shape, positive outside, and exactly
+zero on the surface itself. The surface is therefore implicit — it is the SDF's
+zero level-set, `{x : SDF(x) = 0}` — rather than an explicit mesh of vertices and
+triangles, and the SDF's gradient has unit magnitude almost everywhere and points along
+the surface normal, which is why normal estimation from an SDF is cheap.
+[Source: Osher & Fedkiw, "Level Set Methods and Dynamic Implicit Surfaces", ch. 2](https://doi.org/10.1007/b98879)
 
 **What a TSDF stores.** Each voxel holds a signed distance to the nearest surface
 (negative = inside the scanned object, positive = outside, zero = on the surface) plus
@@ -363,13 +492,13 @@ mesh = vbg.extract_triangle_mesh(weight_threshold=3.0)
 
 [Source: open3d.org/docs/release/python_api/open3d.t.geometry.VoxelBlockGrid.html](https://www.open3d.org/docs/release/python_api/open3d.t.geometry.VoxelBlockGrid.html)
 
-### 1.6 Surface Reconstruction: Poisson
+### 1.10 Surface Reconstruction: Poisson
 
 Poisson reconstruction fits a watertight mesh to an oriented point cloud. Unlike TSDF
 fusion, it needs no per-frame poses or depth stream — only one static oriented point
 cloud, typically the output of merging several ICP-registered scans — which makes it the
-complementary "final step" option to §1.5 when live per-frame RGB-D data is unavailable.
-It requires normals pre-computed and consistently oriented (see §1.2).
+complementary "final step" option to §1.9 when live per-frame RGB-D data is unavailable.
+It requires normals pre-computed and consistently oriented (see §1.5).
 
 **The Poisson-equation reformulation.** Kazhdan, Bolitho & Hoppe (SGP 2006) treat the
 unknown solid as an indicator function χ (1 inside, 0 outside), whose boundary is the
@@ -413,7 +542,7 @@ mesh.remove_vertices_by_mask(vertices_to_remove)
 `depth` controls the octree resolution; depth=9 gives ~2 mm resolution for a 1 m scene.
 [Source: open3d.org/docs/release/tutorial/geometry/surface_reconstruction.html](https://www.open3d.org/docs/release/tutorial/geometry/surface_reconstruction.html)
 
-### 1.7 Open3D-ML: Point Cloud Segmentation and Detection
+### 1.11 Open3D-ML: Point Cloud Segmentation and Detection
 
 **Open3D-ML** ([github.com/isl-org/Open3D-ML](https://github.com/isl-org/Open3D-ML))
 extends Open3D with a full 3D ML pipeline — dataset loaders, model zoo, and training/
@@ -424,6 +553,36 @@ or `open3d.ml.tf` (TensorFlow; requires Docker on Linux from v0.18).
 |---|---|
 | Semantic segmentation | RandLA-Net, KPConv (KPFCNN), SparseConvUnet, PointTransformer |
 | Object detection | PointPillars, PointRCNN, PVCNN |
+
+**What the three headline architectures actually do.** RandLA-Net avoids the
+expensive farthest-point or ball-query sampling most point-based networks use to
+subsample large scenes; it downsamples with plain random point sampling — O(1) per
+point rather than O(N log N) — and compensates for the information random sampling
+would otherwise discard with a local feature aggregation module that repeatedly
+pools each point's relative position, distance, and features across its k-nearest
+neighbours before subsampling, letting it process a whole SemanticKITTI scan
+(~10⁵ points) in one forward pass instead of the small fixed-size point blocks
+earlier point-based networks needed.
+[Source: Hu et al., "RandLA-Net: Efficient Semantic Segmentation of Large-Scale Point Clouds", CVPR 2020](https://arxiv.org/abs/1911.11236)
+KPConv replaces the per-point MLP that PointNet-style networks use with an
+explicit spatial convolution: a small set of learnable *kernel points* is placed
+in a sphere around each query point (analogous to pixel offsets in a 2D conv
+kernel, but at arbitrary continuous positions rather than a fixed grid), and each
+neighbour's feature is weighted by a correlation function of its distance to every
+kernel point, so the kernel's weights are shared across the whole point cloud the
+same way a CNN's are shared across an image — giving it a genuine receptive field
+and translation-equivariance that MLP-only architectures lack.
+[Source: Thomas et al., "KPConv: Flexible and Deformable Convolution for Point Clouds", ICCV 2019](https://arxiv.org/abs/1904.08889)
+PointPillars is a detection architecture, not a segmentation one: it discretises
+a LiDAR sweep's ground plane into a 2D grid of vertical columns ("pillars"),
+encodes each pillar's points with a small PointNet into a single feature vector,
+scatters those vectors back into a pseudo-image indexed by pillar (x, y), and then
+runs an ordinary 2D CNN detection head (SSD-style anchors) over that
+pseudo-image — trading the 3D sparse convolution that competing detectors use
+(§5's MinkowskiEngine/spconv territory) for 2D convolutions that run far faster on
+the same GPU, which is why it remains a common choice for real-time autonomous-
+driving object detection despite predating more accurate voxel-based competitors.
+[Source: Lang et al., "PointPillars: Fast Encoders for Object Detection from Point Clouds", CVPR 2019](https://arxiv.org/abs/1812.05784)
 
 ```bash
 pip install open3d
@@ -468,7 +627,7 @@ labels = result["predict_labels"]
 
 [Source: github.com/isl-org/Open3D-ML](https://github.com/isl-org/Open3D-ML)
 
-### 1.8 Visualization and Headless Rendering
+### 1.12 Visualization and Headless Rendering
 
 The new high-level `draw()` API wraps Open3D's Filament-backed renderer (the same
 renderer used by Filament, the Android/desktop PBR engine — see Chapter 83):
@@ -520,27 +679,6 @@ The alternative — OSMesa software rendering — requires building Open3D from 
 `-DENABLE_HEADLESS_RENDERING=ON` and supports only the legacy `Visualizer`, not the
 Filament-based GUI.
 [Source: open3d.org/docs/release/tutorial/visualization/headless_rendering.html](https://www.open3d.org/docs/release/tutorial/visualization/headless_rendering.html)
-
-### 1.9 What is Open3D?
-
-Open3D is an open-source library (Apache 2.0) for 3D data processing, reconstruction, and machine learning inference on point clouds and meshes. Its C++ core implements geometry algorithms, spatial data structures, and rendering pipelines; Python bindings expose a nearly identical API. The library occupies the layer between raw sensor input — depth cameras, LiDAR scanners, photogrammetry pipelines — and application-level perception and reconstruction systems. On the Linux graphics stack, Open3D targets CUDA-capable NVIDIA GPUs through its Tensor API, falling back to CPU paths when no GPU is available, and uses the Filament rendering engine for real-time visualization.
-
-Open3D's principal abstractions are the `PointCloud` (an unordered set of 3D points with optional color, normal, and label attributes), the `TriangleMesh` (indexed triangle geometry), the `VoxelGrid`, and the `Image`/`RGBDImage` pair for depth-integrated sensor data. Its pipelines implement the full photogrammetric reconstruction chain: point cloud preprocessing and downsampling, feature-based global registration, ICP fine registration, TSDF volume integration, and surface reconstruction via Poisson solving. The library maintains two parallel namespaces — the original `open3d.geometry` Legacy API (CPU-only, stable) and the newer `open3d.t.geometry` Tensor API (GPU-capable via `.cuda(device_id)`) — so that algorithms run automatically on the device of their input tensors. Open3D-ML extends the library with PyTorch and TensorFlow backends for semantic segmentation and 3D object detection trained on point cloud data.
-[Source: open3d.org/docs/release/introduction.html](https://www.open3d.org/docs/release/introduction.html)
-
-### 1.10 What is a Point Cloud?
-
-A point cloud is an unordered collection of 3D Cartesian coordinate samples, typically produced by a depth camera (structured-light or time-of-flight sensor) or a LiDAR scanner. Each point encodes at minimum an (x, y, z) position in a reference frame; practical point clouds also carry per-point color (r, g, b from an aligned RGB image), surface normals estimated from local neighborhood geometry, reflectance intensity from LiDAR return amplitude, and semantic labels assigned by a segmentation network.
-
-Unlike a triangle mesh, a point cloud carries no explicit connectivity — there are no edges or faces, only spatial proximity relationships that algorithms compute on demand through k-nearest-neighbor or radius searches implemented in structures such as KD-trees or octrees. This makes point clouds the natural output format for range sensors: they require no assumption about the surface topology of the scene. The core operations on point clouds are downsampling (voxel averaging reduces density while preserving spatial coverage), normal estimation (PCA over local neighborhoods recovers surface orientation needed for point-to-plane ICP and Poisson reconstruction), registration (alignment of two partially overlapping clouds), and segmentation (labeling each point by semantic class or object instance). On the Linux stack, point clouds arrive from depth cameras through the librealsense or OpenNI2 SDK, are exchanged in ROS 2 as `sensor_msgs/PointCloud2`, stored as PLY or PCD files, and consumed by Open3D, PyTorch3D, or Kaolin for downstream ML inference.
-
-### 1.11 What is ICP Registration?
-
-Iterative Closest Point (ICP) is the standard algorithm for fine-aligning two partially overlapping 3D point clouds given an approximate initial transformation. ICP alternates two steps until convergence: for each point in the source cloud, find its nearest neighbor in the target cloud (the correspondence step); then solve for the rigid transformation — rotation R and translation t — that minimizes the sum of squared distances between corresponding pairs (the minimization step). The loop repeats until the change in transformation between iterations falls below a convergence threshold.
-
-Two formulations dominate in practice. Point-to-point ICP minimizes the Euclidean distance between source points and their target correspondences, with a closed-form solution via singular value decomposition. Point-to-plane ICP minimizes the distance from each source point to the tangent plane at its target correspondence, requiring normals on the target; it converges in fewer iterations on smooth surfaces and is the preferred mode for depth-camera data. Robust variants weight correspondences by a Huber or Tukey function to suppress the influence of outliers from dynamic objects or sensor noise.
-
-Because ICP is a local optimizer, it requires a sufficiently accurate initial alignment to converge to the correct solution. For large-scale misalignments, a global registration step — typically FPFH feature matching with RANSAC, or Fast Global Registration — provides the coarse transformation that ICP then refines. Open3D implements both point-to-point and point-to-plane ICP in its Legacy API (`registration_icp`) and in the GPU-capable Tensor API (`t.pipelines.registration.icp`), the latter supporting multi-scale voxel scheduling to escape shallow local minima.
 
 ---
 
@@ -632,7 +770,51 @@ vol = Volumes(
 vol.world_to_local_coords(pts_world)   # normalize to [-1, 1]³ for grid_sample
 ```
 
-### 2.2 Differentiable Mesh Rendering
+### 2.2 Transforms and Cameras: Rigid Motion and Projection Models
+
+`pytorch3d.transforms` and `pytorch3d.renderer.cameras` are the layer beneath §2.3's
+rendering pipeline: every camera below is really a `Transform3d` that maps world-space
+points through view space into normalised device coordinates (NDC), and every rigid
+motion (camera extrinsics, ICP-style pose updates, bundle adjustment) is parameterised
+so gradients can flow through it.
+
+**`Transform3d`.** A batched, composable affine transform. Individual transforms
+(`Rotate`, `Translate`, `Scale`) can be chained with `.compose()`, and the composed
+`Transform3d` transforms a `(P, 3)` or `(N, P, 3)` batch of points or normals in one
+call via `.transform_points()` — normals use the inverse-transpose of the matrix
+rather than the matrix itself, which `Transform3d` handles automatically through
+`.transform_normals()` so callers don't have to re-derive it.
+
+**Two camera parameterisations.** `FoVPerspectiveCameras` follows the OpenGL
+convention: a field-of-view angle plus near/far planes define the projection
+frustum, which is the natural fit for synthetic data where a virtual camera's FOV is
+a design parameter. `PerspectiveCameras` instead follows the Multi-View-Geometry /
+OpenCV convention used by real camera calibration: explicit focal lengths `(fx, fy)`
+and principal point `(px, py)`, projecting a view-space point `(X, Y, Z)` as
+`x = fx·X/Z + px`, `y = fy·Y/Z + py` — the parameterisation to reach for whenever
+extrinsics/intrinsics come from a calibration file or COLMAP/SfM output rather than
+being chosen by hand. Both classes share the same `R`/`T` extrinsics slots and the
+same `get_full_projection_transform()` world→NDC composition, so a rendering call
+written against one camera class works unchanged against the other.
+[Source: PyTorch3D cameras notes](https://pytorch3d.readthedocs.io/en/latest/notes/cameras.html)
+[Source: pytorch3d.renderer.cameras API](https://pytorch3d.readthedocs.io/en/latest/modules/renderer/cameras.html)
+
+**`so3_exp_map` / `se3_exp_map`.** Rotation matrices and rigid transforms are
+overparameterised (9 and 16 numbers respectively, for 3 and 6 true degrees of
+freedom), which makes them a poor optimisation variable — gradient steps must be
+projected back onto the manifold of valid rotations/rigid motions after every
+update. `pytorch3d.transforms.so3_exp_map` instead converts a minimal 3-vector
+"axis-angle" log-rotation (direction = rotation axis, magnitude = rotation angle)
+into a proper 3×3 rotation matrix via the Rodrigues formula, and `se3_exp_map`
+does the same for a 6-vector `[log_translation | log_rotation]` into a 4×4 SE(3)
+matrix. Optimising the 3- or 6-dimensional log-vector directly — rather than the
+matrix — guarantees every intermediate gradient step still lands on a valid
+rotation/rigid-motion, which is exactly the parameterisation PyTorch3D's own
+`bundle_adjustment` tutorial uses to refine camera poses through a differentiable
+render loop.
+[Source: pytorch3d.transforms.se3 module](https://pytorch3d.readthedocs.io/en/latest/_modules/pytorch3d/transforms/se3.html)
+
+### 2.3 Differentiable Mesh Rendering
 
 The MeshRenderer pipeline is three stages: rasterize → shade → composite.
 
@@ -716,7 +898,7 @@ TexturesAtlas(atlas=atlas)                       # (N, F, R, R, C) per-face atla
 
 [Source: pytorch3d.readthedocs.io — renderer modules](https://pytorch3d.readthedocs.io/en/latest/modules/renderer/mesh/rasterizer.html)
 
-### 2.3 Points Rendering
+### 2.4 Points Rendering
 
 ```python
 from pytorch3d.renderer import (
@@ -737,7 +919,7 @@ renderer = PointsRenderer(
 images = renderer(point_clouds)    # (N, H, W, C)
 ```
 
-### 2.4 Loss Functions
+### 2.5 Loss Functions
 
 ```python
 from pytorch3d.loss import (
@@ -800,7 +982,7 @@ for step in range(500):
 
 [Source: pytorch3d.readthedocs.io/en/latest/modules/loss.html](https://pytorch3d.readthedocs.io/en/latest/modules/loss.html)
 
-### 2.5 IO Layer
+### 2.6 IO Layer
 
 ```python
 from pytorch3d.io import IO, load_objs_as_meshes
@@ -846,7 +1028,7 @@ normals = estimate_pointcloud_normals(
 )   # (N, P, 3)
 ```
 
-### 2.6 Implicitron: Neural Radiance Fields
+### 2.7 Implicitron: Neural Radiance Fields
 
 Implicitron is PyTorch3D's modular framework for novel-view synthesis. It is
 config-driven (omegaconf/Hydra) and provides interchangeable implicit function
@@ -1399,7 +1581,52 @@ ships the same 54-category `synset_to_labels` table as the ShapeNet loaders, reu
 `kaolin.io.obj.import_mesh` for per-model geometry.
 [Source: github.com/NVIDIAGameWorks/kaolin/blob/master/kaolin/io/shrec.py](https://github.com/NVIDIAGameWorks/kaolin/blob/master/kaolin/io/shrec.py)
 
-### 3.11 Voxelgrid and Point Cloud Utility Operations
+### 3.11 Common Benchmark Datasets: ShapeNet, ScanNet, ModelNet40, and KITTI/nuScenes
+
+The dataset loaders above (§3.10) and the Open3D-ML model zoo (§1.11) both target a
+small set of standard benchmarks that recur throughout the 3D deep learning
+literature; knowing what each one actually contains clarifies why a given model
+architecture exists and what "state of the art" numbers mean when comparing papers.
+
+**ShapeNet.** A large-scale repository of ~51,300 clean, manually category-tagged
+CAD meshes (chairs, cars, airplanes, …) organised by WordNet "synset" IDs — not a
+scan of the real world but a curated collection of watertight or near-watertight
+3D models, which is why it is the default benchmark for mesh-level tasks (shape
+completion, single-view reconstruction, generative modelling) rather than for
+noisy real-sensor tasks. Both Kaolin's `ShapeNetV1`/`V2` loaders (§3.10) and
+PyTorch3D pipelines commonly train against it.
+[Source: Chang et al., "ShapeNet: An Information-Rich 3D Model Repository"](https://arxiv.org/abs/1512.03012)
+
+**ModelNet40.** A smaller (~12,300 mesh) benchmark of 40 common object
+categories, originally built for 3D shape classification and retrieval rather than
+segmentation — its de facto role today is as the standard classification/
+few-shot benchmark quoted in point cloud network papers (PointNet, DGCNN, §6.4
+here), separate from ShapeNet's part-segmentation and generative-modelling role
+despite the overlapping category names. Kaolin's `ModelNet` loader (§3.10) reads
+its OFF-format mesh splits directly.
+[Source: Wu et al., "3D ShapeNets: A Deep Representation for Volumetric Shapes", CVPR 2015](https://arxiv.org/abs/1406.5670)
+
+**ScanNet.** A real-world RGB-D video dataset — 1,513 scans of indoor scenes,
+reconstructed into textured meshes with per-vertex semantic and instance
+annotations — used to benchmark exactly the kind of scan-to-mesh pipeline this
+chapter's Open3D sections build by hand (TSDF fusion §1.9, Poisson reconstruction
+§1.10): a ScanNet scene is effectively a ground-truth-annotated version of what
+§1.9's `ScalableTSDFVolume` produces from raw frames. Kaolin lists ScanNet among
+its supported dataset formats for point cloud and mesh loading.
+[Source: Dai et al., "ScanNet: Richly-Annotated 3D Reconstructions of Indoor Scenes", CVPR 2017](https://arxiv.org/abs/1702.04405)
+
+**KITTI / nuScenes.** Autonomous-driving LiDAR benchmarks — KITTI's derived
+SemanticKITTI provides point-wise semantic labels for sequential Velodyne scans,
+and nuScenes adds multi-modal (camera + radar + LiDAR) 3D detection and tracking
+annotations across a much larger, more diverse fleet of drives. These are the
+benchmarks the object-detection half of Open3D-ML's model zoo (§1.11) targets:
+`SemanticKITTI` is the dataset class in the RandLA-Net inference example in §1.11,
+and PointPillars (also §1.11) was originally benchmarked on both KITTI and
+nuScenes-style bird's-eye-view detection.
+[Source: Geiger et al., "Vision meets Robotics: The KITTI Dataset"](https://www.cvlibs.net/publications/Geiger2013IJRR.pdf)
+[Source: Caesar et al., "nuScenes: A Multimodal Dataset for Autonomous Driving", CVPR 2020](https://arxiv.org/abs/1903.11027)
+
+### 3.12 Voxelgrid and Point Cloud Utility Operations
 
 `kaolin.ops.voxelgrid` operates on plain dense `(B, X, Y, Z)` `BoolTensor`/`FloatTensor`
 voxel grids — current Kaolin (v0.18.0) has no dedicated `kaolin.rep.VoxelGrid` container
@@ -1492,7 +1719,49 @@ Format is inferred from the file extension. The `force="mesh"` argument merges m
 scenes returned as `trimesh.Scene` into a single mesh.
 [Source: github.com/mikedh/trimesh/tree/main/trimesh/exchange](https://github.com/mikedh/trimesh/tree/main/trimesh/exchange)
 
-### 4.2 Boolean Operations
+### 4.2 LiDAR-Native Formats: LAS, LAZ, and E57
+
+None of §4.1's table, nor Open3D's native I/O (PLY/PCD/XYZ/PTS), reads the two file
+formats most terrestrial and airborne LiDAR scanners actually emit: **LAS** (the
+ASPRS-standardised binary point-record format, storing per-point classification,
+GPS time, return number, and scan angle alongside XYZ — metadata a bare PLY/XYZ
+point cloud has no field for) and its compressed variant **LAZ**, plus **E57**
+(the format most terrestrial laser scanners — Leica, Faro, Trimble — export,
+bundling multiple scan positions with per-scan pose and pinhole/spherical image
+data in one container). Both require a dedicated library rather than trimesh or
+Open3D's built-in readers:
+
+```python
+import laspy
+import numpy as np
+
+las = laspy.read("scan.laz")             # transparently decompresses LAZ
+xyz = np.vstack((las.x, las.y, las.z)).T  # (N, 3) float64, already in real-world units
+classification = las.classification       # (N,) uint8 — ASPRS class codes (ground, ...)
+intensity = las.intensity                 # (N,) uint16
+
+# Hand off to Open3D/trimesh once reduced to plain arrays:
+import open3d as o3d
+pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(xyz))
+```
+
+```python
+import pye57
+
+e57 = pye57.E57("scan.e57")
+data = e57.read_scan(0, colors=True, ignore_missing_fields=True)
+xyz = np.vstack((data["cartesianX"], data["cartesianY"], data["cartesianZ"])).T
+```
+
+`laspy` needs an optional backend package (`lazrs` or `laszip`) installed to
+handle the LAZ compression itself; `pye57` wraps the C++ `libE57Format` reference
+implementation. Once loaded, both hand off to the same numpy-array bridge §4.5
+uses for PyTorch3D/Open3D interop — the LAS/E57 libraries only own the on-disk
+format, not any in-memory representation of their own.
+[Source: laspy documentation](https://laspy.readthedocs.io/en/latest/index.html)
+[Source: pye57 — github.com/davidcaron/pye57](https://github.com/davidcaron/pye57)
+
+### 4.3 Boolean Operations
 
 trimesh delegates boolean operations to a pluggable backend. The default and recommended
 backend is **manifold3d** (a Python wrapper around the Manifold library, which implements
@@ -1524,7 +1793,7 @@ class of non-manifold inputs but requires an external installation. The manifold
 is preferred for reproducible headless environments.
 [Source: github.com/mikedh/trimesh/blob/main/trimesh/boolean.py](https://github.com/mikedh/trimesh/blob/main/trimesh/boolean.py)
 
-### 4.3 Ray Casting and Collision
+### 4.4 Ray Casting and Collision
 
 trimesh provides two ray intersection backends: **pyembree** (LLVM-accelerated ray
 tracing, fast) and a pure-Python fallback using scikit-spatial. The interface is
@@ -1573,7 +1842,7 @@ signed_dists = trimesh.proximity.signed_distance(mesh, query_pts)
 
 [Source: trimesh.org/trimesh/ray](https://trimesh.org/trimesh/ray)
 
-### 4.4 NumPy Bridge to PyTorch3D and Open3D
+### 4.5 NumPy Bridge to PyTorch3D and Open3D
 
 Because trimesh stores vertices and faces as NumPy arrays, conversion to PyTorch3D or
 Open3D requires no deep copy — just a `torch.from_numpy` or `np.asarray` wrapper:
@@ -2154,6 +2423,133 @@ cover CUDA 12.6, 12.8, 13.0, 13.2.
 Python 3.10–3.14, PyTorch 2.9+ for v2.8.0.
 [Source: pytorch-geometric.readthedocs.io/install](https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html)
 
+**A tangent from point clouds to general graphs.** §6.1–6.5 use `torch_geometric` for
+one specific graph type — a k-NN or radius graph built *from* 3D point coordinates,
+where the graph is a computational scaffold for local geometry (§6.2's
+`DynamicEdgeConv` rebuilds it from feature-space distance, not xyz distance, but it is
+still a proximity graph over points). The rest of this section steps outside that
+use case: knowledge graphs, where nodes are entities (people, products, documents)
+and edges are typed relationships rather than spatial proximity, are `torch_geometric`'s
+other major application domain, and Neo4j is the most widely deployed graph database
+for storing and querying them. None of §6.6–6.8 processes 3D geometry — they are
+included because they are the natural "what else is this library for" follow-up
+once `torch_geometric` itself is on the table, not because they fit this chapter's
+point-cloud scope.
+
+### 6.6 Graph Transformers: Attention over Graph Structure
+
+Message-passing GNNs (§6.2–6.4) suffer from *over-squashing* — information from a
+node k hops away must pass through k rounds of aggregation, and each round compresses
+an exponentially growing receptive field into a fixed-size vector, so long-range
+signal gets diluted before it arrives. Graph Transformers address this by replacing
+or augmenting message passing with global self-attention: every node can attend
+directly to every other node in one layer, regardless of hop distance, at the cost
+of losing the graph's edge structure as an inductive bias unless it is reintroduced
+explicitly. Two dominant ways to reintroduce it: **Graphormer** encodes structure as
+additive attention biases — a spatial encoding keyed on shortest-path distance
+between each node pair, and an edge encoding that walks the shortest path itself,
+both added directly into the attention score before the softmax, so the transformer
+learns from a structural prior rather than raw connectivity alone. **GraphGPS**
+instead runs a message-passing GNN layer and a (typically linear-attention, for
+scalability) global transformer layer in parallel within the same block and
+concatenates their outputs, combining the GNN's local inductive bias with the
+transformer's unrestricted long-range mixing rather than choosing one mechanism
+over the other.
+[Source: Ying et al., "Do Transformers Really Perform Bad for Graph Representation?" (Graphormer), NeurIPS 2021](https://arxiv.org/abs/2106.05234)
+[Source: Rampášek et al., "Recipe for a General, Powerful, Scalable Graph Transformer" (GraphGPS), NeurIPS 2022](https://arxiv.org/abs/2205.12454)
+[Source: "A Survey of Graph Transformers: Architectures, Theories and Applications"](https://arxiv.org/abs/2502.16533)
+
+### 6.7 GraphRAG: Knowledge Graphs for LLM Retrieval
+
+Standard RAG retrieves the top-k text chunks whose embeddings are nearest a query
+vector, which finds locally relevant passages but has no mechanism to aggregate
+facts scattered across many documents or to answer "how are X and Y connected"
+questions that require traversing several hops of relationship. **GraphRAG**
+(Microsoft Research) addresses this by first having an LLM extract an entity/
+relationship knowledge graph from the source corpus, clustering that graph into
+hierarchical communities (via the Leiden algorithm), and pre-generating an LLM
+summary of each community; at query time it answers global "what are the themes
+across this corpus" questions by aggregating community summaries, rather than
+re-ranking individual chunks the way vector RAG does.
+[Source: Microsoft Research, "GraphRAG: Unlocking LLM discovery on narrative private data"](https://www.microsoft.com/en-us/research/blog/graphrag-unlocking-llm-discovery-on-narrative-private-data/)
+
+Neo4j's GraphRAG offering ([neo4j.com/generativeai](https://neo4j.com/generativeai))
+packages the same idea as infrastructure rather than a one-off pipeline: an
+**LLM Knowledge Graph Builder** extracts entities, facts, and relationships from
+unstructured text directly into a Neo4j graph; a **native vector index** on node
+properties supplies the semantic-similarity leg of retrieval exactly as a plain
+vector database would; and a retrieval query then combines that vector hit with a
+graph traversal outward from the matched entity — pulling in related facts a
+pure nearest-neighbour lookup would never surface, and providing an explicit,
+inspectable path (an "audit trail") for why a given fact was retrieved, which
+opaque embedding similarity cannot. The `neo4j-graphrag-python` package wires this
+retrieval pattern into LangChain, LlamaIndex, and the major LLM provider SDKs
+(OpenAI, Vertex AI, Azure, Bedrock) rather than requiring a bespoke retrieval loop
+per project.
+[Source: Neo4j GenAI / GraphRAG](https://neo4j.com/generativeai)
+
+### 6.8 Neo4j Graph Data Science: Algorithms and PyG Integration
+
+Where §6.7's knowledge graph is queried with traversals and vector search, **Neo4j
+Graph Data Science (GDS)** is a separate library of graph algorithms that run
+directly inside the database, organised into categories: **centrality** (PageRank,
+betweenness — node importance), **community detection** (Louvain, Leiden, Weakly
+Connected Components), **similarity** (k-NN, node similarity), **path finding**
+(Dijkstra, A*, Yen's), **node embeddings**, and **topological link prediction**.
+[Source: Neo4j GDS algorithms documentation](https://neo4j.com/docs/graph-data-science/current/algorithms/)
+
+Three of the node embedding algorithms are directly relevant to this chapter's
+GNN focus, and differ in one important respect — whether they generalise to nodes
+never seen during training (*inductive*) or only produce embeddings for the exact
+node set they were fit on (*transductive*): **Node2Vec** learns embeddings from
+biased random walks over the graph and is transductive — it has no way to embed a
+node added after training. **FastRP** produces embeddings via sparse random
+projections of the graph's structure — very fast and scalable, and inductive when
+configured with `propertyRatio=1.0` and a fixed `randomSeed`. **GraphSAGE** is the
+one that is architecturally a GNN in the same sense as §6.2's `PointNetConv`/
+`DynamicEdgeConv` — it learns aggregator functions over each node's neighbourhood
+(mean/pool/LSTM aggregators combining node properties with neighbour features) so
+that at inference time it can embed an unseen node purely from its own properties
+and neighbourhood, without retraining, which is why GDS lists GraphSAGE and
+HashGNN (with fixed features and seed) as inductive alongside FastRP, while
+Node2Vec is not.
+[Source: Neo4j GDS machine learning documentation](https://neo4j.com/docs/graph-data-science/current/machine-learning/machine-learning/)
+
+GDS also has a direct `torch_geometric` bridge via the `graphdatascience` Python
+client, for cases where GDS's built-in algorithms aren't enough and a custom GNN
+architecture (from §6.2-6.4, or a Graph Transformer from §6.6) needs to train on
+graph data that lives in Neo4j:
+
+```python
+from graphdatascience import GraphDataScience
+import torch
+from torch_geometric.data import Data
+
+gds = GraphDataScience("bolt://localhost:7687", auth=("neo4j", "password"))
+
+# Load a graph projection into GDS, then sample it down for client-side export
+G = gds.graph.load_cora()
+G_sample, _ = gds.graph.sample.rwr("cora_sample", G, randomSeed=42, concurrency=1)
+
+# Stream topology and node properties out to the client
+topology = gds.graph.relationships.stream(G_sample).by_rel_type()
+node_props = gds.graph.nodeProperties.stream(
+    G_sample, ["subject", "features"], separate_property_columns=True
+)
+
+# Node IDs must be remapped to a consecutive 0..N-1 range before constructing Data
+edge_index = torch.tensor(topology, dtype=torch.long)   # remapped (2, E)
+x = torch.tensor(node_props["features"], dtype=torch.float)
+y = torch.tensor(node_props["subject"], dtype=torch.long)
+data = Data(x=x, y=y, edge_index=edge_index)  # ready for §6.2's Conv layers
+```
+
+The traffic runs the opposite direction too: GDS's own node-classification and
+link-prediction pipelines can score a graph using a model trained externally in
+PyG, closing the loop between "the graph lives in Neo4j" and "the GNN is trained
+in PyTorch."
+[Source: Neo4j GDS Client — PyG integration: Sample and export](https://neo4j.com/docs/graph-data-science-client/current/tutorials/import-sample-export-gnn/)
+
 ---
 
 ## 7. Warp: Differentiable GPU Kernels and Geometry
@@ -2303,18 +2699,66 @@ PyTorch autograd cannot do natively.
 
 ## 8. Library Comparison and Integration Patterns
 
-| | Open3D | PyTorch3D | Kaolin |
-|---|---|---|---|
-| Primary strength | Classical 3D processing + reconstruction + ML inference | Differentiable rendering + heterogeneous mesh/PC batches | Sparse octree ops + USD I/O + NVIDIA stack integration |
-| GPU support | Tensor API (CUDA via `.cuda()`) | CUDA kernels for all ops | All ops CUDA-native |
-| Differentiable renderer | None | Soft/Hard rasterizer + Implicitron | DIBRenderer, nvdiffrast, easy_render |
-| Point cloud ML | Open3D-ML (RandLA-Net, KPConv…) | `estimate_pointcloud_normals`, knn_points | SPC + sparse Conv3d |
-| Format I/O | PLY, PCD, OBJ, RGBD, depth | OBJ, PLY, OFF, glTF (exp.) | USD, OBJ, GLTF, PLY |
-| Omniverse / USD | No | No | Yes (`kaolin.io.usd`) |
-| Install | `pip install open3d` | conda or build-from-source | CUDA-specific S3 wheel |
-| License | Apache 2.0 | BSD 2-Clause | Apache 2.0 |
+The table below compares the three general-purpose 3D data libraries this chapter
+centres on; Warp (§7) and torch_geometric (§6) are not alternatives to them so much
+as complementary layers underneath and alongside — Warp is a kernel-authoring
+framework rather than a 3D data library (it has no mesh/point-cloud file formats or
+model zoo of its own, only arrays and the differentiable kernels operating on them),
+and torch_geometric is a GNN layer library, not a geometry-processing one — so two
+extra columns are included for direct comparison rather than folding them into rows
+that don't quite fit either:
 
-**Common integration pattern — registration pipeline feeding a reconstruction:**
+| | Open3D | PyTorch3D | Kaolin | Warp | torch_geometric |
+|---|---|---|---|---|---|
+| Primary strength | Classical 3D processing + reconstruction + ML inference | Differentiable rendering + heterogeneous mesh/PC batches | Sparse octree ops + USD I/O + NVIDIA stack integration | Differentiable GPU kernels: physics, mesh/BVH queries | GNN layers for graph/point-cloud learning |
+| GPU support | Tensor API (CUDA via `.cuda()`) | CUDA kernels for all ops | All ops CUDA-native | CUDA-native (CPU fallback for debugging) | CUDA via PyTorch + optional compiled accelerators |
+| Differentiable renderer | None | Soft/Hard rasterizer + Implicitron | DIBRenderer, nvdiffrast, easy_render | None (kernel-level `wp.Tape`, §7.3) | None |
+| Point cloud ML | Open3D-ML (RandLA-Net, KPConv…) | `estimate_pointcloud_normals`, knn_points | SPC + sparse Conv3d | Mesh/point BVH queries (§7.2), not a model zoo | PointNet++, DGCNN, PointTransformerConv (§6.2-6.4) |
+| Format I/O | PLY, PCD, OBJ, RGBD, depth | OBJ, PLY, OFF, glTF (exp.) | USD, OBJ, GLTF, PLY | None (raw `wp.array`s only) | None (dataset-specific loaders, not mesh formats) |
+| Omniverse / USD | No | No | Yes (`kaolin.io.usd`) | No (used *inside* Omniverse kernels, but no USD I/O of its own) | No |
+| Install | `pip install open3d` | conda or build-from-source | CUDA-specific S3 wheel | `pip install warp-lang` | `pip install torch_geometric` (+ optional compiled extras) |
+| License | Apache 2.0 | BSD 2-Clause | Apache 2.0 | Apache 2.0 | MIT |
+
+[Source: NVIDIA/warp LICENSE.md](https://github.com/NVIDIA/warp/blob/main/LICENSE.md)
+[Source: pyg-team/pytorch_geometric LICENSE](https://github.com/pyg-team/pytorch_geometric/blob/master/LICENSE)
+
+**Common integration pattern — registration pipeline feeding a reconstruction.** No
+single library covers this whole pipeline well, so a typical scan-to-Omniverse workflow
+hands the data off between all three, each owning the stage it is strongest at: Open3D
+first aligns a sequence of raw scans — coarse FPFH+RANSAC registration (§1.6) refined by
+point-to-plane ICP (§1.7) — then fuses the registered RGB-D frames into a TSDF volume
+(§1.9) and extracts an explicit triangle mesh via Marching Cubes. That mesh then moves to
+PyTorch3D, whose differentiable rasterizer (§2.3) is used to optimise the mesh's texture
+(or fine-tune its vertex positions) against reference photos — something neither Open3D
+nor Kaolin can do, since neither exposes gradients through rendering. Finally, the refined
+mesh is handed to Kaolin purely for its USD I/O (§3.4), exporting the result for review in
+NVIDIA Omniverse — a format neither Open3D nor PyTorch3D reads or writes natively. Each
+handoff crosses a library boundary via a plain OBJ/PLY file or an in-memory vertex/face
+tensor; none of the three shares a native in-process data structure with the others, so
+`IO().load_mesh(...)` and `usd.export_mesh(...)` round-trip through geometry (and,
+for the OBJ handoff, texture files) rather than passing objects directly.
+
+```mermaid
+flowchart LR
+    subgraph Open3D["Open3D (§1)"]
+        A["Raw RGB-D scans"] --> B["FPFH + RANSAC\ncoarse registration (§1.6)"]
+        B --> C["Point-to-plane ICP\nfine registration (§1.7)"]
+        C --> D["TSDF volume fusion (§1.9)"]
+        D --> E["Marching Cubes\n→ triangle mesh"]
+    end
+
+    subgraph PyTorch3D["PyTorch3D (§2)"]
+        F["Load mesh (OBJ/PLY)"] --> G["Differentiable rasterizer\ntexture/vertex optimisation (§2.3)"]
+    end
+
+    subgraph Kaolin["Kaolin (§3)"]
+        H["Load optimised mesh"] --> I["USD export (§3.4)"]
+        I --> J["NVIDIA Omniverse review"]
+    end
+
+    E -- "OBJ/PLY file" --> F
+    G -- "vertex/face tensor" --> H
+```
 
 ```python
 # 1. Open3D: coarse RANSAC + ICP alignment
@@ -2349,6 +2793,21 @@ PyTorch's CUDA dispatch and likewise do not run on ROCm. For AMD GPU deployment 
 these pipelines, the CPU-only Open3D path (Legacy API or `open3d-cpu` wheel) is the
 only officially supported option.
 
+**Jetson/ARM note.** Support across the three libraries is uneven on aarch64. Open3D
+has the most mature story: since v0.14 it ships pre-compiled ARM64 wheels for Linux
+(and macOS), the GUI runs on Jetson, and its build docs describe an explicit
+`-DBUILD_CUDA_MODULE=ON` configuration for compiling CUDA support directly on a
+Jetson board — but the plain `pip install open3d` ARM64 wheel is CPU-only; CUDA
+support must be built from source. PyTorch3D and Kaolin fare worse, because both sit
+on top of PyTorch's own CUDA extension build machinery, and PyTorch does not publish
+official ARM64+CUDA wheels — a Jetson deployment of either library means compiling
+PyTorch itself for the board's specific JetPack/CUDA version first (as NVIDIA's own
+Jetson PyTorch wheels do), then building PyTorch3D's and Kaolin's C++/CUDA
+extensions against that local PyTorch, rather than any `pip install` reaching a
+prebuilt package — a materially heavier lift than the x86_64 pip/conda installs
+elsewhere in this chapter.
+[Source: Open3D ARM support docs](https://www.open3d.org/docs/release/arm.html)
+
 ---
 
 ## 9. Integrations
@@ -2358,9 +2817,9 @@ only officially supported option.
   renderer, and Kaolin's DIBRenderer. §16 (threestudio) uses the DMTet geometry backend
   whose FlexiCubes conversion is described in §3.5 here. §17–18 (DUSt3R/MASt3R) produce
   dense `(H, W, 3)` pointmaps that feed directly into Open3D Poisson reconstruction
-  (§1.6) and PyTorch3D `Pointclouds` (§2.1). The spconv/torchsparse sparse conv
+  (§1.10) and PyTorch3D `Pointclouds` (§2.1). The spconv/torchsparse sparse conv
   backbones in §5 are the GPU architecture underpinning LiDAR 3D detection models in
-  ch115 §5 and in Open3D-ML (§1.7 here). The `torch_geometric` `Data` object (§6) and
+  ch115 §5 and in Open3D-ML (§1.11 here). The `torch_geometric` `Data` object (§6) and
   Warp mesh queries (§7) apply directly to the point cloud outputs of DUSt3R/MASt3R
   global alignment and the surfel models in 2DGS (ch115 §20). The Gaussian splat
   transform and volume-densification utilities in §3.7 here operate directly on the
@@ -2380,7 +2839,7 @@ only officially supported option.
   Open3D's `ScalableTSDFVolume` for dense reconstruction. Kaolin's SPC octree is the
   GPU-side data structure for the kind of sparse voxel maps those systems maintain.
 - **Chapter 209 (OpenSLAM)**: G2O graph optimisation produces the pose graph whose
-  vertex poses feed directly into the TSDF integration loop in §1.5.
+  vertex poses feed directly into the TSDF integration loop in §1.9.
 - **Chapter 48 (ROCm and Machine Learning on Linux GPUs)**: ROCm/HIP as the AMD
   alternative for the PyTorch training stack underlying Open3D-ML and PyTorch3D; the
   limitations noted in §4 apply when porting these libraries to AMD hardware.
@@ -2404,7 +2863,7 @@ only officially supported option.
   [Source: Open3D pull request tracker](https://github.com/isl-org/Open3D/pull/7443)
 - **Compressed Gaussian Splat I/O (SPZ format).** Open3D has landed SPZ read/write
   support alongside its existing PLY-based Gaussian splat handling, targeting the
-  v0.20 release and aligning point cloud I/O (§1.2) with the compressed splat formats
+  v0.20 release and aligning point cloud I/O (§1.5) with the compressed splat formats
   also tracked in Chapter 115's roadmap.
   [Source: Open3D pull request tracker](https://github.com/isl-org/Open3D/pull/7520)
 - **PyG consolidation onto `pyg-lib`.** torch_geometric 2.8 deprecates the separate
