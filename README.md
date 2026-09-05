@@ -1,8 +1,8 @@
 # The Linux Graphics Stack: From Kernel to Compositor, Browser, and Terminal
 
-An expert-level technical reference (~1,400 pages, 200 chapters) tracing every layer of the Linux graphics stack — from the DRM kernel subsystem and GPU memory management through Mesa's shader compilers, Wayland compositors, application APIs, the browser rendering pipeline, game compatibility layers, terminal pixel protocols, GPU-accelerated video streaming, AI inference, and both open and proprietary GPU ecosystems. Each chapter is written for practitioners: code snippets reference real upstream source at specific commits or releases, API signatures are verified against current kernel and Mesa trees, and architectural claims cite primary sources.
+An expert-level technical reference (283 chapters across 30 parts, several million words) tracing every layer of what a GPU does on Linux — not only pixels. It begins from the DRM kernel subsystem and GPU memory management, through Mesa's shader compilers, Wayland compositors, application APIs, the browser rendering pipeline, game compatibility layers, and terminal pixel protocols — the traditional "graphics stack." But the same silicon, the same driver stack, and the same DRM scheduling infrastructure now also carry AI/ML training and inference (ROCm, JAX, PyTorch internals, distributed training, local LLM inference, NPU accelerators), hardware video encode/decode pipelines, real-time audio and broadcast streaming, and offline production rendering — and this book treats those as first-class subjects, not asides. Each chapter is written for practitioners: code snippets reference real upstream source at specific commits or releases, API signatures are verified against current upstream trees, and architectural claims cite primary sources.
 
-By the final chapter the reader holds a continuous mental model from a `DRM_IOCTL_MODE_ATOMIC` kernel call all the way to a photon leaving a display panel, and from a WebGPU `drawIndexed` call in JavaScript all the way to the same panel.
+By the final chapter the reader holds a continuous mental model that runs from a `DRM_IOCTL_MODE_ATOMIC` kernel call to a photon leaving a display panel, from a WebGPU `drawIndexed` call in JavaScript to that same panel, and from a CUDA/ROCm kernel launch or an NPU inference request to the same GPU memory manager and scheduler underneath it all.
 
 ## Audiences
 
@@ -13,7 +13,7 @@ By the final chapter the reader holds a continuous mental model from a `DRM_IOCT
 - **Production rendering and render farm engineers** — offline/production renderer architecture (path tracing, shading languages, USD/Hydra pipeline integration) and Linux-based render farm infrastructure
 - **AI/ML systems engineers on Linux GPUs** — compute kernels, tensor throughput, and inference/training infrastructure (ROCm, local LLM inference, NPUs, JAX/PyTorch internals) on the same driver stack as graphics
 - **Video/streaming and codec engineers** — hardware and software video pipelines (FFmpeg internals, GStreamer plugin development, DeepStream, AV1/HEVC codec algorithms) beneath every hardware decode path
-- **Linux audio/multimedia engineers** — real-time audio, VoIP and Bluetooth audio, media playback, broadcast streaming, and music production infrastructure adjacent to the graphics stack
+- **Linux audio/multimedia engineers** — real-time audio, VoIP and Bluetooth audio, media playback, broadcast streaming, and music production infrastructure on the same kernel and userspace media stack
 
 ## Parts and Chapters
 
@@ -934,8 +934,8 @@ Suggested paths:
 
 ## Writing Standards
 
-- **Accuracy first.** Code snippets reference real upstream source pinned to a commit or release tag. API signatures are verified against current kernel and Mesa trees.
-- **References.** Every non-trivial claim and code excerpt carries an inline `[Source](url)` link to kernel.org, gitlab.freedesktop.org, or the relevant upstream repository.
+- **Accuracy first.** Code snippets reference real upstream source pinned to a commit or release tag. API signatures are verified against current upstream trees — kernel and Mesa for the graphics-stack chapters, and the relevant framework repository (PyTorch, JAX, ROCm, FFmpeg, GStreamer, PipeWire, OpenUSD, etc.) elsewhere.
+- **References.** Every non-trivial claim and code excerpt carries an inline `[Source](url)` link to kernel.org, gitlab.freedesktop.org, arXiv, or the relevant upstream repository or vendor documentation.
 - **Chapter structure.** Each chapter opens with a scope paragraph, a local table of contents, main sections, and a closing **Integrations** section cross-linking related chapters.
 - **Code blocks.** Every block is labelled with the language (`c`, `rust`, `bash`, `glsl`, `spirv`, etc.) and includes enough context (file path, function name, struct) for a reader to locate the source.
 - **Depth target.** ~6,000–8,000 words (15–20 pages) per chapter; 1–2 pages per part introduction.
