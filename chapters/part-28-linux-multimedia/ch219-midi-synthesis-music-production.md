@@ -35,6 +35,13 @@
   - [18.3 Vaporwave: Extreme Time-Stretch and Formant-Shifted Pitch](#183-vaporwave-extreme-time-stretch-and-formant-shifted-pitch)
   - [18.4 Trance: Supersaws, Sidechain Pumping, and Trance Gates](#184-trance-supersaws-sidechain-pumping-and-trance-gates)
   - [18.5 Techno: Four-on-the-Floor Sequencing and Acid Basslines](#185-techno-four-on-the-floor-sequencing-and-acid-basslines)
+- [19. Audacity 4.0: Non-Destructive Waveform Editing](#19-audacity-40-non-destructive-waveform-editing)
+  - [19.1 Qt6 Rewrite and the Clip-Based Editing Model](#191-qt6-rewrite-and-the-clip-based-editing-model)
+  - [19.2 Module and Plugin System](#192-module-and-plugin-system)
+  - [19.3 Nyquist Scripting](#193-nyquist-scripting)
+  - [19.4 PortAudio Backend](#194-portaudio-backend)
+  - [19.5 The .aup3/.aup4 Project File Format](#195-the-aup3aup4-project-file-format)
+  - [19.6 Spectrogram and Analysis View Rendering](#196-spectrogram-and-analysis-view-rendering)
 - [Integrations](#integrations)
 
 ---
@@ -906,6 +913,123 @@ rubberband --pitch -3 slowed.wav warped.wav
 
 ---
 
+## 19. Audacity 4.0: Non-Destructive Waveform Editing
+
+Audacity 4.0 (released September 2026) is a from-scratch rewrite of Audacity's UI layer on Qt6, replacing the wxWidgets toolkit used since Audacity's earliest releases, paired with a new clip-based editing model. [Source](https://github.com/audacity/audacity/releases/tag/Audacity-4.0.0) It is the waveform-editor counterpart to Ardour's multitrack DAW model covered in §10: single-track/clip-focused, destructive-by-default recording combined with non-destructive effect preview, rather than Ardour's route/bus signal-graph architecture.
+
+### 19.1 Qt6 Rewrite and the Clip-Based Editing Model
+
+The UI migration from wxWidgets to Qt6 brings native HiDPI rendering, OS-native light/dark mode, and dockable/floating panel arrangement through a new "Workspaces" feature with Modern, Classic, and Music presets. [Source](https://linuxiac.com/audacity-4-0-audio-editor-released-with-redesigned-qt-interface-new-editing-model/) The accompanying editing-model change makes clips — not tracks or time-selections — the primary object: clips can be selected directly, grouped, and edited together, and a dedicated splitting tool replaces the older draw-mode-based split workflow. [Source](https://www.phoronix.com/news/Audacity-4.0-Released)
+
+This is a UI/interaction-model rewrite, not an audio-engine rewrite — Audacity 4.0 still uses **PortAudio** for device I/O (§19.3) and the SQLite-backed project format inherited from Audacity 3.x (§19.4). Several features present in 3.x are absent at the 4.0 launch and slated for later restoration: Time Tracks, MIDI tracks, the Mixer board, variable-speed playback, and the Macro Manager (including the Scripting Pipe used for headless automation). [Source](https://www.heise.de/en/news/Audacity-4-0-The-tool-modes-are-gone-11441282.html)
+
+### 19.2 Module and Plugin System
+
+Audacity 4.0 hosts three plugin formats out of the box: **VST3**, **Nyquist** (§19.3, built in), and **LV2** on Linux (Audio Units on macOS); Windows additionally gained ASIO device support. 4.0 also introduced crash-safe plugin scanning, so a crashing plugin binary encountered during startup scan no longer takes the whole application down with it. [Source](https://www.opensourcefeed.org/audacity-4-0-release/)
+
+**VAMP and LADSPA plugin hosting are a launch-time regression**: both were supported in Audacity 3.x but are unavailable in 4.0, with restoration planned for a future release. [Source](https://9to5linux.com/audacity-4-0-open-source-audio-editor-officially-released-heres-whats-new) A project that depends on a LADSPA-only effect (§9 covers LADSPA's plugin architecture and its LV2/VST successors) currently has no in-place upgrade path from Audacity 3.x to 4.0 for that effect.
+
+Note: needs verification — Audacity's public release notes do not describe the plugin scanner's internal process-isolation mechanics (in-process load vs. a separate scan/host process); "crash-safe" is confirmed behavior, the isolation architecture that produces it is not.
+
+### 19.3 Nyquist Scripting
+
+Nyquist is a Lisp dialect (built on XLISP) that has shipped as Audacity's scripting language since its earliest releases, and remains a first-class plugin format in 4.0 alongside compiled VST3/LV2 plugins. [Source](https://manual.audacityteam.org/man/creating_nyquist_plug_ins.html) A Nyquist plugin is a `.ny` text file dropped into Audacity's Plug-Ins directory; a leading run of `;keyword args` header lines declares its plugin type and parameter widgets, followed by Lisp code whose final expression's return value replaces the selected audio. Audacity recognizes four plugin types via the `;type` header — `generate`, `process`, `analyze`, and `tool` — corresponding to the Generate, Effect, Analyze, and Tools menus. [Source](https://plugins.audacityteam.org/contributing/developing-your-own-plugins-and-scripts/creating-your-own-nyquist-plugins/headers-reference)
+
+A complete example from the Audacity manual — a feedback delay effect with three user-adjustable controls:
+
+```lisp
+;nyquist plug-in
+;version 4
+;type process
+;name "Delay..."
+;control decay "Decay amount" int "dB" 6 0 24
+;control delay "Delay time" float "seconds" 0.5 0.0 5.0
+;control count "Number of echos" int "times" 5 1 30
+
+(defun delays (sig decay delay count)
+  (if (= count 0)
+      (cue sig)
+      (sim (cue sig)
+           (loud decay (at delay (delays sig decay delay (- count 1)))))))
+
+(stretch-abs 1 (delays *track* (- 0 decay) delay count))
+```
+
+[Source](https://manual.audacityteam.org/man/creating_nyquist_plug_ins.html)
+
+Each `;control` line declares one dialog widget: variable name, display label, widget type (`int`/`float`/`string`/`choice`), unit string, default value, and (for numeric types) a min/max range. [Source](https://plugins.audacityteam.org/contributing/developing-your-own-plugins-and-scripts/creating-your-own-nyquist-plugins/headers-reference) Because the Macro Manager and Scripting Pipe are absent from the 4.0 launch (§19.1), Nyquist's role in 4.0 is presently limited to interactive, GUI-invoked effects — the headless, repeatable multi-file batch processing that the Scripting Pipe enabled in 3.x has no 4.0 equivalent yet.
+
+### 19.4 PortAudio Backend
+
+Audacity talks to audio hardware through **PortAudio**'s host-API abstraction rather than binding to PipeWire/ALSA directly, in contrast to Ardour's native PipeWire/JACK backend (§10.1). PortAudio's callback-mode API is backend-agnostic: an application calls `Pa_OpenStream()` with a `PaStreamCallback`-typed function pointer, and PortAudio invokes it periodically on its own audio thread once the stream is started. A representative callback-mode capture setup, from PortAudio's own example suite:
+
+```c
+// portaudio/examples/paex_record.c
+typedef struct
+{
+    int          frameIndex;
+    int          maxFrameIndex;
+    SAMPLE      *recordedSamples;
+}
+paTestData;
+
+static int recordCallback( const void *inputBuffer, void *outputBuffer,
+                           unsigned long framesPerBuffer,
+                           const PaStreamCallbackTimeInfo* timeInfo,
+                           PaStreamCallbackFlags statusFlags,
+                           void *userData );
+
+err = Pa_OpenStream(
+          &stream,
+          &inputParameters,
+          NULL,                  /* &outputParameters, */
+          SAMPLE_RATE,
+          FRAMES_PER_BUFFER,
+          paClipOff,
+          recordCallback,
+          &data );
+```
+
+[Source](https://github.com/PortAudio/portaudio/blob/master/examples/paex_record.c)
+
+Note: needs verification — which PortAudio host API Audacity selects on Linux by default (the native ALSA host API versus PipeWire's PortAudio-compatible shim) is not documented in Audacity's 4.0 release notes; either path adds a generic callback-abstraction layer between Audacity and the device that Ardour's direct PipeWire/JACK backend does not have, with corresponding latency/buffer-size tradeoffs.
+
+### 19.5 The `.aup3`/`.aup4` Project File Format
+
+Audacity 3.0 (2021) replaced Audacity's older directory-of-files project format with a single SQLite3 database file, `.aup3`. [Source](https://github.com/audacity/audacity-project-tools/blob/main/README.md) Its schema centers on three tables:
+
+- **`project`** — the saved project state: a "dictionary" blob (tag/attribute name table) and a project-structure blob, the latter a binary-XML serialization of the track/clip/effect hierarchy.
+- **`autosave`** — the same two-blob shape as `project`, written continuously as the user edits; on next launch, Audacity checks this table and offers crash recovery if it holds unsaved data.
+- **`sampleblocks`** — the actual audio sample data, chunked into blocks up to 1MB each (roughly 5 seconds of mono audio at default project rate), addressed by a `block_id` whose parity indicates channel; block IDs are not required to be contiguous or monotonic.
+
+[Source](https://github.com/audacity/audacity-project-tools/blob/main/README.md)
+
+Audacity 4.0 introduces `.aup4` as the new default, layering preview-thumbnail data and 4.0's additional clip/appearance metadata on top of the same SQLite structure; `.aup3` projects open in 4.0 and convert to `.aup4` without touching the original file, but a converted `.aup4` project cannot be saved back out as `.aup3`. [Source](https://www.linuxcompatible.org/story/audacity-400-released-complete-qt-rewrite-new-clip-editing-and-aup4-format)
+
+Because the project is a SQLite database rather than a plain file, basic `sqlite3` CLI operations work directly against it for inspection and recovery — a capability Ardour's directory-of-many-files session model (§10.1) does not have an equivalent of:
+
+```bash
+# Inspect table structure without modifying the file
+sqlite3 myproject.aup3 ".tables"
+
+# Check for corruption after a crash, before attempting recovery
+sqlite3 myproject.aup3 "PRAGMA integrity_check;"
+
+# audacity-project-tools wraps sqlite3's own .recover command to
+# rebuild a project database around any structurally-intact pages
+sqlite3 myproject.aup3 ".recover"
+```
+
+[Source](https://github.com/audacity/audacity-project-tools/blob/main/README.md)
+
+A mid-write crash on a `.aup3`/`.aup4` project is therefore a SQLite integrity problem rather than a truncated- or missing-file problem, which is why `audacity-project-tools` exists as a dedicated recovery utility separate from Audacity itself.
+
+### 19.6 Spectrogram and Analysis View Rendering
+
+Audacity's spectrogram view computes FFTs on the CPU and rasterizes the result to a bitmap; there is no GPU-accelerated rendering path. Audacity 4.0 improved this view's rendering performance and legibility — clearer frequency/time guides and rulers, and faster redraw as the view scrolls or is rezoomed during playback — without changing the underlying CPU-side FFT pipeline. [Source](https://github.com/audacity/audacity/releases/tag/Audacity-4.0.0) The same FFT pipeline backs Audacity's frequency-domain analysis tools (Plot Spectrum, Contrast Analysis). A GPU-accelerated spectrogram or analysis view, if Audacity ever adds one, would be a candidate workload for the general-purpose CPU-rasterization/pixman coverage in Ch47.
+
+---
+
 ## Integrations
 
 - **Ch38 — PipeWire and the Video Session Layer**: PipeWire MIDI graph internals, session manager (WirePlumber) MIDI policy, ALSA-seq bridge, pw-link routing, and the `spa_pod_sequence` buffer format underpinning §3 of this chapter.
@@ -917,6 +1041,8 @@ rubberband --pitch -3 slowed.wav warped.wav
 - **Ch213 — MIDI over IP: RTP-MIDI and rtpmidid**: Extends the sequencer model from §2 across the network via RTP-MIDI (RFC 6295); rtpmidid bridges RTP-MIDI sessions to ALSA sequencer ports, making remote instruments appear as local ALSA clients.
 
 - **Ch216 — Speech Synthesis**: Speech synthesis engines (eSpeak NG, Festival) may be integrated as LV2 plugins (§7–§8) or as Csound opcodes (§12), feeding synthesised phoneme audio into the same DAW signal chain described in §10.
+
+- **Ch47 — Pixman and 2D Rasterization**: Audacity's CPU-side FFT spectrogram rendering (§19.6) is a candidate cross-reference workload for this chapter's general-purpose 2D/CPU-rasterization coverage.
 
 ## Roadmap
 
